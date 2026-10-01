@@ -1,0 +1,14 @@
+# Preserve the encoding and line endings of inherited source files.
+# Some legacy X-Ray files use Windows code pages rather than UTF-8.
+* -text
+*.md text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
+*.bat text eol=crlf
+*.sln text eol=crlf
+*.vcxproj text eol=crlf
+*.props text eol=crlf
+*.lib binary
+*.ico binary
+*.bmp binary
+*.png binary

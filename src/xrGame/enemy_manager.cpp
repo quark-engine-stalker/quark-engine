@@ -1,0 +1,561 @@
+////////////////////////////////////////////////////////////////////////////
+//	Module 		: enemy_manager.cpp
+//	Created 	: 30.12.2003
+//  Modified 	: 30.12.2003
+//	Author		: Dmitriy Iassenev
+//	Description : Enemy manager
+////////////////////////////////////////////////////////////////////////////
+
+#include "pch_script.h"
+#include "enemy_manager.h"
+#include "memory_manager.h"
+#include "visual_memory_manager.h"
+#include "hit_memory_manager.h"
+#include "ef_storage.h"
+#include "ef_pattern.h"
+#include "autosave_manager.h"
+#include "ai_object_location.h"
+#include "level_graph.h"
+#include "level.h"
+#include "script_game_object.h"
+#include "ai_space.h"
+#include "profiler.h"
+#include "actor.h"
+#include "actor_memory.h"
+#include "ai/stalker/ai_stalker.h"
+#include "movement_manager.h"
+#include "agent_manager.h"
+#include "agent_enemy_manager.h"
+
+u32 ENEMY_INERTIA_TIME_TO_SOMEBODY = 3000;
+u32 ENEMY_INERTIA_TIME_TO_ACTOR = 0;
+u32 ENEMY_INERTIA_TIME_FROM_ACTOR = 6000;
+
+namespace
+{
+const ::luabind::functor<void>* enemy_selected_callback()
+{
+	static cached_script_functor<void> callback_cache("_G.CAI_Stalker__OnEnemySelected");
+	return callback_cache.get(ai().script_engine());
+}
+}
+
+#ifdef _DEBUG
+bool g_enemy_manager_second_update	 = false;
+#endif // _DEBUG
+
+#define USE_EVALUATOR
+
+CEnemyManager::CEnemyManager(CCustomMonster* object)
+{
+	VERIFY(object);
+	m_object = object;
+	m_ignore_monster_threshold = 1.f;
+	m_max_ignore_distance = 0.f;
+	m_ready_to_save = true;
+	m_last_enemy_time = 0;
+	m_last_enemy_change = 0;
+	m_stalker = smart_cast<CAI_Stalker*>(object);
+	m_enable_enemy_change = true;
+	m_smart_cover_enemy = 0;
+	// GAMMA firefights can expose one NPC to dozens of potential enemies in a
+	// short burst. Keep enough buckets hot so the existing short-lived Lua
+	// usefulness cache does not rehash repeatedly during first contact.
+	m_useful_cache.reserve(64);
+}
+
+void CEnemyManager::reinit()
+{
+	inherited::reinit();
+	m_useful_cache.clear();
+	m_last_enemy = 0;
+	m_smart_cover_enemy = 0;
+}
+
+bool CEnemyManager::is_useful(const CEntityAlive* entity_alive) const
+{
+	return (m_object->useful(this, entity_alive));
+}
+
+int enemy_manager_useful_cache_time = 250;
+
+bool CEnemyManager::useful_native(const CEntityAlive* entity_alive) const
+{
+	if (!entity_alive->g_Alive())
+		return false;
+
+	if ((entity_alive->spatial.type & STYPE_VISIBLEFORAI) != STYPE_VISIBLEFORAI)
+		return false;
+
+	if ((m_object->ID() == entity_alive->ID()) || !m_object->is_relation_enemy(entity_alive))
+		return false;
+
+	if (!ai().get_level_graph() || !ai().level_graph().valid_vertex_id(entity_alive->ai_location().level_vertex_id()))
+		return false;
+
+	if (
+		m_object->human_being() &&
+		!entity_alive->human_being() &&
+		(m_object->Position().distance_to_sqr(entity_alive->Position()) >= _sqr(m_max_ignore_distance)) &&
+		!expedient(entity_alive) &&
+		(evaluate(entity_alive) >= m_ignore_monster_threshold)
+	)
+		return false;
+
+	return true;
+}
+
+namespace
+{
+u32 enemy_useful_pair_hash(u16 observer_id, u16 enemy_id)
+{
+	u32 value = (static_cast<u32>(observer_id) << 16) | static_cast<u32>(enemy_id);
+	value ^= value >> 16;
+	value *= 0x7feb352du;
+	value ^= value >> 15;
+	value *= 0x846ca68bu;
+	value ^= value >> 16;
+	return value;
+}
+}
+
+bool CEnemyManager::useful(const CEntityAlive* entity_alive) const
+{
+	if (!useful_native(entity_alive))
+		return false;
+
+	// The default path has no Lua predicate. Avoid creating and probing a hash
+	// entry for every perceived entity when there is nothing to call.
+	if (!m_useful_callback)
+		return true;
+
+	const auto invoke_callback = [this, entity_alive]()
+	{
+
+		const bool result = m_useful_callback(m_object->lua_game_object(), entity_alive->lua_game_object());
+
+		return result;
+	};
+
+	// Disable caching if time is negative for testing.
+	if (enemy_manager_useful_cache_time < 0)
+		return invoke_callback();
+
+	const u32 current_time = Device.dwTimeGlobal;
+	const u16 enemy_id = entity_alive->ID();
+	auto found = m_useful_cache.find(enemy_id);
+	if (found != m_useful_cache.end() && current_time < found->second.check_time)
+		return found->second.result;
+
+	const bool result = invoke_callback();
+	if (found == m_useful_cache.end())
+		found = m_useful_cache.emplace(enemy_id, cached_useful{}).first;
+
+	// Refresh time used to depend only on enemy ID. Every member of a squad then
+	// refreshed the same Lua predicate for the same enemy in one agent-manager
+	// burst. Hash the observer/enemy pair instead, preserving the original
+	// approximately +/-97 ms jitter range while decorrelating squad members.
+	const int jitter = static_cast<int>(enemy_useful_pair_hash(m_object->ID(), enemy_id) % 195u) - 97;
+	found->second.result = result;
+	found->second.check_time = current_time + _max(0, enemy_manager_useful_cache_time + jitter);
+	return result;
+}
+
+bool CEnemyManager::useful_cached(const CEntityAlive* entity_alive) const
+{
+	if (!useful_native(entity_alive))
+		return false;
+
+	if (!m_useful_callback || enemy_manager_useful_cache_time < 0)
+		return useful(entity_alive);
+
+	// CMemoryManager already evaluates useful() while rebuilding this member's
+	// enemy set. Agent-group aggregation can reuse that member-owned predicate
+	// result instead of synchronously refreshing Lua again for N squad members.
+	// Native validity/relation checks above remain live on every call. If this is
+	// the first encounter, fall back to the full path to preserve semantics.
+	const auto found = m_useful_cache.find(entity_alive->ID());
+	if (found != m_useful_cache.end())
+		return found->second.result;
+
+	return useful(entity_alive);
+}
+
+float CEnemyManager::do_evaluate(const CEntityAlive* object) const
+{
+	return (m_object->evaluate(this, object));
+}
+
+float CEnemyManager::evaluate(const CEntityAlive* object) const
+{
+	//	Msg						("[%6d] enemy manager %s evaluates %s",Device.dwTimeGlobal,*m_object->cName(),*object->cName());
+
+	const CActor* actor = smart_cast<const CActor*>(object);
+	if (actor)
+		m_ready_to_save = false;
+
+	const CAI_Stalker* stalker = smart_cast<const CAI_Stalker*>(object);
+	bool wounded = stalker ? stalker->wounded(&m_object->movement().restrictions()) : false;
+	if (wounded)
+	{
+		if (m_stalker && m_stalker->agent_manager().enemy().assigned_wounded(object, m_stalker))
+			return (0.f);
+
+		float distance = m_object->Position().distance_to_sqr(object->Position());
+		return (distance);
+	}
+
+	float penalty = 10000.f;
+
+	// if we are hit
+	if (object->ID() == m_object->memory().hit().last_hit_object_id())
+	{
+		const float hit_dist_sqr = m_object->Position().distance_to_sqr(object->Position());
+
+		// In CQB (< 30m), the distance score variance is only 0 to 9 points.
+		// A tiny -5 penalty ensures they turn to a flanker at 15m, 
+		// but WON'T ignore a guy actively fighting them at 5m just because they got shot!
+		if (hit_dist_sqr < _sqr(30.f))
+			penalty -= 5.f;
+
+		// For medium/long range, give a standard 100m aggro advantage
+		// so they still react to snipers if they aren't busy with a close target.
+		else
+			penalty -= 100.f;
+	}
+
+	// if we see object
+	if (m_object->memory().visual().visible_now(object))
+		penalty -= 1000.f;
+
+	// if object is actor and he/she sees us
+	if (actor) {
+		if (actor->memory().visual().visible_now(m_object))
+			penalty -= 900.f;
+	}
+	else {
+		// if object is npc and it sees us
+		const CCustomMonster	*monster = smart_cast<const CCustomMonster*>(object);
+		if (monster && monster->memory().visual().visible_now(m_object))
+			penalty -= 300.f;
+	}
+
+#ifdef USE_EVALUATOR
+	ai().ef_storage().non_alife().member_item() = 0;
+	ai().ef_storage().non_alife().enemy_item() = 0;
+	ai().ef_storage().non_alife().member() = m_object;
+	ai().ef_storage().non_alife().enemy() = object;
+
+	float distance = m_object->Position().distance_to_sqr(object->Position());
+	return (
+		penalty +
+		distance / 100.f
+		// + ai().ef_storage().m_pfVictoryProbability->ffGetValue() / 100.f //SkyKi: Removed to stop AI from locking onto heavily armed targets (like the player) across the map
+	);
+#else // USE_EVALUATOR
+	float					distance = m_object->Position().distance_to_sqr(object->Position());
+	return					(
+		1000.f*(visible ? 0.f : 1.f) +
+		distance
+	);
+#endif // USE_EVALUATOR
+}
+
+bool CEnemyManager::expedient(const CEntityAlive* object) const
+{
+	ai().ef_storage().non_alife().member() = m_object;
+	VERIFY(ai().ef_storage().non_alife().member());
+	ai().ef_storage().non_alife().enemy() = object;
+
+	if (ai().ef_storage().m_pfExpediency->dwfGetDiscreteValue())
+		return (true);
+
+	if (m_object->memory().hit().hit(ai().ef_storage().non_alife().enemy()))
+		return (true);
+	return (false);
+}
+
+void CEnemyManager::reload(LPCSTR section)
+{
+	m_ignore_monster_threshold = READ_IF_EXISTS(pSettings, r_float, section, "ignore_monster_threshold", 1.f);
+	m_max_ignore_distance = READ_IF_EXISTS(pSettings, r_float, section, "max_ignore_distance", 0.f);
+	m_last_enemy_time = 0;
+	m_last_enemy = 0;
+	m_last_enemy_change = 0;
+	m_useful_callback.clear();
+	m_useful_cache.clear();
+	VERIFY(m_ready_to_save);
+}
+
+void CEnemyManager::set_ready_to_save()
+{
+	if (m_ready_to_save)
+		return;
+
+	//	Msg							("%6d %s DEcreased enemy counter for player (%d -> %d)",Device.dwTimeGlobal,*m_object->cName(),Level().autosave_manager().not_ready_count(),Level().autosave_manager().not_ready_count()-1);
+	Level().autosave_manager().dec_not_ready();
+	m_ready_to_save = true;
+}
+
+void CEnemyManager::remove_links(CObject* object)
+{
+	// Search uses pointer identity only; keep the ordered lookup synchronized.
+	inherited::remove_object((const CEntityAlive*)object);
+	m_useful_cache.erase(object->ID());
+
+	if (m_last_enemy == object)
+		m_last_enemy = 0;
+
+	if (m_selected == object)
+		m_selected = 0;
+}
+
+void CEnemyManager::ignore_monster_threshold(const float& ignore_monster_threshold)
+{
+	m_ignore_monster_threshold = ignore_monster_threshold;
+}
+
+void CEnemyManager::restore_ignore_monster_threshold()
+{
+	m_ignore_monster_threshold = READ_IF_EXISTS(pSettings, r_float, *m_object->cNameSect(), "ignore_monster_threshold",
+	                                            1.f);
+}
+
+float CEnemyManager::ignore_monster_threshold() const
+{
+	return (m_ignore_monster_threshold);
+}
+
+void CEnemyManager::max_ignore_monster_distance(const float& max_ignore_monster_distance)
+{
+	m_max_ignore_distance = max_ignore_monster_distance;
+}
+
+void CEnemyManager::restore_max_ignore_monster_distance()
+{
+	m_max_ignore_distance = READ_IF_EXISTS(pSettings, r_float, *m_object->cNameSect(), "max_ignore_distance", 0.f);
+}
+
+float CEnemyManager::max_ignore_monster_distance() const
+{
+	return (m_max_ignore_distance);
+}
+
+bool CEnemyManager::change_from_wounded(const CEntityAlive* current, const CEntityAlive* previous) const
+{
+	const CAI_Stalker* current_stalker = smart_cast<const CAI_Stalker*>(current);
+	if (!current_stalker)
+		return (false);
+
+	if (current_stalker->wounded())
+		return (false);
+
+	const CAI_Stalker* previous_stalker = smart_cast<const CAI_Stalker*>(previous);
+	if (!previous_stalker)
+		return (false);
+
+	if (!previous_stalker->wounded())
+		return (false);
+
+	return (true);
+}
+
+IC bool CEnemyManager::enemy_inertia(const CEntityAlive* previous_enemy) const
+{
+	if (smart_cast<CActor const*>(m_selected))
+		return (Device.dwTimeGlobal <= (m_last_enemy_change + ENEMY_INERTIA_TIME_TO_ACTOR));
+
+	if (previous_enemy && smart_cast<CActor const*>(previous_enemy))
+		return (Device.dwTimeGlobal <= (m_last_enemy_change + ENEMY_INERTIA_TIME_FROM_ACTOR));
+
+	return (Device.dwTimeGlobal <= (m_last_enemy_change + ENEMY_INERTIA_TIME_TO_SOMEBODY));
+}
+
+void CEnemyManager::on_enemy_change(const CEntityAlive* previous_enemy)
+{
+	VERIFY(previous_enemy);
+	VERIFY(selected());
+
+	if (!previous_enemy->g_Alive())
+	{
+		m_last_enemy_change = Device.dwTimeGlobal;
+		return;
+	}
+
+	if (change_from_wounded(selected(), previous_enemy))
+	{
+		m_last_enemy_change = Device.dwTimeGlobal;
+		return;
+	}
+
+	if (enemy_inertia(previous_enemy))
+	{
+		m_selected = previous_enemy;
+		return;
+	}
+
+	if (!m_object->memory().visual().visible_now(previous_enemy) && m_object->memory().visual().visible_now(selected()))
+	{
+		m_last_enemy_change = Device.dwTimeGlobal;
+		return;
+	}
+
+	m_last_enemy_change = Device.dwTimeGlobal;
+}
+
+void CEnemyManager::remove_wounded()
+{
+	struct no_wounded
+	{
+		IC static bool predicate(const CEntityAlive* enemy)
+		{
+			const CAI_Stalker* stalker = smart_cast<const CAI_Stalker*>(enemy);
+			if (!stalker)
+				return (false);
+
+			if (!stalker->wounded())
+				return (false);
+
+			return (true);
+		}
+	};
+
+	const OBJECTS::iterator new_end = std::remove_if(
+		m_objects.begin(),
+		m_objects.end(),
+		&no_wounded::predicate
+	);
+	if (new_end != m_objects.end())
+	{
+		m_objects.erase(new_end, m_objects.end());
+		rebuild_object_lookup();
+	}
+}
+
+void CEnemyManager::process_wounded(bool& only_wounded)
+{
+	only_wounded = true;
+	ENEMIES::const_iterator I = m_objects.begin();
+	ENEMIES::const_iterator E = m_objects.end();
+	for (; I != E; ++I)
+	{
+		const CAI_Stalker* stalker = smart_cast<const CAI_Stalker*>(*I);
+		if (stalker && stalker->wounded())
+			continue;
+
+		only_wounded = false;
+		break;
+	}
+
+	if (only_wounded)
+	{
+#if 0//def _DEBUG
+		if (g_enemy_manager_second_update)
+			Msg					("%6d ONLY WOUNDED LEFT %s",Device.dwTimeGlobal,*m_object->cName());
+#endif // _DEBUG
+		return;
+	}
+
+	remove_wounded();
+}
+
+bool CEnemyManager::need_update(const bool& only_wounded) const
+{
+	if (!selected())
+		return (true);
+
+	if (!selected()->g_Alive())
+		return (true);
+
+	if (!m_object->is_relation_enemy(selected()))
+		return (true);
+
+	if (enable_enemy_change() && !m_object->memory().visual().visible_now(selected()))
+		return (true);
+
+	if (only_wounded)
+		return (false);
+
+	const CAI_Stalker* stalker = smart_cast<const CAI_Stalker*>(selected());
+	if (stalker && stalker->wounded())
+		return (true);
+
+	u32 last_hit_time = m_object->memory().hit().last_hit_time();
+	if (last_hit_time && (last_hit_time > m_last_enemy_change))
+	{
+		ALife::_OBJECT_ID enemy_id = m_object->memory().hit().last_hit_object_id();
+		VERIFY(enemy_id != ALife::_OBJECT_ID(-1));
+		CObject const* enemy = Level().Objects.net_Find(enemy_id);
+		VERIFY(enemy);
+		CEntityAlive const* alive_enemy = smart_cast<CEntityAlive const*>(enemy);
+		if (alive_enemy && m_object->is_relation_enemy(alive_enemy))
+			return (true);
+	}
+
+	//	if (Actor() && m_object->memory().visual().visible_now(Actor()))
+	//		return					(true);
+
+	return (false);
+}
+
+void CEnemyManager::try_change_enemy()
+{
+	const CEntityAlive* previous_selected = selected();
+
+	bool only_wounded;
+	process_wounded(only_wounded);
+	if (!need_update(only_wounded))
+		return;
+
+	inherited::update();
+
+	if (selected() != previous_selected)
+	{
+		if (selected() && previous_selected)
+			on_enemy_change(previous_selected);
+		else
+			m_last_enemy_change = Device.dwTimeGlobal;
+	}
+
+	if (selected() != previous_selected)
+		m_object->on_enemy_change(previous_selected);
+
+	if (selected() != previous_selected)
+	{
+		if (const auto* funct = enemy_selected_callback())
+			(*funct)(m_object->lua_game_object(), selected() ? selected()->lua_game_object() : nullptr);
+	}
+}
+
+void CEnemyManager::update()
+{
+	START_PROFILE("Memory Manager/enemies::update")
+		if (!m_ready_to_save)
+		{
+			//		Msg						("%6d %s DEcreased enemy counter for player (%d -> %d)",Device.dwTimeGlobal,*m_object->cName(),Level().autosave_manager().not_ready_count(),Level().autosave_manager().not_ready_count()-1);
+			Level().autosave_manager().dec_not_ready();
+		}
+
+		m_ready_to_save = true;
+
+		try_change_enemy();
+
+		if (selected())
+		{
+			m_last_enemy_time = Device.dwTimeGlobal;
+			m_last_enemy = selected();
+		}
+
+		if (!m_ready_to_save)
+		{
+			//		Msg						("%6d %s INcreased enemy counter for player (%d -> %d)",Device.dwTimeGlobal,*m_object->cName(),Level().autosave_manager().not_ready_count(),Level().autosave_manager().not_ready_count()+1);
+			Level().autosave_manager().inc_not_ready();
+		}
+
+#if 0//def _DEBUG
+	if (g_enemy_manager_second_update && selected() && smart_cast<const CAI_Stalker*>(selected()) && smart_cast<const CAI_Stalker*>(selected())->wounded())
+		Msg						("%6d WOUNDED CHOOSED %s",Device.dwTimeGlobal,*m_object->cName());
+#endif // _DEBUG
+
+	STOP_PROFILE
+}

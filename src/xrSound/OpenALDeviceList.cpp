@@ -1,0 +1,240 @@
+/*
+ * Copyright (c) 2005, Creative Labs Inc.
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without modification, are permitted provided
+ * that the following conditions are met:
+ * 
+ *     * Redistributions of source code must retain the above copyright notice, this list of conditions and
+ * 	     the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright notice, this list of conditions
+ * 	     and the following disclaimer in the documentation and/or other materials provided with the distribution.
+ *     * Neither the name of Creative Labs Inc. nor the names of its contributors may be used to endorse or
+ * 	     promote products derived from this software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED
+ * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
+ * PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ * ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED
+ * TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+ * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+#include "stdafx.h"
+
+#include "OpenALDeviceList.h"
+
+#pragma warning(push)
+#pragma warning(disable:4995)
+#include <objbase.h>
+#pragma warning(pop)
+
+#ifdef _EDITOR
+	log_fn_ptr_type* pLog = NULL;
+
+void __cdecl al_log(char* msg)
+{
+	Log(msg);
+}
+#endif
+
+ALDeviceList::ALDeviceList()
+{
+#ifdef _EDITOR
+    pLog = al_log;
+#endif
+	m_devices.reserve(16);
+	m_defaultDeviceName[0] = 0;
+
+	Enumerate();
+}
+
+static void free_devices_token()
+{
+	if (!snd_devices_token)
+		return;
+
+	for (int i = 0; snd_devices_token[i].name; i++)
+		xr_free(snd_devices_token[i].name);
+	xr_free(snd_devices_token);
+	snd_devices_token = nullptr;
+}
+
+/*
+ * Exit call
+ */
+ALDeviceList::~ALDeviceList()
+{
+	free_devices_token();
+}
+
+void ALDeviceList::Enumerate()
+{
+	int	ALmajor, ALminor, EFXmajor, EFXminor;
+
+	Msg("SOUND: OpenAL: enumerate devices...");
+
+	free_devices_token();
+
+	// have a set of vectors storing the device list, selection status, spec version #, and XRAM support status
+	// -- empty all the lists and reserve space for 10 devices
+	m_devices.clear();
+	m_defaultDeviceName[0] = 0;
+
+	xr_vector<xr_string> DeviceNameList;
+	xr_vector<xr_string> DeviceOALNameList;
+	DeviceNameList.reserve(16);
+	DeviceOALNameList.reserve(16);
+	auto list_audio_devices = [&DeviceNameList, &DeviceOALNameList](const ALCchar* devices)
+	{
+		for (const ALCchar* device = devices; device && *device != '\0'; device += xr_strlen(device) + 1)
+		{
+			xr_string cDevice = UTF8_to_CP1251(device);
+
+			// Strip "OpenAL Soft on " or similar prefix (e.g. "Generic Software on ")
+			size_t onPos = cDevice.find(" on ");
+			if (onPos != xr_string::npos)
+				cDevice = cDevice.substr(onPos + 4);
+
+			DeviceNameList.push_back(cDevice);
+			DeviceOALNameList.push_back(device);
+		}
+	};
+
+	const ALCchar* default_device = alcGetString(nullptr, ALC_DEFAULT_DEVICE_SPECIFIER);
+	if (default_device && *default_device)
+	{
+		DeviceNameList.push_back("Default Device");
+		DeviceOALNameList.push_back(default_device);
+		xr_strcpy(m_defaultDeviceName, DeviceNameList.front().c_str());
+	}
+
+	if (alcIsExtensionPresent(nullptr, "ALC_ENUMERATE_ALL_EXT"))
+	{
+		list_audio_devices(alcGetString(nullptr, ALC_ALL_DEVICES_SPECIFIER));
+	}
+	else
+		Msg("SOUND: OpenAL: EnumerationExtension NOT Present");
+
+	if (!m_defaultDeviceName[0] && !DeviceNameList.empty())
+		xr_strcpy(m_defaultDeviceName, DeviceNameList.front().c_str());
+	Msg("SOUND: OpenAL: system default SndDevice name is %s", m_defaultDeviceName);
+
+	for (size_t device_index = 0; device_index < DeviceOALNameList.size(); ++device_index)
+	{
+		const xr_string& device_name = DeviceOALNameList[device_index];
+		ALCdevice* device = alcOpenDevice(device_name.c_str());
+		if (!device)
+			continue;
+
+		ALmajor = 0;
+		ALminor = 0;
+		EFXmajor = 0;
+		EFXminor = 0;
+		alcGetIntegerv(device, ALC_MAJOR_VERSION, 1, &ALmajor);
+		alcGetIntegerv(device, ALC_MINOR_VERSION, 1, &ALminor);
+		if (alcIsExtensionPresent(device, "ALC_EXT_EFX"))
+		{
+			alcGetIntegerv(device, ALC_EFX_MAJOR_VERSION, 1, &EFXmajor);
+			alcGetIntegerv(device, ALC_EFX_MINOR_VERSION, 1, &EFXminor);
+		}
+
+		m_devices.push_back(ALDeviceDesc(DeviceNameList[device_index].c_str(), device_name.c_str(),
+			ALminor, ALmajor, EFXminor, EFXmajor));
+		alcCloseDevice(device);
+	}
+
+	//make token
+	u32 _cnt = GetNumDevices();
+	snd_devices_token = xr_alloc<xr_token>(_cnt + 1);
+	snd_devices_token[_cnt].id = -1;
+	snd_devices_token[_cnt].name = nullptr;
+	for (u32 i = 0; i < _cnt; ++i)
+	{
+		snd_devices_token[i].id = i;
+		snd_devices_token[i].name = xr_strdup(m_devices[i].name);
+	}
+	//--
+
+	if (0 != GetNumDevices())
+		Msg("SOUND: OpenAL: All available devices:");
+
+	for (u32 j = 0; j < GetNumDevices(); j++)
+	{
+		GetDeviceVersion(j, &ALmajor, &ALminor, &EFXmajor, &EFXminor);
+		// Assume EFX by default, we only care about the spec version.
+		Msg("%d. %s, Spec Version %d.%d, EFX Spec Version %d.%d",
+			j + 1,
+			GetDeviceName(j),
+			ALmajor,
+			ALminor,
+			EFXmajor,
+			EFXminor
+		);
+	}
+}
+
+LPCSTR ALDeviceList::GetDeviceName(u32 index)
+{
+	return snd_devices_token[index].name;
+}
+
+const ALDeviceDesc* ALDeviceList::GetDeviceDescByName(LPCSTR name)
+{
+	for (u32 i = 0; i < m_devices.size(); ++i)
+	{
+		if (_stricmp(name, m_devices[i].name) == 0)
+			return &m_devices[i];
+	}
+	return nullptr;
+}
+
+void ALDeviceList::SelectBestDevice()
+{
+	int best_majorVersion = -1;
+	int best_minorVersion = -1;
+	int ALmajorVersion;
+	int ALminorVersion;
+	int EFXmajorVersion;
+	int EFXminorVersion;
+
+	if (snd_device_name.empty())
+	{
+		//select best - find default device with best version
+		xr_string best_device_name;
+		for (u32 i = 0; i < GetNumDevices(); ++i)
+		{
+			if (_stricmp(m_defaultDeviceName, GetDeviceName(i)) != 0)
+				continue;
+
+			GetDeviceVersion(i, &ALmajorVersion, &ALminorVersion, &EFXmajorVersion, &EFXminorVersion);
+			if ((ALmajorVersion > best_majorVersion) ||
+				(ALmajorVersion == best_majorVersion && ALminorVersion > best_minorVersion))
+			{
+				best_majorVersion = ALmajorVersion;
+				best_minorVersion = ALminorVersion;
+				best_device_name = GetDeviceName(i);
+			}
+		}
+		if (best_device_name.empty())
+		{
+			R_ASSERT(GetNumDevices() != 0);
+			best_device_name = GetDeviceName(0); //first
+		}
+		snd_device_name = best_device_name;
+	}
+	if (GetNumDevices() == 0)
+		Msg("SOUND: Can't select device. List empty");
+	else
+		Msg("SOUND: Selected device is %s", snd_device_name.c_str());
+}
+
+void ALDeviceList::GetDeviceVersion(u32 index, int* ALmajor, int* ALminor, int* EFXmajor, int* EFXminor)
+{
+	*ALmajor = m_devices[index].ALmajor_ver;
+	*ALminor = m_devices[index].ALminor_ver;
+	*EFXmajor = m_devices[index].EFXmajor_ver;
+	*EFXminor = m_devices[index].EFXminor_ver;
+	return;
+}

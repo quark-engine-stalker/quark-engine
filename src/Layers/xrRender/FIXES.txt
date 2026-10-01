@@ -1,0 +1,13 @@
+Исправлено:
+1. Убран циклический include light.h <-> Light_Package.h.
+2. В Light_Package.h добавлено предварительное объявление class light.
+3. В Light_Package.cpp добавлен include light.h для доступа к полям light.
+4. Добавлены отсутствующие light_smapvis.h/.cpp.
+5. Добавлены отсутствующие light_GI.h/.cpp.
+6. Приведено имя Light_Package.h к единому регистру.
+
+Важно для Visual Studio:
+Если проект не подхватывает новые .cpp автоматически, добавьте в xrCPU_Pipe:
+- light_smapvis.cpp
+- light_GI.cpp
+через Add -> Existing Item или внесите их в список исходников CMake.

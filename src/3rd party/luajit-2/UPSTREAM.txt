@@ -1,0 +1,10 @@
+LuaJIT v2.0 rolling compatibility snapshot
+
+Source: https://luajit.org/git/luajit.git
+Branch: v2.0
+Commit: 5ed524c09fec64bed46b4bf74fa03be9083b0963
+Commit date: 2026-08-01 19:39:35 +0200
+Release version: LuaJIT 2.0.1785605975
+
+This branch retains LuaJIT bytecode format version 1 used by LuaJIT 2.0.4 and
+the engine's x64 low-address allocator/pointer representation.
