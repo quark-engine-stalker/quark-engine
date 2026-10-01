@@ -55,11 +55,4 @@ _build/_game/bin_dbg/AnomalyDX11AVX.pdb
 
 Other projects also create intermediate `.lib` and `.obj` files in `_build`. These files are excluded from Git.
 
-To use the build in the game, replace the corresponding files in **`Anomaly\bin`** as shown in the [README](README.md#installation-and-system-requirements). If the `.pdb` is used for diagnostics, it must match that exact `.exe`. The existing Anomaly / Monolith / GAMMA runtime DLLs must remain available in the game installation; SDK `.lib` files are build dependencies and should not be copied to `Anomaly\bin`.
-
-## Notes about this source package
-
-- The changelog includes **0.0.3 Open Beta**. The embedded version strings in `x_ray.cpp` and `resource.rc` in this source package still report **0.0.2**; this is metadata retained from the original working tree.
-- Game scripts, shaders and data are not included in this repository. Use an installed Anomaly / GAMMA setup with suitable Monolith data.
-- The X-Ray license and individual dependency licenses are retained: [License.txt](License.txt), [THIRD_PARTY.md](THIRD_PARTY.md).
-- A successful build confirms that the source package contains the required build inputs. In-game compatibility and performance must be tested separately using actual saves.
+To use the build in the game, replace the corresponding files in **`Anomaly\bin`** as shown in the [README](README.md#installation-and-system-requirements). If the `.pdb` is used for diagnostics, it must match that exact `.exe`.
