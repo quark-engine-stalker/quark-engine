@@ -32,16 +32,16 @@
 Движок тестируется на **STALKER: Anomaly 1.5.3** и **STALKER: GAMMA 0.9.5**.
 История обновлений: [CHANGELOG.ru.md](CHANGELOG.ru.md).
 
-## Установка движка и технические требования
+## Установка движка и требования
 
-**Технические требования:** процессор с поддержкой **AVX2** и установленные библиотеки [Microsoft Visual C++ Redistributable x64](https://aka.ms/vs/17/release/vc_redist.x64.exe).
+**Технические требования:** ваш процессор должен быть с поддержкой **AVX2**, также установите & обновите библиотеки [Microsoft Visual C++ Redistributable x64](https://aka.ms/vs/17/release/vc_redist.x64.exe).
 
 1. Убедитесь, что **STALKER: Anomaly 1.5.3** и **STALKER: GAMMA 0.9.5** установлены корректно. Инструкции по установке ищите у их авторов.
 2. Сохраните резервную копию заменяемых файлов движка из **`Anomaly\bin`**.
-3. Скопируйте `AnomalyDX11AVX.exe` и соответствующий ему `AnomalyDX11AVX.pdb` в **`Anomaly\bin`** и выберите **«Заменить в папке назначения»**.
+3. Скачайте `AnomalyDX11AVX.exe` и `AnomalyDX11AVX.pdb` и закиньте их в **`Anomaly\bin`** с подтверждение на замену файлов.
 4. Запустите игру через **MO2 (Mod Organizer)**. Примеры установки и запуска представлены ниже.
 5. Совместимость с текущими сохранениями не гарантируется, рекомендуется начать новую игру.
-6. При возникновении ошибок или вылетов отправьте нам через Discord логи из **`AppData\Roaming\QUARK ENGINE\ERROR`**. Эти файлы помогают установить причину сбоя.
+6. При возникновении ошибок или вылетов отправьте нам в Discord логи из **`AppData\Roaming\QUARK ENGINE\ERROR`**. Эти файлы помогают установить причину сбоя и дальнейше улучшать движок.
 
 <p align="center">
   <img src="docs/assets/install-replace.png" alt="Установка: замена AnomalyDX11AVX.exe в папке Anomaly\bin" width="655">
@@ -67,8 +67,6 @@ quark-engine-stalker/
 
 ## Документация
 
-Каждый документ доступен на английском и русском. Для выбора языка используйте переключатель в начале страницы.
-
 | Документ | English | Русский |
 | :--- | :--- | :--- |
 | Обзор проекта и установка | [README](README.md) | [README](README.ru.md) |
@@ -79,9 +77,8 @@ quark-engine-stalker/
 
 ## Сообщество и авторы проекта
 
-Присоединяйтесь к **[DISCORD QUARK ENGINE](https://discord.com/invite/X7GRYsNNEc)**.
-
-Quark Engine основан на [X-Ray Monolith](https://github.com/themrdemonized/xray-monolith). Происхождение кода и сведения о сторонних компонентах описаны в [THIRD_PARTY.ru.md](THIRD_PARTY.ru.md).
+Присоединяйтесь к нам: **[DISCORD QUARK ENGINE](https://discord.com/invite/X7GRYsNNEc)**.
+Quark Engine основан на [X-Ray Monolith](https://github.com/themrdemonized/xray-monolith).
 
 ## Лицензия
 
