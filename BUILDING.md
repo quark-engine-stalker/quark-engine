@@ -1,63 +1,65 @@
-# Сборка Quark Engine
+# Building Quark Engine
 
-## Инструменты
+**English** · [Русский](BUILDING.ru.md)
+
+## Tools
 
 - Windows x64.
-- Visual Studio 2022 с workload **Desktop development with C++**.
-- **MSVC v143**, x64/x86 build tools; проекты используют этот toolset.
+- Visual Studio 2022 with the **Desktop development with C++** workload.
+- **MSVC v143**, x64/x86 build tools; the projects use this toolset.
 - Windows 10/11 SDK.
-- Компоненты **C++ ATL** и **C++ MFC** для v143.
-- Git — для получения и обновления исходников.
+- **C++ ATL** and **C++ MFC** components for v143.
+- Git to obtain and update the source code.
 
-Подготовленный набор проверен сборкой `DX11-AVX | x64` на MSVC v143 **14.30.30705** и Windows SDK **10.0.26100.0**. При проверке использовался MSBuild из Visual Studio 2026 Insiders с установленным toolset v143; переключение проектов на другой toolset не требовалось.
+This source package was verified by building `DX11-AVX | x64` with MSVC v143 **14.30.30705** and Windows SDK **10.0.26100.0**. Verification used MSBuild from Visual Studio 2026 Insiders with the v143 toolset installed; changing the projects to a different toolset was not required.
 
-В этой копии исходников библиотеки vendored: дополнительный `git submodule update` не требуется. LuaJIT, OpenAL Soft, LuaBind, ODE и кодеки, для которых включены проекты, собираются из исходников. Необходимые готовые библиотеки для линковки находятся в `sdk/libraries/x64` и `src/3rd party/stackwalker/lib`.
+Dependencies are included in this source tree; an additional `git submodule update` is not required. LuaJIT, OpenAL Soft, LuaBind, ODE and codecs with included projects are built from source. Required prebuilt link libraries are located in `sdk/libraries/x64` and `src/3rd party/stackwalker/lib`.
 
-## Получение исходников
+## Getting the source code
 
 ```powershell
 git clone https://github.com/quark-engine-stalker/quark-engine-stalker.git
 cd quark-engine-stalker
 ```
 
-Для приватного репозитория GitHub-аккаунту нужен доступ на чтение.
+Your GitHub account needs read access to clone a private repository.
 
-## Через Visual Studio
+## Building with Visual Studio
 
-1. Откройте **`src/QUARK ENGINE.sln`**.
-2. Выберите **`DX11-AVX`** и платформу **`x64`**.
-3. Соберите solution целиком: **Build → Build Solution**.
+1. Open **`src/QUARK ENGINE.sln`**.
+2. Select the **`DX11-AVX`** configuration and **`x64`** platform.
+3. Build the entire solution: **Build → Build Solution**.
 
-Внутренние проекты используют `ReleaseR4-AVX` и `Release-AVX`; нужное соответствие уже задано в solution. Имя конфигурации сохранено для совместимости, однако основная сборка использует **AVX2**.
+The internal projects use `ReleaseR4-AVX` and `Release-AVX`; the solution already provides the required configuration mappings. The configuration name is retained for compatibility, but the main build uses **AVX2**.
 
-## Через MSBuild
+## Building with MSBuild
 
-Откройте **Developer PowerShell for VS 2022** в корне репозитория:
+Open **Developer PowerShell for VS 2022** at the repository root:
 
 ```powershell
 msbuild "src\QUARK ENGINE.sln" /t:Build /p:Configuration=DX11-AVX /p:Platform=x64 /m:4 /p:CL_MPCount=4
 ```
 
-Число параллельных процессов можно изменить с учётом доступной памяти. Для повторной сборки используйте ту же команду; для полной пересборки замените `/t:Build` на `/t:Rebuild`.
+Adjust the number of parallel processes to fit the available memory. Use the same command for subsequent builds; for a full rebuild, replace `/t:Build` with `/t:Rebuild`.
 
-Сборка отдельных `.vcxproj` без контекста solution может не найти `Common.props`: относительные пути определены через `$(SolutionDir)`.
+Building individual `.vcxproj` files outside the solution context may fail to locate `Common.props`: relative paths are defined through `$(SolutionDir)`.
 
-## Результат
+## Build output
 
-Основные выходные файлы:
+The main output files are:
 
 ```text
 _build/_game/bin_dbg/AnomalyDX11AVX.exe
 _build/_game/bin_dbg/AnomalyDX11AVX.pdb
 ```
 
-Другие проекты также создают промежуточные `.lib` и `.obj` в `_build`. Эти файлы исключены из Git.
+Other projects also create intermediate `.lib` and `.obj` files in `_build`. These files are excluded from Git.
 
-Для игры замените соответствующие файлы в **`Anomaly\bin`**, как показано в [README](README.md#установка). `.pdb` должен соответствовать именно этому `.exe`, если он используется для диагностики. Существующие runtime DLL Anomaly / Monolith / GAMMA должны оставаться доступны в игровой установке; SDK-библиотеки `.lib` предназначены для сборки и в `Anomaly\bin` не копируются.
+To use the build in the game, replace the corresponding files in **`Anomaly\bin`** as shown in the [README](README.md#installation-and-system-requirements). If the `.pdb` is used for diagnostics, it must match that exact `.exe`. The existing Anomaly / Monolith / GAMMA runtime DLLs must remain available in the game installation; SDK `.lib` files are build dependencies and should not be copied to `Anomaly\bin`.
 
-## Особенности текущей копии
+## Notes about this source package
 
-- История обновлений включает **0.0.3 Open Beta**. Встроенные строки версии в `x_ray.cpp` и `resource.rc` этой копии пока указывают **0.0.2**; это сохранённая метаинформация исходного рабочего дерева.
-- Игровые скрипты, шейдеры и данные не входят в этот репозиторий. Используйте установленную Anomaly / GAMMA с подходящими данными Monolith.
-- Лицензия X-Ray и отдельные лицензии зависимостей сохраняются: [License.txt](License.txt), [THIRD_PARTY.md](THIRD_PARTY.md).
-- Успешная компиляция подтверждает полноту набора для сборки. Совместимость и производительность в игре проверяются отдельно на реальных сохранениях.
+- The changelog includes **0.0.3 Open Beta**. The embedded version strings in `x_ray.cpp` and `resource.rc` in this source package still report **0.0.2**; this is metadata retained from the original working tree.
+- Game scripts, shaders and data are not included in this repository. Use an installed Anomaly / GAMMA setup with suitable Monolith data.
+- The X-Ray license and individual dependency licenses are retained: [License.txt](License.txt), [THIRD_PARTY.md](THIRD_PARTY.md).
+- A successful build confirms that the source package contains the required build inputs. In-game compatibility and performance must be tested separately using actual saves.

@@ -1,15 +1,17 @@
-## ОПТИМИЗАЦИИ
+**English** · [Русский](https://github.com/quark-engine-stalker/quark-engine-stalker/blob/main/docs/release-template.ru.md)
 
-- Укажите изменения этой версии.
+## OPTIMIZATIONS
 
-## ИСПРАВЛЕНИЯ
+- List the changes in this version.
 
-- Укажите исправления этой версии.
+## FIXES
 
-## Установка
+- List the fixes in this version.
 
-Скачайте файлы из **Assets** этого релиза. Замените `AnomalyDX11AVX.exe` и соответствующий ему `AnomalyDX11AVX.pdb` в **`Anomaly\bin`**. При использовании ZIP сначала распакуйте архив.
+## Installation
 
-**Требования:** Windows x64, процессор с AVX2, DX11 и Microsoft Visual C++ Redistributable x64.
+Download the files from this release's **Assets**. Replace `AnomalyDX11AVX.exe` and its matching `AnomalyDX11AVX.pdb` in **`Anomaly\bin`**. If using a ZIP archive, extract it first.
 
-[Инструкция установки](https://github.com/quark-engine-stalker/quark-engine-stalker#установка-движка-и-технические-требования) · [Discord](https://discord.com/invite/X7GRYsNNEc)
+**Requirements:** Windows x64, an AVX2-capable processor, DX11 and Microsoft Visual C++ Redistributable x64.
+
+[Installation guide](https://github.com/quark-engine-stalker/quark-engine-stalker/blob/main/README.md#installation-and-system-requirements) · [Discord](https://discord.com/invite/X7GRYsNNEc)

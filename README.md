@@ -1,71 +1,90 @@
 <p align="center">
-  <img src="docs/assets/quark-banner.png" alt="QUARK-ENGINE - X-Ray Monolith fork" width="100%">
+  <img src="docs/assets/quark-banner.png" alt="QUARK ENGINE — X-Ray Monolith fork" width="100%">
+</p>
+
+<p align="center">
+  <b>English</b> · <a href="README.ru.md">Русский</a>
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/status-OPEN_BETA-c2df77?style=flat-square&amp;labelColor=171d20" alt="Open beta">
   <img src="https://img.shields.io/badge/platform-Windows_x64-8ca6b8?style=flat-square&amp;labelColor=171d20" alt="Windows x64">
   <img src="https://img.shields.io/badge/renderer-DX11_%2F_AVX2-8ca6b8?style=flat-square&amp;labelColor=171d20" alt="DirectX 11 / AVX2">
-  <a href="https://discord.com/invite/X7GRYsNNEc"><img src="https://img.shields.io/badge/Discord-сообщество-5865F2?style=flat-square&amp;logo=discord&amp;logoColor=white" alt="Перейти в Discord"></a>
+  <a href="https://discord.com/invite/X7GRYsNNEc"><img src="https://img.shields.io/badge/Discord-community-5865F2?style=flat-square&amp;logo=discord&amp;logoColor=white" alt="Join Discord"></a>
 </p>
 
 <p align="center">
-  <b>Цель движка заключается в оптимизации использования современного железа для повышения производительности и устранении множества технических проблем, сохраняя при этом совместимость с модами и сборками.</b><br>
+  <b>Quark Engine is a fork of X-Ray Monolith. Its goal is to make better use of modern hardware, improve performance and resolve technical issues while preserving compatibility with mods and modpacks.</b>
 </p>
 
 <p align="center">
-  <a href="https://github.com/quark-engine-stalker/quark-engine-stalker/releases">Скачать / Releases</a> ·
-  <a href="#установка">Установка</a> ·
-  <a href="CHANGELOG.md">История изменений</a> ·
+  <a href="https://github.com/quark-engine-stalker/quark-engine-stalker/releases">Downloads / Releases</a> ·
+  <a href="#installation-and-system-requirements">Installation</a> ·
+  <a href="CHANGELOG.md">Changelog</a> ·
+  <a href="#documentation">Documentation</a> ·
   <a href="https://discord.com/invite/X7GRYsNNEc">Discord</a>
 </p>
 
 ---
 
-## Поддержка и список изменений
+## Support and updates
 
-Готовые сборки движка и файлы отладки: **[GitHub Releases](https://github.com/quark-engine-stalker/quark-engine-stalker/releases)**. Выберите нужную версию и скачайте `.exe` и `.pdb` из раздела **Assets**. Файлы появляются в Assets после загрузки автором сборки.
+Engine builds and debug symbols are available through **[GitHub Releases](https://github.com/quark-engine-stalker/quark-engine-stalker/releases)**. Select a release and download its `.exe` and `.pdb` from **Assets**. These files appear in Assets once the author uploads a build.
 
-Порядок загрузки файлов и выпуска следующих версий: [RELEASING.md](RELEASING.md).
+The engine is being tested on **STALKER: Anomaly 1.5.3** and **STALKER: GAMMA 0.9.5**.
+See [CHANGELOG.md](CHANGELOG.md) for the update history.
 
-Движок тестируется на **STALKER: Anomaly 1.5.3** и **STALKER: GAMMA 0.9.5**.
-История обновлений: [CHANGELOG.md](CHANGELOG.md).
+## Installation and system requirements
 
-## Установка движка и технические требования
+**System requirements:** a processor with **AVX2** support and the [Microsoft Visual C++ Redistributable x64](https://aka.ms/vs/17/release/vc_redist.x64.exe).
 
-**Технические требования:** Процессор с поддержкой **AVX2** инструкций, установленные библиотеки [Microsoft Visual C++ Redistributable x64](https://aka.ms/vs/17/release/vc_redist.x64.exe).
+1. Make sure **STALKER: Anomaly 1.5.3** and **STALKER: GAMMA 0.9.5** are installed correctly. Refer to their authors' installation instructions.
+2. Back up the engine files you are replacing in **`Anomaly\bin`**.
+3. Copy `AnomalyDX11AVX.exe` and its matching `AnomalyDX11AVX.pdb` to **`Anomaly\bin`** and choose **Replace the files in the destination**.
+4. Launch the game through **MO2 (Mod Organizer)**. Installation and launch examples are shown below.
+5. Compatibility with existing saves is not guaranteed; starting a new game is recommended.
+6. If you encounter errors or crashes, send us the logs from **`AppData\Roaming\QUARK ENGINE\ERROR`** through Discord. These files help identify the cause of the failure.
 
-0. Наличие корректно установленого STALKER: GAMMA 0.9.5 & STALKER: Anomaly 1.5.3 (Инструкции по установке ищите у их авторов)
-1. Сохраните резервную копию заменяемых файлов из **`Anomaly\bin`**. (на всякий случай)
-3. Скопируйте файлы AnomalyDX11AVX.exe и AnomalyDX11AVX.pdb в папку **`Anomaly\bin`** и выберите **'Заменить в папке назначения'**.
-4. Запуск игры осуществляется через MO2 (ModOrganizer), скриншоты как должно быть представлены ниже.
-5. Совместимость с текущими сохранениями не гарантируется, рекомендуется начать новую игру.
-6. При возникновении багов & крашей и тд, по пути: **`AppData\Roaming\QUARK ENGINE\ERROR`** находятся файлы логов о сбоях, отправляйте их нам и тем самым вы помогаете улучшать движок.
 <p align="center">
-  <img src="docs/assets/install-replace.png" alt="Установка: замена AnomalyDX11AVX.exe в папке Anomaly\bin" width="655">
-  <img src="docs/assets/install-mo2.png" alt="Запуск: через лаунчер MO2 (ModOrganizer)" width="655">
+  <img src="docs/assets/install-replace.png" alt="Installation: replace the engine files in Anomaly\bin" width="655">
+  <img src="docs/assets/install-mo2.png" alt="Launch the game through MO2 (Mod Organizer)" width="655">
 </p>
 
-## Исходники и сборка
+## Source code and building
 
 ```text
 quark-engine-stalker/
-├── src/                 # Основной код движка
-│   ├── 3rd party/       # Сторонние библиотеки и их исходники
+├── src/                 # Engine source code
+│   ├── 3rd party/       # Third-party libraries and their source code
 │   └── QUARK ENGINE.sln
-├── sdk/                 # Заголовки, исходники кодеков, библиотеки для линковки
-├── docs/assets/         # Оформление README и иллюстрация установки
-├── licenses/            # Лицензионные тексты зависимостей
-├── CHANGELOG.md         # История версий
-└── License.txt          # Условия распространения X-Ray
+├── sdk/                 # Headers, codec sources and link libraries
+├── docs/assets/         # README artwork and installation screenshots
+├── licenses/            # Dependency license texts
+├── CHANGELOG.md         # Version history in English
+├── CHANGELOG.ru.md      # Version history in Russian
+└── License.txt          # X-Ray distribution terms
 ```
 
-Основная конфигурация: **`DX11-AVX | x64`**. Подробности и команда MSBuild в [BUILDING.md](BUILDING.md).
+The main build configuration is **`DX11-AVX | x64`**. See the [build guide](BUILDING.md) for details and the MSBuild command.
 
-## Сообщество и авторы проекта
+## Documentation
 
-Переходите в наш: **[DISCORD QUARK-ENGINE](https://discord.com/invite/X7GRYsNNEc)**.
+Each document is available in English and Russian. Use the language selector at the top of a page to switch languages.
+
+| Document | English | Русский |
+| :--- | :--- | :--- |
+| Project overview and installation | [README](README.md) | [README](README.ru.md) |
+| Building from source | [Building](BUILDING.md) | [Сборка](BUILDING.ru.md) |
+| Version history | [Changelog](CHANGELOG.md) | [История изменений](CHANGELOG.ru.md) |
+| Code provenance and third-party components | [Third-party components](THIRD_PARTY.md) | [Сторонние компоненты](THIRD_PARTY.ru.md) |
+| Release description template | [Release template](docs/release-template.md) | [Шаблон релиза](docs/release-template.ru.md) |
+
+## Community and project authors
+
+Join **[DISCORD QUARK ENGINE](https://discord.com/invite/X7GRYsNNEc)**.
+
+Quark Engine is based on [X-Ray Monolith](https://github.com/themrdemonized/xray-monolith). See [THIRD_PARTY.md](THIRD_PARTY.md) for code provenance and third-party notices.
 
 ## License
 
-**GSC Game World**: оригинальный X-Ray Engine игры S.T.A.L.K.E.R. [License.txt](License.txt)
+The original S.T.A.L.K.E.R. X-Ray Engine belongs to **GSC Game World**. Distribution terms: [License.txt](License.txt).

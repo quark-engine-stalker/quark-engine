@@ -1,86 +1,88 @@
-# История изменений
+# Changelog
+
+**English** · [Русский](CHANGELOG.ru.md)
 
 ## 0.0.3 == Open Beta
 
-### ОПТИМИЗАЦИИ
+### OPTIMIZATIONS
 
-- Сокращены повторные проверки ближних укрытий.
-- Оптимизированы проверки занятости укрытий и опасных зон.
-- Сокращены повторные вычисления дистанций и позиций в боевой AI-логике.
-- Устранён повторный расчёт дистанции стрельбы внутри одной проверки.
-- Исправлено и оптимизировано использование кэша проверки объектов на пути NPC.
-- Увеличен `scheduler_batch_size` со 128 до 512.
-- Увеличен резерв очереди main-thread scheduler с 512 до 4096.
-- Class predictor переведён на более стабильную `EWMA`, чтобы единичные spikes меньше влияли на прогноз всей секции.
-- Снижено накопление `pending/due` scheduled-объектов при массовой активности NPC.
-- Убрано повторное вычисление материала для динамических opaque-кастеров теней.
-- Убраны повторные поиски константы материала при отрисовке NPC и других динамических объектов в opaque-тенях.
-- Убрана лишняя установка world-матрицы перед отрисовкой теней.
-- Убрана лишняя подготовка промежуточной матрицы перед отрисовкой частей NPC, привязанных к одной кости, в основном и теневых проходах.
-- Убрана лишняя отрисовка объектов из большой очереди удаления в основной геометрии, локальных и солнечных тенях.
-- Снимок обычной партии удаляемых объектов теперь хранится на стеке без дополнительного выделения памяти.
+- Reduced repeated checks of nearby cover points.
+- Optimized cover occupancy and danger zone checks.
+- Reduced repeated distance and position calculations in combat AI logic.
+- Removed a repeated firing-distance calculation within a single check.
+- Fixed and optimized the use of the NPC path object-check cache.
+- Increased `scheduler_batch_size` from 128 to 512.
+- Increased the main-thread scheduler queue reserve from 512 to 4096.
+- Switched the class predictor to a more stable `EWMA`, reducing the impact of individual spikes on predictions for an entire section.
+- Reduced the buildup of `pending/due` scheduled objects during heavy NPC activity.
+- Removed repeated material calculations for dynamic opaque shadow casters.
+- Removed repeated material constant lookups when rendering NPCs and other dynamic objects in opaque shadow passes.
+- Removed a redundant world-matrix update before shadow rendering.
+- Removed redundant preparation of an intermediate matrix when rendering NPC parts attached to the same bone in main and shadow passes.
+- Removed unnecessary rendering of objects from large destruction queues in main geometry, local shadows and sun shadows.
+- The snapshot of a normal object destruction batch is now stored on the stack without an additional memory allocation.
 
-### ИСПРАВЛЕНИЯ
+### FIXES
 
-- Исправлен краш `pure virtual function call` в `seqRender` при уничтожении UI ComboBox между Update и Render.
-- Исправлен краш `integer divide by zero` в расчёте скелетной анимации при motion с нулевым количеством sampled keys.
-- Исправлена причина большого количества ложных `predicted_heavy` и связанных с ними scheduler deferrals.
-- Помеченные на удаление объекты больше не сохраняются в основных и теневых render passes до завершения пакетного удаления.
-- Исправлено использование устаревшего указателя на очередь удаления при добавлении объектов из callbacks.
-- Новые заявки на удаление больше не теряются после завершения обработки текущей партии.
-- Исправлена гонка регистрации и удаления scheduled-объектов, которая могла приводить к обращению к уже удалённому объекту.
-- Исправлен вылет DX11 при запуске проверок видимости источников света.
-- Исправлена обработка устаревших GPU-запросов после сброса рендера.
-- Исправлена гонка при отмене проверок видимости источников света с рабочих потоков.
-- Исправлено освобождение GPU-запросов теневых объектов при изменении и удалении источника света.
+- Fixed a `pure virtual function call` crash in `seqRender` when a UI ComboBox was destroyed between Update and Render.
+- Fixed an `integer divide by zero` crash in skeletal animation calculations for motions with zero sampled keys.
+- Fixed the cause of excessive false `predicted_heavy` classifications and related scheduler deferrals.
+- Objects marked for deletion no longer remain in main and shadow render passes until batch deletion completes.
+- Fixed the use of a stale destruction queue pointer when callbacks added objects to the queue.
+- New destruction requests are no longer lost after the current batch finishes processing.
+- Fixed a race between scheduled-object registration and deletion that could access an already deleted object.
+- Fixed a DX11 crash when starting light visibility checks.
+- Fixed the handling of stale GPU queries after a renderer reset.
+- Fixed a race when cancelling light visibility checks from worker threads.
+- Fixed the release of shadow-object GPU queries when a light was changed or deleted.
 
 ## 0.0.2 == Closed Beta
 
-### ОПТИМИЗАЦИИ
+### OPTIMIZATIONS
 
-- Оптимизирована видимость динамических объектов.
-- Оптимизированы каскады солнечных теней и подготовка теней от динамических источников света.
-- Оптимизировано удаление объектов.
-- Оптимизирован массовый спавн объектов и снижено количество возможных фризов, наиболее заметных при спавне множества NPC.
-- Оптимизированы обработка памяти NPC, поиск врагов и групповые AI-проверки.
-- Оптимизировано использование уже рассчитанных данных: часть результатов переиспользуется движком.
-- Оптимизированы расчёты звуковой окклюзии.
-- Оптимизированы запуск и буферизация множества звуков.
-- Снижено количество лишних повторных проверок и поисков объектов.
-- Немного снижена нагрузка рендера при большом количестве NPC и мутантов в направлении камеры.
-- Частично удалена дублирующая и повторная работа с NPC / AI сталкеров и мутантов, которая добавляла оверхед на главный поток.
-- Прочие мелкие оптимизации работы с памятью и кэшами.
-- Добавлена адаптивная система кэширования для снижения фризов. **[TESTED]**
+- Optimized dynamic object visibility.
+- Optimized sun shadow cascades and shadow preparation for dynamic lights.
+- Optimized object deletion.
+- Optimized bulk object spawning and reduced potential stalls, most noticeable when spawning many NPCs.
+- Optimized NPC memory processing, enemy searches and group AI checks.
+- Optimized the use of previously calculated data: the engine reuses some results.
+- Optimized sound occlusion calculations.
+- Optimized the startup and buffering of multiple sounds.
+- Reduced unnecessary repeated checks and object lookups.
+- Slightly reduced rendering overhead when many NPCs and mutants are in the camera's viewing direction.
+- Partially removed duplicate and repeated stalker and mutant NPC / AI work that added overhead to the main thread.
+- Other minor memory and cache optimizations.
+- Added an adaptive caching system to reduce stalls. **[TESTED]**
 
-  | Объём RAM | Режим |
+  | RAM | Mode |
   | :--- | :--- |
-  | **32+ ГБ** | Движок активнее использует память. Звуки, модели и часть ресурсов заранее подготавливаются и дольше остаются в кэше. |
-  | **16 ГБ** | Сбалансированный режим: кэши увеличены умеренно. |
-  | **8 ГБ** | Экономный режим. На GAMMA возможны фризы из-за большого объёма модов и скриптов. |
+  | **32+ GB** | The engine uses memory more actively. Sounds, models and some resources are prepared in advance and remain cached longer. |
+  | **16 GB** | Balanced mode: caches are increased moderately. |
+  | **8 GB** | Memory-saving mode. GAMMA may experience stalls due to the large volume of mods and scripts. |
 
-- Распараллелена подготовка зрения NPC.
+- Parallelized NPC vision preparation.
 
-### ИСПРАВЛЕНИЯ
+### FIXES
 
-- Исправлено восстановление игры после потери фокуса: при многократном Alt + Tab изображение могло зависнуть, хотя звук продолжал идти.
-- Исправлено падение движка при выгрузке уровней без детализации травы.
-- Исправлены некоторые фризы при смерти NPC.
-- Исправлены многочисленные краши, обнаруженные в ходе тестов.
-- Исправлен рендер локальных источников света.
+- Fixed recovery after losing focus: repeated Alt + Tab could freeze the image while sound continued playing.
+- Fixed a crash when unloading levels without grass details.
+- Fixed some stalls when NPCs died.
+- Fixed numerous crashes found during testing.
+- Fixed local light rendering.
 
 ## 0.0.1 == Closed Beta
 
-### ОПТИМИЗАЦИИ И ИСПРАВЛЕНИЯ
+### OPTIMIZATIONS AND FIXES
 
-- Вырезан код и поддержка DX8/DX9. Поддерживается только DX11-AVX2.
-- LuaJIT обновлён с 2.0.4 на более новую ветку версии 2.0.
-- Оптимизирована работа GC / Lua.
-- Оптимизирована работа с освещением и тенями.
-- Снижен лишний оверхед на CPU-пайплайне, негативно влиявший на производительность.
-- Оптимизирована работа главного потока и части многопоточной синхронизации.
-- Оптимизирована работа с памятью и аллокациями.
-- Ускорена загрузка сохранений и уровней.
-- Оптимизированы математические и геометрические вычисления с использованием AVX2 там, где это целесообразно.
-- Оптимизирована система скелетов и анимаций NPC.
-- Исправлены обнаруженные утечки памяти и гонки данных.
-- Прочие многочисленные мелкие оптимизации и чистка устаревшего кода.
+- Removed DX8/DX9 code and support. Only DX11-AVX2 is supported.
+- Updated LuaJIT from 2.0.4 to a newer branch of version 2.0.
+- Optimized GC / Lua processing.
+- Optimized lighting and shadows.
+- Reduced unnecessary CPU pipeline overhead that affected performance.
+- Optimized the main thread and parts of multithreaded synchronization.
+- Optimized memory handling and allocations.
+- Improved save and level loading speed.
+- Optimized mathematical and geometric calculations using AVX2 where appropriate.
+- Optimized NPC skeletons and animations.
+- Fixed identified memory leaks and data races.
+- Other minor optimizations and removal of obsolete code.
