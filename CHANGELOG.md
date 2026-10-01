@@ -9,8 +9,6 @@
 - Reduced repeated checks of nearby cover points.
 - Optimized cover occupancy and danger zone checks.
 - Reduced repeated distance and position calculations in combat AI logic.
-- Removed a repeated firing-distance calculation within a single check.
-- Fixed and optimized the use of the NPC path object-check cache.
 - Increased `scheduler_batch_size` from 128 to 512.
 - Increased the main-thread scheduler queue reserve from 512 to 4096.
 - Switched the class predictor to a more stable `EWMA`, reducing the impact of individual spikes on predictions for an entire section.
@@ -23,18 +21,19 @@
 - The snapshot of a normal object destruction batch is now stored on the stack without an additional memory allocation.
 
 ### FIXES
-
 - Fixed a `pure virtual function call` crash in `seqRender` when a UI ComboBox was destroyed between Update and Render.
-- Fixed an `integer divide by zero` crash in skeletal animation calculations for motions with zero sampled keys.
-- Fixed the cause of excessive false `predicted_heavy` classifications and related scheduler deferrals.
-- Objects marked for deletion no longer remain in main and shadow render passes until batch deletion completes.
-- Fixed the use of a stale destruction queue pointer when callbacks added objects to the queue.
-- New destruction requests are no longer lost after the current batch finishes processing.
-- Fixed a race between scheduled-object registration and deletion that could access an already deleted object.
+- Fixed an `integer divide by zero` crash in skeletal animation calculations when a motion had zero sampled keys.
+- Fixed the cause of a large number of false `predicted_heavy` detections and the resulting scheduler deferrals.
+- Objects marked for deletion are no longer retained in main and shadow render passes until batch deletion is completed.
+- Fixed the use of a stale pointer to the deletion queue when objects were added from callbacks.
+- New deletion requests are no longer lost after the current batch finishes processing.
+- Fixed a race condition between scheduled-object registration and removal that could result in access to an already deleted object.
 - Fixed a DX11 crash when starting light visibility checks.
-- Fixed the handling of stale GPU queries after a renderer reset.
-- Fixed a race when cancelling light visibility checks from worker threads.
-- Fixed the release of shadow-object GPU queries when a light was changed or deleted.
+- Fixed handling of stale GPU queries after a renderer reset.
+- Fixed a race condition when cancelling light visibility checks from worker threads.
+- Fixed cleanup of GPU queries for shadow-casting objects when a light source is modified or removed.
+- Removed a redundant firing-distance calculation within a single check.
+- Fixed and optimized the cache used for checking objects in an NPC's path.
 
 ## 0.0.2 == Closed Beta
 
