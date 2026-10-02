@@ -29,6 +29,7 @@
 - The snapshot of a normal object destruction batch is now stored on the stack without an additional memory allocation.
 
 ### FIXES
+
 - Fixed a `pure virtual function call` crash in `seqRender` when a UI ComboBox was destroyed between Update and Render.
 - Fixed an `integer divide by zero` crash in skeletal animation calculations when a motion had zero sampled keys.
 - Fixed the cause of a large number of false `predicted_heavy` detections and the resulting scheduler deferrals.
