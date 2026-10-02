@@ -2,7 +2,15 @@
 
 **English** · [Русский](CHANGELOG.ru.md)
 
-## 0.0.3 == Open Beta
+## VER 0.0.4 == [BUG-FIX]
+
+### FIXES
+
+- The test warm‑up of the inventory UI when loading a save has been removed
+- The engine crash when throwing `M24 SWS` and `decor_poster5` from the inventory has been fixed
+- Corrections have been made to the detected item physics issues
+
+## 0.0.3 == [OPEN BETA]
 
 ### OPTIMIZATIONS
 
@@ -35,7 +43,7 @@
 - Removed a redundant firing-distance calculation within a single check.
 - Fixed and optimized the cache used for checking objects in an NPC's path.
 
-## 0.0.2 == Closed Beta
+## 0.0.2 == [CLOSED BETA]
 
 ### OPTIMIZATIONS
 
@@ -69,7 +77,7 @@
 - Fixed numerous crashes found during testing.
 - Fixed local light rendering.
 
-## 0.0.1 == Closed Beta
+## 0.0.1 == [CLOSED BETA]
 
 ### OPTIMIZATIONS AND FIXES
 
