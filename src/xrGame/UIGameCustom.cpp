@@ -42,7 +42,6 @@ CUIGameCustom::CUIGameCustom()
 	Window = nullptr;
 	UIMainIngameWnd = nullptr;
 	m_pMessagesWnd = nullptr;
-	m_inventory_prewarm_done = false;
 	ShowGameIndicators(true);
 	ShowCrosshair(true);
 }
@@ -88,8 +87,6 @@ void luabind::identity_back_reference<CUIGameCustom>::store(
 void CUIGameCustom::OnFrame()
 {
 	CDialogHolder::OnFrame();
-	if (!m_inventory_prewarm_done && (!g_appLoaded || Device.dwPrecacheFrame))
-		TryPrewarmInventory();
 	for (auto item : CustomStatics)
 		item->Update();
 	auto comparer = [](const StaticDrawableWrapper* s1, const StaticDrawableWrapper* s2)
@@ -298,7 +295,6 @@ void CUIGameCustom::SetClGame(game_cl_GameState* gameState)
 
 void CUIGameCustom::UnLoad()
 {
-	m_inventory_prewarm_done = false;
 	xr_delete(MsgConfig);
 	xr_delete(ActorMenu);
 	xr_delete(PdaMenu);
@@ -309,7 +305,6 @@ void CUIGameCustom::UnLoad()
 
 void CUIGameCustom::Load()
 {
-	m_inventory_prewarm_done = false;
 	if (!g_pGameLevel)
 		return;
 	R_ASSERT(!MsgConfig);
@@ -338,19 +333,6 @@ void CUIGameCustom::OnConnected()
 	if (!UIMainIngameWnd)
 		Load();
 	UIMainIngameWnd->OnConnected();
-	TryPrewarmInventory();
-}
-
-void CUIGameCustom::TryPrewarmInventory()
-{
-	if (m_inventory_prewarm_done || !ActorMenu || !g_ui_inventory_prewarm || !g_ui_inventory_cache)
-		return;
-
-	CInventoryOwner* const actor = smart_cast<CInventoryOwner*>(Level().CurrentViewEntity());
-	if (!actor)
-		return;
-
-	m_inventory_prewarm_done = ActorMenu->PrewarmInventory(actor);
 }
 
 void CUIGameCustom::CommonMessageOut(LPCSTR text)

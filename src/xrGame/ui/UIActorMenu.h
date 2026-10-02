@@ -1,7 +1,6 @@
 #pragma once
 
 extern int g_ui_inventory_cache;
-extern int g_ui_inventory_prewarm;
 
 #include "script_export_space.h"
 
@@ -361,7 +360,6 @@ public:
 	PIItem get_upgrade_item();
 	bool DropAllItemsFromRuck(bool quest_force = false); //debug func
 
-	bool PrewarmInventory(CInventoryOwner* actor);
 	void UpdateActor();
 	void UpdatePartnerBag();
 	void UpdateDeadBodyBag();

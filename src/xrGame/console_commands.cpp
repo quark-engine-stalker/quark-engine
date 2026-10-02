@@ -3664,7 +3664,6 @@ void CCC_RegisterCommands()
 	CMD4(CCC_Integer, "pda_map_zoom_in_to_mouse", &pda_map_zoom_in_to_mouse, 0, 1);
 	CMD4(CCC_Integer, "pda_map_zoom_out_to_mouse", &pda_map_zoom_out_to_mouse, 0, 1);
 	CMD4(CCC_Integer, "ui_inventory_cache", &g_ui_inventory_cache, 0, 1);
-	CMD4(CCC_Integer, "ui_inventory_prewarm", &g_ui_inventory_prewarm, 0, 1);
 	CMD4(CCC_Integer, "ui_pda_task_cache", &g_ui_pda_task_cache, 0, 1);
 	CMD4(CCC_Integer, "ui_inventory_icon_preload", &g_ui_inventory_icon_preload, 0, 1);
 	CMD4(CCC_Integer, "pda_show_map_labels", &pda_show_map_labels, 0, 1);

@@ -39,24 +39,9 @@
  //Alundaio
 
 int g_ui_inventory_cache = 1;
-int g_ui_inventory_prewarm = 1;
 
 void move_item_from_to(u16 from_id, u16 to_id, u16 what_id);
 
-
-bool CUIActorMenu::PrewarmInventory(CInventoryOwner* actor)
-{
-	if (!g_ui_inventory_cache || !g_ui_inventory_prewarm || !actor || IsShown())
-		return false;
-
-	SetActor(actor);
-	const EMenuMode saved_mode = m_currMenuMode;
-	m_currMenuMode = mmInventory;
-	InitInventoryContents(m_pInventoryBagList);
-	ClearAllLists();
-	m_currMenuMode = saved_mode;
-	return true;
-}
 
 void CUIActorMenu::InitInventoryMode()
 {

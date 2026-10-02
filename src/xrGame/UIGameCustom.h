@@ -103,9 +103,7 @@ protected:
 	CUIActorMenu* ActorMenu;
 	CUIPdaWnd* PdaMenu;
 	bool showGameIndicators;
-	bool m_inventory_prewarm_done;
 	mutable luabind::weak_ref m_lua_instance_ref;
-	void TryPrewarmInventory();
 
 public:
 	// XXX nitrocaster: make not public
