@@ -9,6 +9,7 @@
 - The test warm‑up of the inventory UI when loading a save has been removed
 - The engine crash when throwing `M24 SWS` and `decor_poster5` from the inventory has been fixed
 - Corrections have been made to the detected item physics issues
+- The movement order of the initial spawn has been fixed when loading a single‑player game
 
 ## 0.0.3 == [OPEN BETA]
 
