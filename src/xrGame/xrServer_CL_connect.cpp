@@ -80,6 +80,18 @@ void xrServer::SendConnectionData(IClient* _CL)
 	// Replicate current entities on to this client
 	xrS_entities::iterator I = entities.begin(), E = entities.end();
 	for (; I != E; ++I) I->second->net_Processed = FALSE;
+
+	// The hash-map order is unrelated to spawn dependencies. Single-player
+	// NPC binders need the actor to have completed net_Spawn (db.add_actor)
+	// before their combat logic is initialized. Send the player first and
+	// leave parent ordering and duplicate suppression to Perform_connect_spawn.
+	if (game->Type() == eGameIDSingle)
+	{
+		for (I = entities.begin(); I != E; ++I)
+			if (I->second->s_flags.is(M_SPAWN_OBJECT_ASPLAYER))
+				Perform_connect_spawn(I->second, CL, P);
+	}
+
 	for (I = entities.begin(); I != E; ++I) Perform_connect_spawn(I->second, CL, P);
 
 	// Start to send server logo and rules
