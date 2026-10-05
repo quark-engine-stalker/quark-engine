@@ -3,6 +3,10 @@
 </p>
 
 <p align="center">
+  <img src="docs/assets/perf.png" alt="Performance" width="100%">
+</p>
+
+<p align="center">
   <b>English</b> · <a href="README.ru.md">Русский</a>
 </p>
 
