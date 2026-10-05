@@ -1,5 +1,9 @@
 <p align="center">
-  <img src="docs/assets/quark-banner.png" alt="QUARK-ENGINE - X-Ray Monolith fork" width="100%">
+  <img src="docs/assets/quark-banner.png" alt="QUARK ENGINE - X-Ray Monolith fork" width="100%">
+</p>
+
+<p align="center">
+  <img src="docs/assets/perf.png" alt="Performance" width="100%">
 </p>
 
 <p align="center">
