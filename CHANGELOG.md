@@ -2,6 +2,94 @@
 
 **English** · [Русский](CHANGELOG.ru.md)
 
+# VER 0.0.5 [AKA MAJOR UPDATE]
+
+## OPTIMIZATIONS
+
+- Optimized NPC memory object lookups using a shared group cache.
+- Reduced repeated full scans for objects missing from NPC memory.
+- Eliminated full shared-cache invalidation when replacing a single memory entry.
+- Reduced redundant memory data preparation within NPC groups.
+- Reduced redundant calls and CPU overhead when processing Lua GC objects.
+- Optimized batch processing of Lua GC objects with execution time budgeting.
+- Parallelized sorting of large render graphs for main geometry and shadows.
+- Eliminated unnecessary previous-frame matrix calculations for skeletal objects in rendering passes where shaders do not use them.
+- Small batches are processed sequentially, avoiding unnecessary task creation and queue waits when the worker pool is busy.
+- Optimized the transfer of positions and other vectors from C++ to Lua.
+- Reduced luabind overhead when handling NPC sound events and position queries.
+- Reworked the sound cache to allocate memory on demand instead of preallocating the entire cache at startup.
+- Limited unnecessary preloading of models, animations, and textures.
+- Limited additional retention of preloaded UI textures.
+- Improved cleanup of unused models and animation data when unloading levels.
+- Optimized loading of 24-bit DDS textures by eliminating redundant intermediate pixel conversions and temporary buffer initialization.
+- Accelerated patrol path loading during savegame loading and level transitions, partly by eliminating redundant data moves when building the path registry.
+- Accelerated Lua string pattern processing during XML parsing.
+- Eliminated redundant texture creation and copying operations on first use.
+- Added early asynchronous preparation of PDA and selected HUD item resources before their first appearance, while respecting the shared preload budget.
+- Prepared HUD data is now retained after level loading until it is used or the level is unloaded.
+- Optimized CPU-side grass preparation in main rendering and shadow passes, reducing redundant classification and repacking of unchanged data across frames and rendering passes.
+- Limited the prepared grass cache by memory usage and the amount of new work performed per frame.
+- Optimized HUD material lookups for NPC items, eliminating unnecessary animation and GPU resource loading for supported models.
+- Optimized NPC sound event handling by eliminating repeated Lua constant lookups.
+- Reduced redundant object type checks in AI and gameplay queries, including an unnecessary check when determining an object's relevance to NPC vision.
+- Optimized matrix and vector writes in the DX11 renderer.
+- Accelerated resource indexing during engine startup and savegame loading.
+- Limited the startup metadata cache by memory usage and ensured it is released before initialization completes.
+- Reduced redundant validation of cached shader packets during DSGraph construction.
+- Optimized large and ordered DSGraph queues while preserving rendering order.
+- Eliminated redundant matrix calculations during sun cascade preparation.
+- Moved the primary sun shadow sector lookup to the level-loading stage.
+- Eliminated redundant clearing of sun shadow working data.
+- Reduced unnecessary memory writes when expanding rendering containers.
+- The preloaded texture cache now accounts for the available VRAM budget and the estimated video memory footprint of GPU textures.
+- Added selective eviction of long-unused textures retained exclusively by the cache.
+- Optional texture preloading is now suspended under VRAM pressure, while required texture loading remains unaffected.
+- Eliminated repeated full scans of Lua globals when looking up engine callbacks.
+- Accelerated callback checks when removing items from dead NPC inventories.
+
+## FIXES
+
+- Fixed redundant empty Lua GC passes after the atomic phase that unnecessarily consumed frame time.
+- Fixed worker task waits that could unnecessarily stall the main thread.
+- Fixed the retention of unused base models from automatic preloading.
+- Fixed sound cache initialization with large memory limits.
+- Fixed the shutdown order of background resource preparation before renderer reset and destruction.
+- Fixed early HUD requests being dropped when the background model queue was full by reserving queue slots for selected items.
+- Fixed retry handling after a background resource preparation request fails.
+- Fixed a native crash in `game_object:name()` during hit processing.
+- Fixed sun shadow working buffers remaining allocated after level unloading.
+- Fixed COM reference leaks involving GPU resources in post-processing and MSAA resolve passes.
+- Fixed the release of a temporary COM reference to the 3D scope depth buffer.
+- Fixed a COM reference leak involving the source GPU resource during screenshot export.
+- Improved synchronization of texture acquisition and release during concurrent worker requests and cache eviction.
+- Added input bounds checks when decompressing corrupted or incomplete compressed data, including savegames.
+- Reworked the engine's error logger, upgrading it to v2.0.
+- Fixed numerous other minor memory leaks.
+
+## PORTED AND ADAPTED FIXES
+
+- Fixed memory corruption when entering text through Lua ImGui.
+  Ported from Xray-Monolith, PR #694:  
+  https://github.com/themrdemonized/xray-monolith/pull/694
+- Fixed an out-of-bounds buffer access in ImGui text fields with hint text.
+  Ported from Dear ImGui, commit 5dd8408:  
+  https://github.com/ocornut/imgui/commit/5dd8408
+- Fixed crashes when no matching overload exists for Lua functions or methods.
+  Ported the defensive portion of the fix from Xray-Monolith, PR #674:  
+  https://github.com/themrdemonized/xray-monolith/pull/674
+- Fixed cleanup of models used by scripted HUD animations.
+  Ported and adapted from Xray-Monolith, PR #726:  
+  https://github.com/themrdemonized/xray-monolith/pull/726
+- Fixed an issue when detaching launched rockets.
+  Ported from Xray-Monolith, PR #713:  
+  https://github.com/themrdemonized/xray-monolith/pull/713
+- Fixed incorrect movement point lookup results for Chimeras and Lurkers when no suitable point is found.
+  Ported from Xray-Monolith, PR #710:  
+  https://github.com/themrdemonized/xray-monolith/pull/710
+- Fixed incorrect misfire state reset when NPCs reload automatic shotguns.
+  Ported from Xray-Monolith, PR #717:  
+  https://github.com/themrdemonized/xray-monolith/pull/717
+
 ## VER 0.0.4 == [BUG-FIX]
 
 ### FIXES
