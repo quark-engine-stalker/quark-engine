@@ -2,9 +2,9 @@
 
 **English** · [Русский](CHANGELOG.ru.md)
 
-# VER 0.0.5 [AKA MAJOR UPDATE]
+VER 0.0.5 [AKA MAJOR UPDATE]
 
-## OPTIMIZATIONS
+OPTIMIZATIONS:
 
 - Optimized NPC memory object lookups using a shared group cache.
 - Reduced repeated full scans for objects missing from NPC memory.
@@ -47,7 +47,7 @@
 - Eliminated repeated full scans of Lua globals when looking up engine callbacks.
 - Accelerated callback checks when removing items from dead NPC inventories.
 
-## FIXES
+FIXES:
 
 - Fixed redundant empty Lua GC passes after the atomic phase that unnecessarily consumed frame time.
 - Fixed worker task waits that could unnecessarily stall the main thread.
@@ -66,7 +66,7 @@
 - Reworked the engine's error logger, upgrading it to v2.0.
 - Fixed numerous other minor memory leaks.
 
-## PORTED AND ADAPTED FIXES
+PORTED AND ADAPTED FIXES:
 
 - Fixed memory corruption when entering text through Lua ImGui.
   Ported from Xray-Monolith, PR #694:  
@@ -90,18 +90,18 @@
   Ported from Xray-Monolith, PR #717:  
   https://github.com/themrdemonized/xray-monolith/pull/717
 
-## VER 0.0.4 == [BUG-FIX]
+VER 0.0.4 [BUG-FIX]
 
-### FIXES
+FIXES:
 
 - The test warm‑up of the inventory UI when loading a save has been removed
 - The engine crash when throwing `M24 SWS` and `decor_poster5` from the inventory has been fixed
 - Corrections have been made to the detected item physics issues
 - The movement order of the initial spawn has been fixed when loading a single‑player game
 
-## 0.0.3 == [OPEN BETA]
+VER 0.0.3 [OPEN BETA]
 
-### OPTIMIZATIONS
+OPTIMIZATIONS:
 
 - Reduced repeated checks of nearby cover points.
 - Optimized cover occupancy and danger zone checks.
@@ -117,7 +117,7 @@
 - Removed unnecessary rendering of objects from large destruction queues in main geometry, local shadows and sun shadows.
 - The snapshot of a normal object destruction batch is now stored on the stack without an additional memory allocation.
 
-### FIXES
+FIXES:
 
 - Fixed a `pure virtual function call` crash in `seqRender` when a UI ComboBox was destroyed between Update and Render.
 - Fixed an `integer divide by zero` crash in skeletal animation calculations when a motion had zero sampled keys.
@@ -133,9 +133,9 @@
 - Removed a redundant firing-distance calculation within a single check.
 - Fixed and optimized the cache used for checking objects in an NPC's path.
 
-## 0.0.2 == [CLOSED BETA]
+VER 0.0.2 [CLOSED BETA]
 
-### OPTIMIZATIONS
+OPTIMIZATIONS:
 
 - Optimized dynamic object visibility.
 - Optimized sun shadow cascades and shadow preparation for dynamic lights.
@@ -159,7 +159,7 @@
 
 - Parallelized NPC vision preparation.
 
-### FIXES
+FIXES:
 
 - Fixed recovery after losing focus: repeated Alt + Tab could freeze the image while sound continued playing.
 - Fixed a crash when unloading levels without grass details.
@@ -167,9 +167,9 @@
 - Fixed numerous crashes found during testing.
 - Fixed local light rendering.
 
-## 0.0.1 == [CLOSED BETA]
+VER 0.0.1 [CLOSED BETA]
 
-### OPTIMIZATIONS AND FIXES
+OPTIMIZATIONS AND FIXES:
 
 - Removed DX8/DX9 code and support. Only DX11-AVX2 is supported.
 - Updated LuaJIT from 2.0.4 to a newer branch of version 2.0.
