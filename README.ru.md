@@ -22,8 +22,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/quark-engine-stalker/quark-engine-stalker/releases">Скачать / Releases</a> ·
-  <a href="#установка-движка-и-технические-требования">Установка</a> ·
+  <a href="https://github.com/quark-engine-stalker/quark-engine/releases">Скачать / Releases</a> ·
+  <a href="#установка-движка-и-требования">Установка</a> ·
   <a href="CHANGELOG.ru.md">История изменений</a> ·
   <a href="#документация">Документация</a> ·
   <a href="https://discord.com/invite/X7GRYsNNEc">Discord</a>
@@ -42,10 +42,11 @@
 
 1. Убедитесь, что **STALKER: Anomaly 1.5.3** и **STALKER: GAMMA 0.9.5** установлены корректно. Инструкции по установке ищите у их авторов.
 2. Сохраните резервную копию заменяемых файлов движка из **`Anomaly\bin`**.
-3. Скачайте `AnomalyDX11AVX.exe` и `AnomalyDX11AVX.pdb` и закиньте их в **`Anomaly\bin`** с подтверждение на замену файлов.
-4. Запустите игру через **MO2 (Mod Organizer)**. Примеры установки и запуска представлены ниже.
-5. Совместимость с текущими сохранениями не гарантируется, рекомендуется начать новую игру.
-6. При возникновении ошибок или вылетов отправьте нам в Discord логи из **`AppData\Roaming\QUARK ENGINE\ERROR`**. Эти файлы помогают установить причину сбоя и дальнейше улучшать движок.
+3. Скачайте **`AnomalyDX11AVX.rar`** из раздела **Assets** выбранного [релиза](https://github.com/quark-engine-stalker/quark-engine/releases).
+4. Распакуйте архив, затем скопируйте `AnomalyDX11AVX.exe` и соответствующий ему `AnomalyDX11AVX.pdb` в **`Anomaly\bin`**, подтвердив замену файлов.
+5. Запустите игру через **MO2 (Mod Organizer)**. Примеры установки и запуска представлены ниже.
+6. Совместимость с текущими сохранениями не гарантируется, рекомендуется начать новую игру.
+7. При возникновении ошибок или вылетов отправьте нам в Discord логи из **`AppData\Roaming\QUARK ENGINE\ERROR`**. Эти файлы помогают установить причину сбоя и дальнейше улучшать движок.
 
 <p align="center">
   <img src="docs/assets/install-replace.png" alt="Установка: замена AnomalyDX11AVX.exe в папке Anomaly\bin" width="655">
@@ -55,7 +56,7 @@
 ## Исходники и сборка
 
 ```text
-quark-engine-stalker/
+quark-engine/
 ├── src/                 # Основной код движка
 │   ├── 3rd party/       # Сторонние библиотеки и их исходники
 │   └── QUARK ENGINE.sln
@@ -76,7 +77,6 @@ quark-engine-stalker/
 | Обзор проекта и установка | [README](README.md) | [README](README.ru.md) |
 | Сборка из исходников | [Building](BUILDING.md) | [Сборка](BUILDING.ru.md) |
 | История версий | [Changelog](CHANGELOG.md) | [История изменений](CHANGELOG.ru.md) |
-| Происхождение кода и сторонние компоненты | [Third-party components](THIRD_PARTY.md) | [Сторонние компоненты](THIRD_PARTY.ru.md) |
 | Шаблон описания релиза | [Release template](docs/release-template.md) | [Шаблон релиза](docs/release-template.ru.md) |
 
 ## Сообщество и авторы проекта

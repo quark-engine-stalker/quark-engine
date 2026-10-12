@@ -18,11 +18,9 @@ Dependencies are included in this source tree; an additional `git submodule upda
 ## Getting the source code
 
 ```powershell
-git clone https://github.com/quark-engine-stalker/quark-engine-stalker.git
-cd quark-engine-stalker
+git clone https://github.com/quark-engine-stalker/quark-engine.git
+cd quark-engine
 ```
-
-Your GitHub account needs read access to clone a private repository.
 
 ## Building with Visual Studio
 
@@ -55,4 +53,4 @@ _build/_game/bin_dbg/AnomalyDX11AVX.pdb
 
 Other projects also create intermediate `.lib` and `.obj` files in `_build`. These files are excluded from Git.
 
-To use the build in the game, replace the corresponding files in **`Anomaly\bin`** as shown in the [README](README.md#installation-and-system-requirements). If the `.pdb` is used for diagnostics, it must match that exact `.exe`.
+To use the build in the game, replace the corresponding files in **`Anomaly\bin`** as shown in the [README](README.md#engine-installation-and-requirements). If the `.pdb` is used for diagnostics, it must match that exact `.exe`.

@@ -18,11 +18,9 @@
 ## Получение исходников
 
 ```powershell
-git clone https://github.com/quark-engine-stalker/quark-engine-stalker.git
-cd quark-engine-stalker
+git clone https://github.com/quark-engine-stalker/quark-engine.git
+cd quark-engine
 ```
-
-Для приватного репозитория GitHub-аккаунту нужен доступ на чтение.
 
 ## Через Visual Studio
 
@@ -55,4 +53,4 @@ _build/_game/bin_dbg/AnomalyDX11AVX.pdb
 
 Другие проекты также создают промежуточные `.lib` и `.obj` в `_build`. Эти файлы исключены из Git.
 
-Для игры замените соответствующие файлы в **`Anomaly\bin`**, как показано в [README](README.ru.md#установка-движка-и-технические-требования). `.pdb` должен соответствовать именно этому `.exe`, если он используется для диагностики.
+Для игры замените соответствующие файлы в **`Anomaly\bin`**, как показано в [README](README.ru.md#установка-движка-и-требования). `.pdb` должен соответствовать именно этому `.exe`, если он используется для диагностики.
