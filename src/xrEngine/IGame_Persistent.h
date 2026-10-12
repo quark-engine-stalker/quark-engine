@@ -234,6 +234,7 @@ extern ENGINE_API BOOL psTextureWarmupManifest;
 extern ENGINE_API BOOL psTextureWarmupUiOnly;
 extern ENGINE_API int psTextureWarmupSlowMs;
 extern ENGINE_API int psTextureWarmupMax;
+extern ENGINE_API int psTextureWarmupMemoryMb;
 
 class IMainMenu
 {

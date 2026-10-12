@@ -34,6 +34,7 @@ private:
 		shared_str name;
 		dxRender_Visual* model;
 		u32 refs;
+		bool unused_manifest_base = false;
 
 		ModelDef()
 		{
@@ -68,6 +69,7 @@ private:
 	void Destroy();
 	dxRender_Visual* ExtractUnreferencedBaseForChild(const shared_str& name);
 	void EraseModelIndex(u32 index);
+	void ReleaseUnusedBases(bool manifest_only);
 	dxRender_Visual* CreateFromPrepared(LPCSTR normalized_name, LPCSTR requested_name, bool assert,
 		u64* wait_ticks = nullptr, u64* finalize_ticks = nullptr);
 	void RecordLevelModel(LPCSTR normalized_name);
@@ -79,6 +81,7 @@ public:
 	dxRender_Visual* Instance_Load(LPCSTR N, BOOL allow_register, bool assert = true);
 	dxRender_Visual* Instance_Load(LPCSTR N, IReader* data, BOOL allow_register);
 	void Instance_Register(LPCSTR N, dxRender_Visual* V);
+	void MarkManifestBase(dxRender_Visual* V);
 	dxRender_Visual* Instance_Find(LPCSTR N);
 
 	dxRender_Visual* CreatePE(PS::CPEDef* source);
@@ -94,11 +97,12 @@ public:
 
 	void Prefetch();
 	void Prefetch_One(LPCSTR N, bool assert = true);
+	void PrepareHudModel(LPCSTR name, bool imminent = false);
 
 	// Package 3: worker-side OGF/OMF preparation with render-thread finalization.
 	void ProcessAsyncFinalization(u32 budget_ms = 2, bool wait_for_all = false);
 	void BeginLevelPrefetch(LPCSTR level_name);
-	void FinishLevelPrefetch();
+	void FinishLevelPrefetch(bool release_hud = true);
 	void SaveLevelPrefetchManifest();
 
 	// Internal hooks used by the package-3 worker/finalizer implementation.
@@ -106,6 +110,8 @@ public:
 	xrCriticalSection& ModelLoadGuard() { return modelLoadGuard; }
 	bool Exists(LPCSTR N);
 	void ClearPool(BOOL b_complete);
+	// Loading/unloading boundary only; preserve referenced and inactive instances.
+	void TrimUnusedBases();
 
 	void dump();
 

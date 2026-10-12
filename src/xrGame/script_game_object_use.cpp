@@ -1,5 +1,6 @@
 #include "pch_script.h"
 #include "script_game_object.h"
+#include <luabind/detail/object_rep.hpp>
 #include "script_game_object_impl.h"
 #include "UsableScriptObject.h"
 #include "GameObject.h"
@@ -72,6 +73,22 @@ CScriptGameObject::CScriptGameObject(CGameObject* game_object) :
 
 CScriptGameObject::~CScriptGameObject()
 {
+    // Lua closures may retain this non-owning userdata after net_Destroy().
+    // Invalidate its native pointer before freeing the wrapper, so an old
+    // handle can neither dereference freed memory nor alias a recycled wrapper.
+    if (!m_lua_instance_ref.empty())
+    {
+        if (lua_State* L = ai().script_engine().lua())
+        {
+            m_lua_instance_ref.get(L);
+            luabind::detail::object_rep* instance = luabind::detail::is_class_object(L, -1);
+            if (instance && instance->ptr() == this)
+                instance->set_object(nullptr);
+            lua_pop(L, 1);
+        }
+        m_lua_instance_ref = luabind::weak_ref();
+    }
+
 	if (!m_door)
 		return;
 

@@ -238,6 +238,88 @@ XRCORE_API void _dump_open_files(int mode)
 		Log("----total count=", snapshot.size());
 }
 
+// Reuse directory metadata only while fsgame.ltx aliases are initialized.
+// Registration is still replayed in the original depth-first order, including
+// overlapping aliases: archive/loose-file precedence must not change.
+bool ignore_name(const char* name);
+bool ignore_path(const char* path);
+
+struct CLocatorAPI::StartupScanCache
+{
+    struct Directory
+    {
+        FFVec entries;
+        bool ignored = false;
+        bool succeeded = false;
+    };
+
+    static constexpr size_t budget_bytes = 64u * 1024u * 1024u;
+    size_t retained_bytes = 0;
+    xr_unordered_map<xr_string, std::shared_ptr<Directory>> directories;
+
+    static void enumerate(Directory& directory, LPCSTR path, bool need_check)
+    {
+        string_path scan_path;
+        xr_strcpy(scan_path, sizeof(scan_path), path);
+        xr_strcat(scan_path, ".xrignore");
+        struct stat buffer;
+        if (!stat(scan_path, &buffer))
+        {
+            directory.ignored = directory.succeeded = true;
+            return;
+        }
+        xr_strcpy(scan_path, sizeof(scan_path), path);
+        xr_strcat(scan_path, "*.*");
+        _finddata_t data;
+        const intptr_t handle = _findfirst(scan_path, &data);
+        if (handle == -1)
+            return;
+        // Small mod directories must not consume a large reservation each.
+        directory.entries.reserve(16);
+        do
+        {
+            bool ignore = ignore_name(data.name);
+            if (!ignore && need_check)
+            {
+                string1024 full_path;
+                xr_strcpy(full_path, sizeof(full_path), path);
+                xr_strcat(full_path, data.name);
+                ignore = ignore_path(full_path);
+            }
+            if (!ignore)
+                directory.entries.push_back(data);
+        } while (_findnext(handle, &data) != -1);
+        _findclose(handle);
+        std::sort(directory.entries.begin(), directory.entries.end(),
+            [](const _finddata_t& a, const _finddata_t& b) { return xr_strcmp(a.name, b.name) < 0; });
+        directory.succeeded = true;
+    }
+
+    std::shared_ptr<Directory> acquire(LPCSTR path, bool need_check)
+    {
+        const auto found = directories.find(path);
+        if (found != directories.end())
+            return found->second;
+
+        auto result = std::make_shared<Directory>();
+        enumerate(*result, path, need_check);
+        if (!result->succeeded || retained_bytes >= budget_bytes)
+            return result;
+        if (result->entries.capacity() > result->entries.size() * 2u + 16u)
+            result->entries.shrink_to_fit();
+        // Include vector capacity, key storage and conservative map/control-block
+        // overhead. Oversized listings remain local and are never retained.
+        const size_t cost = result->entries.capacity() * sizeof(_finddata_t) +
+            sizeof(Directory) + xr_strlen(path) + 256u;
+        if (cost <= budget_bytes - retained_bytes)
+        {
+            directories.emplace(path, result);
+            retained_bytes += cost;
+        }
+        return result;
+    }
+};
+
 CLocatorAPI::CLocatorAPI()
 #ifdef PROFILE_CRITICAL_SECTIONS
     :m_auth_lock(MUTEX_PROFILE_ID(CLocatorAPI::m_auth_lock))
@@ -640,52 +722,24 @@ bool ignore_path(const char* _path)
 
 bool CLocatorAPI::Recurse(const char* path)
 {
-	string_path scanPath;
-	xr_strcpy(scanPath, sizeof(scanPath), path);
-	xr_strcat(scanPath, ".xrignore");
-	struct stat buffer;
-	if (!stat(scanPath, &buffer))
-		return true;
-	xr_strcpy(scanPath, sizeof(scanPath), path);
-	xr_strcat(scanPath, "*.*");
-	_finddata_t findData;
-	intptr_t handle = _findfirst(scanPath, &findData);
-	if (handle == -1)
-		return false;
-	rec_files.reserve(256);
-	size_t oldSize = rec_files.size();
-	intptr_t done = handle;
-	while (done != -1)
-	{
-		string1024 fullPath;
-		bool ignore = false;
-		if (m_Flags.test(flNeedCheck))
-		{
-			xr_strcpy(fullPath, sizeof(fullPath), path);
-			xr_strcat(fullPath, findData.name);
-			ignore = ignore_name(findData.name) || ignore_path(fullPath);
-		}
-		else
-		{
-			ignore = ignore_name(findData.name);
-		}
-		if (!ignore)
-			rec_files.push_back(findData);
-		done = _findnext(handle, &findData);
-	}
-	_findclose(handle);
-	size_t newSize = rec_files.size();
-	if (newSize > oldSize)
-	{
-		std::sort(rec_files.begin() + oldSize, rec_files.end(), pred_str_ff);
-		for (size_t i = oldSize; i < newSize; i++)
-			ProcessOne(path, rec_files[i]);
-		rec_files.erase(rec_files.begin() + oldSize, rec_files.end());
-	}
-	// insert self
-	if (path && path[0] != 0)
-		Register(path, 0xffffffff, 0, 0, 0, 0, 0);
-	return true;
+    // Pin the listing across recursive cache rehashes and capacity fallback.
+    std::shared_ptr<StartupScanCache::Directory> directory;
+    if (m_startup_scan_cache)
+        directory = m_startup_scan_cache->acquire(path, m_Flags.test(flNeedCheck));
+    else
+    {
+        directory = std::make_shared<StartupScanCache::Directory>();
+        StartupScanCache::enumerate(*directory, path, m_Flags.test(flNeedCheck));
+    }
+    if (!directory->succeeded)
+        return false;
+    if (directory->ignored)
+        return true;
+    for (const _finddata_t& entry : directory->entries)
+        ProcessOne(path, entry);
+    if (path && path[0] != 0)
+        Register(path, 0xffffffff, 0, 0, 0, 0, 0);
+    return true;
 }
 
 bool file_handle_internal(LPCSTR file_name, u32& size, int& file_handle);
@@ -791,6 +845,19 @@ void CLocatorAPI::_initialize(u32 flags, LPCSTR target_folder, LPCSTR fs_name)
 {
 	char _delimiter = '|'; //','
 	if (m_Flags.is(flReady))return;
+    std::unique_ptr<StartupScanCache> scan_cache;
+    struct reset_scan_pointer
+    {
+        StartupScanCache*& pointer;
+        ~reset_scan_pointer() { pointer = nullptr; }
+    } reset_scan{m_startup_scan_cache};
+#ifndef _EDITOR
+    if (!(Core.Params && strstr(Core.Params, "-no_fs_scan_cache")))
+    {
+        scan_cache = std::make_unique<StartupScanCache>();
+        m_startup_scan_cache = scan_cache.get();
+    }
+#endif
 	CTimer t;
 	t.Start();
 	Log("Initializing File System...");
@@ -884,6 +951,11 @@ void CLocatorAPI::_initialize(u32 flags, LPCSTR target_folder, LPCSTR fs_name)
 	};
 
 
+    // A runtime rescan must see changes made after startup. Drop metadata and
+    // its memory before publishing the ready index or applying an overlay.
+    m_startup_scan_cache = nullptr;
+    scan_cache.reset();
+
 	Msg("File System Ready...");
 	size_t M2 = Memory.mem_usage();
 	Msg("FS: %d files cached %d archives, %lldKb memory used.", m_files.size(), m_archives.size(), (M2 - M1) / 1024);
@@ -908,7 +980,6 @@ void CLocatorAPI::_initialize(u32 flags, LPCSTR target_folder, LPCSTR fs_name)
 		}
 	}
 
-	rec_files.clear();
 	//-----------------------------------------------------------
 
 	CreateLog(0 != strstr(Core.Params, "-nolog"));

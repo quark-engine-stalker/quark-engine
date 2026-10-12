@@ -11,6 +11,7 @@
 #include <utility>
 
 #include "memory_space.h"
+#include "memory_object_index.h"
 
 class CAgentManager;
 
@@ -39,7 +40,7 @@ protected:
 	VISIBLES* m_visible_objects;
 	SOUNDS* m_sound_objects;
 	HITS* m_hit_objects;
-	OBJECT_INDEX m_visible_index;
+	mutable CMemoryObjectIndex m_visible_object_index;
 	OBJECT_INDEX m_sound_index;
 	OBJECT_INDEX m_hit_index;
 	// One ordered list of eligible visual-memory slots per squad member bit.
@@ -107,7 +108,12 @@ public:
 
 	const VISUAL_MERGE_INDICES* visual_merge_candidates(const VISIBLES& objects, squad_mask_type mask);
 	void visual_object_filter_changed(u32 index, squad_mask_type old_mask, bool old_enabled);
+	u32 visual_object_index(const VISIBLES& objects, u16 id) const;
+	bool try_visual_object_index(const VISIBLES& objects, u16 id, u32& index) const;
+	bool visual_object_index_ready() const;
+	void visual_object_replaced(u32 index, u16 old_id, squad_mask_type old_mask, bool old_enabled);
 	void visual_object_appended(u32 index);
+	void invalidate_visual_object_index();
 	void invalidate_visual_merge_candidates();
 	IC u32 visual_merge_revision() const;
 };

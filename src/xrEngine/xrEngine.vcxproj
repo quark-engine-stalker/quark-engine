@@ -83,6 +83,8 @@
     </Manifest>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="DiscordRpcClient.h" />
+    <ClInclude Include="engine_version.h" />
     <ClInclude Include="..\3rd party\discord\achievement_manager.h" />
     <ClInclude Include="..\3rd party\discord\activity_manager.h" />
     <ClInclude Include="..\3rd party\discord\application_manager.h" />
@@ -198,20 +200,8 @@
     <ClInclude Include="_d3d_extensions.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="..\3rd party\discord\achievement_manager.cpp" />
-    <ClCompile Include="..\3rd party\discord\activity_manager.cpp" />
-    <ClCompile Include="..\3rd party\discord\application_manager.cpp" />
-    <ClCompile Include="..\3rd party\discord\core.cpp" />
-    <ClCompile Include="..\3rd party\discord\image_manager.cpp" />
-    <ClCompile Include="..\3rd party\discord\lobby_manager.cpp" />
-    <ClCompile Include="..\3rd party\discord\network_manager.cpp" />
-    <ClCompile Include="..\3rd party\discord\overlay_manager.cpp" />
-    <ClCompile Include="..\3rd party\discord\relationship_manager.cpp" />
-    <ClCompile Include="..\3rd party\discord\storage_manager.cpp" />
-    <ClCompile Include="..\3rd party\discord\store_manager.cpp" />
+    <ClCompile Include="DiscordRpcClient.cpp" />
     <ClCompile Include="..\3rd party\discord\types.cpp" />
-    <ClCompile Include="..\3rd party\discord\user_manager.cpp" />
-    <ClCompile Include="..\3rd party\discord\voice_manager.cpp" />
     <ClCompile Include="ai_script_lua_debug.cpp" />
     <ClCompile Include="ai_script_lua_extension.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>

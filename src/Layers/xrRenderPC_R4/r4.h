@@ -315,6 +315,8 @@ private:
 	xr_vector<SunLodCaster> m_sunLodCasters;
 	xr_vector<ISpatialFrustumMask> m_sunSpatialGather;
 	xr_vector<SunDynamicCaster> m_sunDynamicCasters;
+	CSector* m_sunLargestSector = nullptr;
+
 
 	void initialize_resource_policy();
 	void destroy_resource_policy();
@@ -335,7 +337,7 @@ private:
 	void add_Static_MultiFrustum(dxRender_Visual* pVisual, const xr_vector<CFrustum>& frustums,
 		const u32* masks, u32 mask_count);
 	void gather_sun_static(dxRender_Visual* pVisual, u32 sector_index, u32 cascade_mask, u32 fully_visible_mask);
-	void prepare_sun_cascade(u32 cascade_ind);
+	void prepare_sun_cascade(u32 cascade_ind, const Fmatrix& viewport, const Fmatrix& viewport_inverse);
 	void gather_sun_casters(CSector* cull_sector);
 	void submit_sun_cascade_casters(u32 cascade_ind);
 	void add_leafs_Dynamic(dxRender_Visual* pVisual); // if detected node's full visibility
@@ -514,6 +516,7 @@ public:
 	virtual void model_Logging(BOOL bEnable) { Models->Logging(bEnable); }
 	virtual void models_Prefetch();
 	virtual void models_PrefetchOne(LPCSTR name, bool assert = true);
+	virtual void models_PrepareHud(LPCSTR name, bool imminent = false);
 	virtual void models_Clear(BOOL b_complete);
 	virtual bool models_Exists(LPCSTR name);
 

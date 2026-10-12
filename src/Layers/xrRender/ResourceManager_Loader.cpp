@@ -1,7 +1,9 @@
 #include "stdafx.h"
+#include "../../xrEngine/IGame_Persistent.h"
 #pragma hdrstop
 
 #include "ResourceManager.h"
+#include "VideoMemoryPolicy.h"
 #include "blenders\blender.h"
 
 void fix_texture_name(LPSTR fn);
@@ -194,6 +196,15 @@ void CResourceManager::PinTexture(LPCSTR name)
 	xr_strcpy(normalized, name);
 	fix_texture_name(normalized);
 
+	// Price only existing DDS files. Video/user textures stay on their normal
+	// ownership path rather than becoming unpriced session-long cache entries.
+	string_path resolved;
+	const CLocatorAPI::file* file = FS.exist(resolved, "$game_textures$", normalized, ".dds");
+	if (!file)
+		return;
+	const u64 bytes = file->size_real;
+	const u64 budget = static_cast<u64>(_max(0, psTextureWarmupMemoryMb)) * 1024u * 1024u;
+
 	// Runtime pinning must never turn into another synchronous texture load.
 	// Retain only an object that is already present in the resource registry.
 	xrCriticalSectionGuard guard(textureGuard);
@@ -202,10 +213,20 @@ void CResourceManager::PinTexture(LPCSTR name)
 		return;
 
 	CTexture* const candidate = found->second;
-	for (const ref_texture& retained : m_warm_textures)
-		if (retained._get() == candidate)
+	for (const warm_texture_entry& retained : m_warm_textures)
+		if (retained.texture._get() == candidate)
 			return;
-	m_warm_textures.push_back(ref_texture(candidate));
+	const u64 resident = candidate->ResidentBytes();
+	const u64 cost = _max(bytes, resident);
+	const u64 limit = video_memory_policy::optional_texture_budget(budget,
+		m_video_memory_budget, m_video_memory_usage, m_warm_texture_reclaimable_bytes);
+	if (m_warm_texture_bytes > limit || cost > limit - m_warm_texture_bytes)
+		return;
+	m_warm_textures.push_back({ref_texture(candidate), bytes, Device.dwTimeGlobal});
+	m_warm_texture_bytes += cost;
+	m_warm_texture_resident_bytes += resident;
+	if (candidate->dwReference.load(std::memory_order_relaxed) == 1)
+		m_warm_texture_reclaimable_bytes += resident;
 }
 
 void CResourceManager::DestroyNecessaryTextures()
@@ -218,4 +239,71 @@ void CResourceManager::DestroyNecessaryTextures()
 	// Release references outside the registry lock. The final release may call
 	// back into _DeleteTexture().
 	necessary.clear();
+}
+
+void CResourceManager::SetVideoMemoryBudget(u64 budget, u64 usage)
+{
+	xrCriticalSectionGuard guard(textureGuard);
+	m_video_memory_budget = budget;
+	m_video_memory_usage = usage;
+	// Optional model workers must not add uploads while required resources
+	// already consume the safety margin. Demand loads always remain enabled.
+	m_allow_speculative_texture_upload.store(!budget || usage < budget - budget / 8u,
+		std::memory_order_release);
+}
+
+void CResourceManager::TrimWarmTextures(u32 now, bool pressure, bool hard_pressure, u32 max_releases)
+{
+	if (!max_releases)
+		return;
+	xr_vector<ref_texture> retired;
+	{
+		xrCriticalSectionGuard guard(textureGuard);
+		m_warm_texture_bytes = m_warm_texture_resident_bytes = m_warm_texture_reclaimable_bytes = 0;
+		for (const warm_texture_entry& entry : m_warm_textures)
+		{
+			const u64 resident = entry.texture->ResidentBytes();
+			m_warm_texture_bytes += _max(entry.source_bytes, resident);
+			m_warm_texture_resident_bytes += resident;
+			if (entry.texture->dwReference.load(std::memory_order_acquire) == 1)
+				m_warm_texture_reclaimable_bytes += resident;
+		}
+		const u64 configured = static_cast<u64>(_max(0, psTextureWarmupMemoryMb)) * 1024u * 1024u;
+		const u64 limit = video_memory_policy::optional_texture_budget(configured,
+			m_video_memory_budget, m_video_memory_usage, m_warm_texture_reclaimable_bytes);
+		for (auto it = m_warm_textures.begin(); it != m_warm_textures.end() && retired.size() < max_releases;)
+		{
+			CTexture* texture = it->texture._get();
+			const u32 age = video_memory_policy::warm_age(now, it->retained_at, texture->last_used_time);
+			const bool over_budget = pressure || m_warm_texture_bytes > limit;
+			const u32 grace = over_budget ? (hard_pressure ? video_memory_policy::warm_hard_pressure_idle_ms :
+				video_memory_policy::warm_pressure_idle_ms) : video_memory_policy::warm_idle_ms;
+			// Only retire sole cache ownership. Shader/UI/scene/explicit-prefetch
+			// owners are never unloaded or modified by memory maintenance.
+			if (age >= grace && texture->dwReference.load(std::memory_order_acquire) == 1)
+			{
+				// Detach before final Release: workers must not find an entry whose
+				// destructor is running. A new texture with this name can publish
+				// immediately, without the retired destructor unregistering it.
+				const auto registered = m_textures.find(texture->cName.c_str());
+				if (registered != m_textures.end() && registered->second == texture)
+					m_textures.erase(registered);
+				texture->dwFlags &= ~xr_resource_flagged::RF_REGISTERED;
+				const u64 resident = texture->ResidentBytes();
+				m_warm_texture_bytes -= _max(it->source_bytes, resident);
+				m_warm_texture_resident_bytes -= resident;
+				// A worker can drop a shared owner after the first accounting pass.
+				// That texture was not counted as reclaimable yet; clamp the estimate
+				// instead of wrapping an unsigned counter when it now becomes idle.
+				m_warm_texture_reclaimable_bytes -= _min(m_warm_texture_reclaimable_bytes, resident);
+				retired.push_back(it->texture);
+				it = m_warm_textures.erase(it);
+			}
+			else
+				++it;
+		}
+	}
+	// Final release can unregister the texture. Do not hold registry iterators
+	// or its lock across destructors; this runs at the pre-render frame boundary.
+	retired.clear();
 }

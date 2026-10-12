@@ -438,6 +438,8 @@
     <ClInclude Include="ShadersExternalData.h">
       <Filter>Game API\Objects</Filter>
     </ClInclude>
+    <ClInclude Include="DiscordRpcClient.h"><Filter>Interfaces\Discord</Filter></ClInclude>
+    <ClInclude Include="engine_version.h"><Filter>Interfaces\Discord</Filter></ClInclude>
     <ClInclude Include="..\3rd party\discord\achievement_manager.h">
       <Filter>Interfaces\Discord</Filter>
     </ClInclude>
@@ -761,46 +763,8 @@
     <ClCompile Include="xrSASH.cpp">
       <Filter>OpenAutomate</Filter>
     </ClCompile>
-    <ClCompile Include="..\3rd party\discord\achievement_manager.cpp">
-      <Filter>Interfaces\Discord</Filter>
-    </ClCompile>
-    <ClCompile Include="..\3rd party\discord\activity_manager.cpp">
-      <Filter>Interfaces\Discord</Filter>
-    </ClCompile>
-    <ClCompile Include="..\3rd party\discord\application_manager.cpp">
-      <Filter>Interfaces\Discord</Filter>
-    </ClCompile>
-    <ClCompile Include="..\3rd party\discord\core.cpp">
-      <Filter>Interfaces\Discord</Filter>
-    </ClCompile>
-    <ClCompile Include="..\3rd party\discord\image_manager.cpp">
-      <Filter>Interfaces\Discord</Filter>
-    </ClCompile>
-    <ClCompile Include="..\3rd party\discord\lobby_manager.cpp">
-      <Filter>Interfaces\Discord</Filter>
-    </ClCompile>
-    <ClCompile Include="..\3rd party\discord\network_manager.cpp">
-      <Filter>Interfaces\Discord</Filter>
-    </ClCompile>
-    <ClCompile Include="..\3rd party\discord\overlay_manager.cpp">
-      <Filter>Interfaces\Discord</Filter>
-    </ClCompile>
-    <ClCompile Include="..\3rd party\discord\relationship_manager.cpp">
-      <Filter>Interfaces\Discord</Filter>
-    </ClCompile>
-    <ClCompile Include="..\3rd party\discord\storage_manager.cpp">
-      <Filter>Interfaces\Discord</Filter>
-    </ClCompile>
-    <ClCompile Include="..\3rd party\discord\store_manager.cpp">
-      <Filter>Interfaces\Discord</Filter>
-    </ClCompile>
+    <ClCompile Include="DiscordRpcClient.cpp"><Filter>Interfaces\Discord</Filter></ClCompile>
     <ClCompile Include="..\3rd party\discord\types.cpp">
-      <Filter>Interfaces\Discord</Filter>
-    </ClCompile>
-    <ClCompile Include="..\3rd party\discord\user_manager.cpp">
-      <Filter>Interfaces\Discord</Filter>
-    </ClCompile>
-    <ClCompile Include="..\3rd party\discord\voice_manager.cpp">
       <Filter>Interfaces\Discord</Filter>
     </ClCompile>
     <ClCompile Include="imgui_base.cpp">

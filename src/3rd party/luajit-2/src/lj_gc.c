@@ -27,6 +27,11 @@
 #include "lj_trace.h"
 #include "lj_vm.h"
 
+#if LJ_TARGET_WINDOWS
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 #if LJ_TARGET_X86ORX64 && defined(_MSC_VER)
 #include <intrin.h>
 #define gc_prefetch(p) _mm_prefetch((const char *)(p), _MM_HINT_T0)
@@ -61,6 +66,9 @@ static LJ_AINLINE uint64_t gc_cycle_counter(void)
 #define GCSWEEPSTREMPTYMAX	256
 #define GCSWEEPCOST	10
 #define GCFINALIZECOST	100
+#define GCSWEEPHOSTMAX	(GCSWEEPMAX * 16u)
+#define GCSWEEPHOSTCHECK	(GCSWEEPMAX * 4u)
+#define GCSWEEPHOSTUS	10u
 
 #define UDATA_BITMAP_WORDS (LJ_UDATA_REGISTRY_PAGE_SIZE / 64)
 
@@ -810,6 +818,44 @@ static GCRef *gc_sweep(global_State *g, GCRef *p, uint32_t lim, uint32_t *visite
   return p;
 }
 
+/* Amortize host/API/timer overhead for cheap root-list sweep blocks without
+** turning a larger requested work quantum into an unbounded wall-time slice.
+** Only the explicit host step uses this path. Check time every 160 objects,
+** with a 640-object hard cap, and leave arbitrary __gc callbacks to finalize.
+** No mutator runs between these blocks; the cursor and free order are unchanged.
+** On other platforms (or a failed timer query), retain one stock-sized block. */
+static GCRef *gc_sweep_host(global_State *g, GCRef *p, uint32_t limit,
+			  MSize *cost)
+{
+#if LJ_TARGET_WINDOWS
+  LARGE_INTEGER frequency, started, now;
+  LONGLONG deadline;
+  uint32_t swept = 0;
+  if (limit > GCSWEEPMAX && QueryPerformanceFrequency(&frequency) &&
+      QueryPerformanceCounter(&started)) {
+    deadline = frequency.QuadPart * GCSWEEPHOSTUS / 1000000;
+    if (deadline < 1) deadline = 1;
+    do {
+      uint32_t block = limit - swept;
+      if (block > GCSWEEPHOSTCHECK) block = GCSWEEPHOSTCHECK;
+      p = gc_sweep(g, p, block, NULL);
+      swept += block;
+      if (gcref(*p) == NULL || swept >= limit)
+	break;
+      if (!QueryPerformanceCounter(&now) ||
+	  now.QuadPart - started.QuadPart >= deadline)
+	break;
+    } while (1);
+    *cost = swept * GCSWEEPCOST;
+    return p;
+  }
+#else
+  UNUSED(limit);
+#endif
+  *cost = GCSWEEPMAX * GCSWEEPCOST;
+  return gc_sweep(g, p, GCSWEEPMAX, NULL);
+}
+
 /* Check whether we can clear a key or a value slot from a table. */
 static int gc_mayclear(cTValue *o, int val)
 {
@@ -1049,7 +1095,8 @@ static void atomic(global_State *g, lua_State *L)
 }
 
 /* GC state machine. Returns a cost estimate for each step performed. */
-static size_t gc_onestep(lua_State *L, uint32_t sweepstr_object_limit)
+static size_t gc_onestep(lua_State *L, uint32_t sweepstr_object_limit,
+			uint32_t sweep_object_limit)
 {
   global_State *g = G(L);
   switch (g->gc.state) {
@@ -1134,7 +1181,9 @@ static size_t gc_onestep(lua_State *L, uint32_t sweepstr_object_limit)
     }
   case GCSsweep: {
     MSize old = g->gc.total;
-    setmref(g->gc.sweep, gc_sweep(g, mref(g->gc.sweep, GCRef), GCSWEEPMAX, NULL));
+    MSize cost;
+    setmref(g->gc.sweep, gc_sweep_host(g, mref(g->gc.sweep, GCRef),
+				    sweep_object_limit, &cost));
     lua_assert(old >= g->gc.total);
     g->gc.estimate -= old - g->gc.total;
     if (gcref(*mref(g->gc.sweep, GCRef)) == NULL) {
@@ -1149,7 +1198,7 @@ static size_t gc_onestep(lua_State *L, uint32_t sweepstr_object_limit)
 	g->gc.debt = 0;
       }
     }
-    return GCSWEEPMAX*GCSWEEPCOST;
+    return cost;
     }
   case GCSfinalize:
     if (gcref(g->gc.mmudata) != NULL) {
@@ -1192,9 +1241,15 @@ static int LJ_FASTCALL gc_step(lua_State *L, MSize stepsize,
   global_State *g = G(L);
   MSize lim;
   MSize host_stepcost = 0;
+  uint32_t sweep_object_limit = GCSWEEPMAX;
   int32_t ostate = g->vmstate;
   if (stepsize < GCSTEPSIZE)
     stepsize = GCSTEPSIZE;
+  if (atomicmode == 1) {
+    MSize blocks = stepsize / GCSTEPSIZE;
+    sweep_object_limit = blocks < GCSWEEPHOSTMAX / GCSWEEPMAX ?
+      (uint32_t)blocks * GCSWEEPMAX : GCSWEEPHOSTMAX;
+  }
   /* A host-managed automatic step may be entered after another thread already
   ** reached an unbounded phase. Keep atomic and arbitrary __gc callbacks at the
   ** host's serialized post-submit point. Engine-sized steps use mode 1: they
@@ -1214,7 +1269,8 @@ static int LJ_FASTCALL gc_step(lua_State *L, MSize stepsize,
     g->gc.debt += g->gc.total - g->gc.threshold;
   do {
     int oldstate = g->gc.state;
-    MSize stepcost = (MSize)gc_onestep(L, atomicmode == 1 ? GCSWEEPSTRMAX : 0);
+    MSize stepcost = (MSize)gc_onestep(L,
+	atomicmode == 1 ? GCSWEEPSTRMAX : 0, sweep_object_limit);
     lim -= stepcost;
     host_stepcost += stepcost;
     /* Atomic is the only long, indivisible incremental phase. Leave a valid
@@ -1249,7 +1305,7 @@ static int LJ_FASTCALL gc_step(lua_State *L, MSize stepsize,
     }
     /* Engine exact-step calls are wall-time scheduled by the host. Return after
     ** every object-bounded string sweep batch, after the atomic commit and after
-    ** one ordinary root-list sweep block. This makes the QPC budget observable
+    ** one time- and object-bounded root-list sweep batch. This makes the QPC budget observable
     ** at a real GC work boundary instead of a hash-bucket boundary. */
     if (atomicmode == 1 &&
         (oldstate == GCSatomic || oldstate == GCSsweep ||
@@ -1340,11 +1396,11 @@ void lj_gc_fullgc(lua_State *L)
     setmref(g->gc.sweepstrptr, &g->strhash[0]);
   }
   while (g->gc.state == GCSsweepstring || g->gc.state == GCSsweep)
-    gc_onestep(L, 0);  /* Finish sweep. */
+    gc_onestep(L, 0, GCSWEEPMAX);  /* Finish sweep. */
   lua_assert(g->gc.state == GCSfinalize || g->gc.state == GCSpause);
   /* Now perform a full GC. */
   g->gc.state = GCSpause;
-  do { gc_onestep(L, 0); } while (g->gc.state != GCSpause);
+  do { gc_onestep(L, 0, GCSWEEPMAX); } while (g->gc.state != GCSpause);
   g->gc.threshold = (g->gc.estimate/100) * g->gc.pause;
   g->vmstate = ostate;
 }

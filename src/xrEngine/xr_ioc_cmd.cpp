@@ -83,13 +83,13 @@ public:
 			Msg(
 				"* QUARK engine error logging: %s [%s]",
 				EngineErrorLogger::IsEnabled() ? "on" : "off",
-				EngineErrorLogger::GetDirectory()
+				"QUARK ENGINE/ERROR"
 			);
 		}
 		else if (EQ(args, "on") || EQ(args, "1"))
 		{
 			EngineErrorLogger::SetEnabled(true);
-			Msg("* QUARK engine error logging: on [%s]", EngineErrorLogger::GetDirectory());
+			Msg("* QUARK engine error logging: on [%s]", "QUARK ENGINE/ERROR");
 		}
 		else if (EQ(args, "off") || EQ(args, "0"))
 		{
@@ -104,13 +104,9 @@ public:
 				return;
 			}
 
-			EngineErrorLogger::ReportExplicit(
-				__FILE__,
-				__LINE__,
-				__FUNCTION__,
-				"QUARK engine logger self-test; this is not a runtime failure"
-			);
-			Msg("* QUARK logger self-test written to ENGINE-LOG.log [%s]", EngineErrorLogger::GetDirectory());
+            if (EngineErrorLogger::WriteSelfTest())
+                Msg("* QUARK v2 simulated render error written to ERROR/RENDER-LOG-SELFTEST-v2.log");
+            else Msg("! QUARK logger self-test failed to write its file");
 		}
 		else
 		{
@@ -1278,6 +1274,7 @@ void CCC_Register()
 	CMD4(CCC_Integer, "texture_warmup_ui_only", &psTextureWarmupUiOnly, 0, 1);
 	CMD4(CCC_Integer, "texture_warmup_slow_ms", &psTextureWarmupSlowMs, 1, 1000);
 	CMD4(CCC_Integer, "texture_warmup_max", &psTextureWarmupMax, 16, 8192);
+	CMD4(CCC_Integer, "texture_warmup_memory_mb", &psTextureWarmupMemoryMb, 0, 2048);
 	CMD4(CCC_Integer, "xml_text_cache", &psXmlTextCache, 0, 1);
 	CMD4(CCC_Integer, "xml_node_cache", &psXmlNodeCache, 0, 1);
 	CMD4(CCC_Integer, "xml_text_cache_max_mb", &psXmlTextCacheMaxMb, 0, 512);

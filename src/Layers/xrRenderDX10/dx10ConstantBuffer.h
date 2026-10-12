@@ -32,6 +32,8 @@ public:
 private:
 	Fvector4* Access(u16 offset);
 	bool UpdateData(u16 offset, const void* data, u32 dataSize);
+	template <u32 Size>
+	bool UpdateDataFixed(u16 offset, const void* data);
 
 private:
 	shared_str m_strBufferName;

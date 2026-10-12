@@ -47,6 +47,7 @@
 #include "InventoryBox.h"
 #include "Pda.h"
 #include "player_hud.h"
+#include "HudMaterialState.h"
 #include "script_attachment_manager.h"
 #include "CustomDevice.h"
 
@@ -1367,9 +1368,13 @@ CGameObject& CScriptGameObject::object() const
     THROW2(m_game_object && m_game_object->lua_game_object() == this, "Probably, you are trying to use a destroyed object!");
 #endif // #ifdef DEBUG
 
-	static CGameObject* m_game_object_dummy = NULL;
 	if (!m_game_object || m_game_object->lua_game_object() != this)
-		return (*m_game_object_dummy);
+	{
+		// A reference cannot encode an absent object. Lua-facing methods stop
+		// in SafeWrap; direct native callers must fail before dereferencing null.
+		FATAL("Attempt to access a destroyed script game object");
+		std::abort();
+	}
 
 	return (*m_game_object);
 }
@@ -1385,7 +1390,21 @@ CGameObject& CScriptGameObject::object() const
 		CActor* act = smart_cast<CActor*>(&object());
 		CHudItem* itm = smart_cast<CHudItem*>(&object());
 		if (itm)
+		{
+			if (const HudMaterialState* state = itm->DeferredHudMaterials())
+			{
+				::luabind::object table = ::luabind::newtable(ai().script_engine().lua());
+				for (const HudMaterialEntry& entry : state->entries)
+				{
+					::luabind::object material = ::luabind::newtable(ai().script_engine().lua());
+					material["shader"] = entry.shader.c_str();
+					material["texture"] = entry.texture.c_str();
+					table[entry.id] = material;
+				}
+				return table;
+			}
 			k = itm->HudItemData()->m_model;
+		}
 		else if (act)
 			k = g_player_hud->m_model->dcast_PKinematics();
 	}
@@ -1442,7 +1461,21 @@ CGameObject& CScriptGameObject::object() const
 		CActor* act = smart_cast<CActor*>(&object());
 		CHudItem* itm = smart_cast<CHudItem*>(&object());
 		if (itm)
+		{
+			if (const HudMaterialState* state = itm->DeferredHudMaterials())
+			{
+				::luabind::object table = ::luabind::newtable(ai().script_engine().lua());
+				for (const HudMaterialEntry& entry : state->entries)
+				{
+					::luabind::object material = ::luabind::newtable(ai().script_engine().lua());
+					material["shader"] = entry.shader_default.c_str();
+					material["texture"] = entry.texture_default.c_str();
+					table[entry.id] = material;
+				}
+				return table;
+			}
 			k = itm->HudItemData()->m_model;
+		}
 		else if (act)
 			k = g_player_hud->m_model->dcast_PKinematics();
 	}
@@ -1575,7 +1608,11 @@ void CScriptGameObject::SetShaderTexture(int id, LPCSTR shader, LPCSTR texture, 
 		CActor* act = smart_cast<CActor*>(&object());
 		CHudItem* itm = smart_cast<CHudItem*>(&object());
 		if (itm)
+		{
+			if (itm->DeferHudMaterialChange(id, shader, texture, false))
+				return;
 			k = itm->HudItemData()->m_model;
+		}
 		else if (act)
 		{
 			set_shader_tex(g_player_hud->m_model->dcast_RenderVisual(), id, shader, texture);
@@ -1601,7 +1638,11 @@ void CScriptGameObject::ResetShaderTexture(int id, bool bHud)
 		CActor* act = smart_cast<CActor*>(&object());
 		CHudItem* itm = smart_cast<CHudItem*>(&object());
 		if (itm)
+		{
+			if (itm->DeferHudMaterialChange(id, nullptr, nullptr, true))
+				return;
 			k = itm->HudItemData()->m_model;
+		}
 		else if (act)
 		{
 			reset_shader_tex(g_player_hud->m_model->dcast_RenderVisual(), id);

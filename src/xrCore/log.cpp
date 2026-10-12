@@ -4,6 +4,7 @@
 #include <time.h>
 #include "resource.h"
 #include "log.h"
+#include "engine_error_logger.h"
 #ifdef _EDITOR
 #include "malloc.h"
 #endif
@@ -140,12 +141,18 @@ void AddOne(const char* split)
 {
 	logCS.Enter();
 
+    // Keep LogCB's original text for script/console compatibility, but never
+    // persist it into the session history, disk log or crash attachments.
+    const size_t safeLength = EngineErrorLogger::SanitizeText(split, nullptr, 0);
+    std::string t(safeLength + 1, '\0');
+    EngineErrorLogger::SanitizeText(split, &t[0], t.size());
+    t.resize(safeLength);
 #ifdef DEBUG
-	OutputDebugString(split);
-	OutputDebugString("\n");
+    OutputDebugString(t.c_str());
+    OutputDebugString("\n");
 #endif
-
-	std::string t = split;
+    if (split && split[0] == '!')
+        EngineErrorLogger::AddBreadcrumb("session/warning", t.c_str(), __FILE__, __LINE__, __FUNCTION__);
 	if (logTimestamps)
 	{
 		std::string c;

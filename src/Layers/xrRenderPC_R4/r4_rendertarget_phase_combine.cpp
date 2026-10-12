@@ -381,8 +381,8 @@ void CRenderTarget::phase_combine()
 		waterHistoryBox.right = (UINT)clampr(iCeil(w / ps_ssfx_water.x), 1, (int)Device.dwWidth);
 		waterHistoryBox.bottom = (UINT)clampr(iCeil(h / ps_ssfx_water.x), 1, (int)Device.dwHeight);
 		waterHistoryBox.back = 1;
-		HW.pContext->CopySubresourceRegion(rt_ssfx_water->pTexture->surface_get(), 0, 0, 0, 0,
-			rt_ssfx_temp->pTexture->surface_get(), 0, &waterHistoryBox);
+		HW.pContext->CopySubresourceRegion(rt_ssfx_water->pSurface, 0, 0, 0, 0,
+			rt_ssfx_temp->pSurface, 0, &waterHistoryBox);
 
 		// Water SSR Blur
 		phase_ssfx_water_blur();
@@ -420,15 +420,15 @@ void CRenderTarget::phase_combine()
 	}
 
 	/*if (ssfx_PrevPos_Requiered)
-		HW.pContext->CopyResource(rt_ssfx_prevPos->pTexture->surface_get(), rt_Position->pTexture->surface_get());*/
+		HW.pContext->CopyResource(rt_ssfx_prevPos->pSurface, rt_Position->pSurface);*/
 
 	// Update rt_Generic_temp ( rain and water )
 	if (RImplementation.o.ssfx_glass)
 	{
 		if (!RImplementation.o.dx10_msaa)
-			HW.pContext->CopyResource(rt_Generic_temp->pTexture->surface_get(), rt_Generic_0->pTexture->surface_get());
+			HW.pContext->CopyResource(rt_Generic_temp->pSurface, rt_Generic_0->pSurface);
 		else
-			HW.pContext->CopyResource(rt_Generic_temp->pTexture->surface_get(), rt_Generic_0_r->pTexture->surface_get());
+			HW.pContext->CopyResource(rt_Generic_temp->pSurface, rt_Generic_0_r->pSurface);
 	}
 
 	// Forward rendering
@@ -472,10 +472,10 @@ void CRenderTarget::phase_combine()
 	if (RImplementation.o.dx10_msaa)
 	{
 		// we need to resolve rt_Generic_1 into rt_Generic_1_r
-		HW.pContext->ResolveSubresource(rt_Generic_1->pTexture->surface_get(), 0,
-		                                rt_Generic_1_r->pTexture->surface_get(), 0, DXGI_FORMAT_R8G8B8A8_UNORM);
-		HW.pContext->ResolveSubresource(rt_Generic_0->pTexture->surface_get(), 0,
-		                                rt_Generic_0_r->pTexture->surface_get(), 0, DXGI_FORMAT_R8G8B8A8_UNORM);
+		HW.pContext->ResolveSubresource(rt_Generic_1->pSurface, 0,
+		                                rt_Generic_1_r->pSurface, 0, DXGI_FORMAT_R8G8B8A8_UNORM);
+		HW.pContext->ResolveSubresource(rt_Generic_0->pSurface, 0,
+		                                rt_Generic_0_r->pSurface, 0, DXGI_FORMAT_R8G8B8A8_UNORM);
 	}
 
 	// for msaa we need a resolved color buffer - Holger
@@ -521,7 +521,7 @@ void CRenderTarget::phase_combine()
 	   {
 	      // we need to resolve rt_Generic_1 into rt_Generic_1_r
 	      if( bDistort )
-	         HW.pDevice->ResolveSubresource( rt_Generic_1_r->pTexture->surface_get(), 0, rt_Generic_1->pTexture->surface_get(), 0, DXGI_FORMAT_R8G8B8A8_UNORM );
+	         HW.pDevice->ResolveSubresource( rt_Generic_1_r->pSurface, 0, rt_Generic_1->pSurface, 0, DXGI_FORMAT_R8G8B8A8_UNORM );
 	   }
 	   */
 	RCache.set_Stencil(FALSE);
@@ -620,7 +620,7 @@ void CRenderTarget::phase_combine()
 	}
 
 	if (ssfx_PrevPos_Requiered)
-		HW.pContext->CopyResource(rt_ssfx_prevPos->pTexture->surface_get(), rt_Position->pTexture->surface_get());
+		HW.pContext->CopyResource(rt_ssfx_prevPos->pSurface, rt_Position->pSurface);
 
 	// PP enabled ?
 	//	Render to RT texture to be able to copy RT even in windowed mode.
@@ -786,11 +786,11 @@ void CRenderTarget::phase_combine()
 	else if (RImplementation.o.dx11_hdr10) {
 		// Menu/UI compatibility path: preserve the historical rt_Color flow when PP_Complex is disabled.
 		if (hdrBloomActive) {
-			HW.pContext->CopyResource(rt_Generic_0->pTexture->surface_get(), rt_Color->pTexture->surface_get());
+			HW.pContext->CopyResource(rt_Generic_0->pSurface, rt_Color->pSurface);
 			phase_hdr10_bloom(false, rt_Color);
 		}
 		if (hdrFlareActive) {
-			HW.pContext->CopyResource(rt_Generic_0->pTexture->surface_get(), rt_Color->pTexture->surface_get());
+			HW.pContext->CopyResource(rt_Generic_0->pSurface, rt_Color->pSurface);
 			phase_hdr10_lens_flare(false);
 		}
 	}

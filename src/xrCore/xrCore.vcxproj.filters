@@ -449,6 +449,9 @@
     <ClInclude Include="engine_error_logger.h">
       <Filter>Debug core</Filter>
     </ClInclude>
+    <ClInclude Include="diagnostic_privacy.h">
+      <Filter>Debug core</Filter>
+    </ClInclude>
     <ClInclude Include="net_utils.h">
       <Filter>FS</Filter>
     </ClInclude>

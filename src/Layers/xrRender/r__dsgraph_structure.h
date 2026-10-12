@@ -84,6 +84,31 @@ public:
 	xr_frame_vector<R_dsgraph::mapMatrixTextures::TNode*> matTextures;
 	xr_frame_vector<R_dsgraph::mapMatrixTextures::TNode*> matTexturesTemp;
 
+	// Borrowed leaf ranges are used only by a synchronous fork/join prepare.
+	// Workers never touch shaders, visuals, the arena, or the D3D context.
+	struct OpaqueSortRange
+	{
+		R_dsgraph::mapNormalItems* normal;
+		R_dsgraph::mapMatrixItems* matrix;
+		size_t count;
+	};
+	xr_frame_vector<OpaqueSortRange> m_opaque_sort_ranges;
+	static constexpr size_t opaque_sort_large_leaf_size = 128;
+	u32 m_opaque_sort_items[2] = {};
+	u32 m_opaque_sort_leaves[2] = {};
+	void r_dsgraph_note_opaque_item(u32 priority, size_t count)
+	{
+		// Count only work that can be parallelized. Fragmented graphs and a
+		// single large leaf never need another traversal just to reject MT.
+		if (count == opaque_sort_large_leaf_size)
+		{
+			m_opaque_sort_items[priority] += u32(opaque_sort_large_leaf_size);
+			++m_opaque_sort_leaves[priority];
+		}
+		else if (count > opaque_sort_large_leaf_size)
+			++m_opaque_sort_items[priority];
+	}
+
 	struct SpatialSortItem
 	{
 		ISpatial* spatial;
@@ -147,6 +172,7 @@ public:
 		  matPS(m_dsgraph_frame_arena), matCS(m_dsgraph_frame_arena),
 		  matStates(m_dsgraph_frame_arena), matTextures(m_dsgraph_frame_arena),
 		  matTexturesTemp(m_dsgraph_frame_arena),
+		  m_opaque_sort_ranges(m_dsgraph_frame_arena),
 		  lstLODs(m_dsgraph_frame_arena), lstLODgroups(m_dsgraph_frame_arena),
 		  lstRenderables(m_dsgraph_frame_arena), lstRenderableSortKeys(m_dsgraph_frame_arena),
 		  lstSpatial(m_dsgraph_frame_arena), lstVisuals(m_dsgraph_frame_arena)
@@ -186,6 +212,7 @@ public:
 		matTextures.discard_storage();
 		matTexturesTemp.discard_storage();
 		lstLODs.discard_storage();
+		m_opaque_sort_ranges.discard_storage();
 		lstLODgroups.discard_storage();
 		lstRenderables.discard_storage();
 		lstRenderableSortKeys.discard_storage();
@@ -211,6 +238,7 @@ public:
 		matStates.prepare_storage(vector_reserve_limit);
 		matTextures.prepare_storage(vector_reserve_limit);
 		matTexturesTemp.prepare_storage(vector_reserve_limit);
+		m_opaque_sort_ranges.prepare_storage(vector_reserve_limit);
 		lstLODs.prepare_storage(vector_reserve_limit);
 		lstLODgroups.prepare_storage(vector_reserve_limit);
 		lstRenderables.prepare_storage(vector_reserve_limit);
@@ -241,6 +269,9 @@ public:
 		matTexturesTemp.discard_storage();
 
 		lstLODs.discard_storage();
+		m_opaque_sort_ranges.discard_storage();
+		m_opaque_sort_items[0] = m_opaque_sort_items[1] = 0;
+		m_opaque_sort_leaves[0] = m_opaque_sort_leaves[1] = 0;
 		lstLODgroups.discard_storage();
 		lstRenderables.discard_storage();
 		lstRenderableSortKeys.discard_storage();
@@ -293,6 +324,7 @@ public:
 	void r_dsgraph_insert_static(dxRender_Visual* pVisual);
 
 	void r_dsgraph_render_graph(u32 _priority, bool _clear = true);
+	bool r_dsgraph_prepare_opaque_sort(u32 priority);
 	void r_dsgraph_render_hud(bool NoPS = false);
 	void r_dsgraph_render_hud_ui();
 	void r_dsgraph_render_cam_ui();

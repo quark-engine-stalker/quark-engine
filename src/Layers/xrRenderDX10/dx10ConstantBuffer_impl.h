@@ -98,31 +98,42 @@ IC bool dx10ConstantBuffer::SetData(R_constant_load& L, u32 relativeOffset, cons
 	return UpdateData(static_cast<u16>(offset), data, dataSize);
 }
 
+// Typed setters already know the shader register width. Keeping it constant
+// avoids classifying the byte count again and calling a variable-size memcpy.
+template <u32 Size>
+ICF bool dx10ConstantBuffer::UpdateDataFixed(u16 offset, const void* data)
+{
+	VERIFY(static_cast<u32>(offset) + Size <= m_uiBufferSize);
+	BYTE* const destination = static_cast<BYTE*>(m_pBufferData) + offset;
+	if (dx10_constant_buffer_detail::equal_data(
+		destination, static_cast<const BYTE*>(data), Size))
+		return false;
+	CopyMemory(destination, data, Size);
+	m_bChanged = true;
+	return true;
+}
+
 IC bool dx10ConstantBuffer::set(R_constant* C, R_constant_load& L, const Fmatrix& A)
 {
 	VERIFY(RC_float == C->type);
 	Fvector4 data[4];
-	u32 lineCount = 0;
 	switch (L.cls)
 	{
 	case RC_2x4:
-		lineCount = 2;
 		data[0].set(A._11, A._21, A._31, A._41);
 		data[1].set(A._12, A._22, A._32, A._42);
-		break;
+		return UpdateDataFixed<2 * lineSize>(L.index, data);
 	case RC_3x4:
-		lineCount = 3;
 		data[0].set(A._11, A._21, A._31, A._41);
 		data[1].set(A._12, A._22, A._32, A._42);
 		data[2].set(A._13, A._23, A._33, A._43);
-		break;
+		return UpdateDataFixed<3 * lineSize>(L.index, data);
 	case RC_4x4:
-		lineCount = 4;
 		data[0].set(A._11, A._21, A._31, A._41);
 		data[1].set(A._12, A._22, A._32, A._42);
 		data[2].set(A._13, A._23, A._33, A._43);
 		data[3].set(A._14, A._24, A._34, A._44);
-		break;
+		return UpdateDataFixed<4 * lineSize>(L.index, data);
 	default:
 #ifdef DEBUG
 		Debug.fatal		(DEBUG_INFO,"Invalid constant run-time-type for '%s'",*C->name);
@@ -130,43 +141,39 @@ IC bool dx10ConstantBuffer::set(R_constant* C, R_constant_load& L, const Fmatrix
 		NODEFAULT;
 #endif
 	}
-	return UpdateData(L.index, data, lineCount * lineSize);
+	return false;
 }
 
 IC bool dx10ConstantBuffer::set(R_constant* C, R_constant_load& L, const Fvector4& A)
 {
 	VERIFY(RC_float == C->type);
 	VERIFY(RC_1x4 == L.cls || RC_1x3 == L.cls || RC_1x2 == L.cls);
-	u32 componentCount = 0;
 	switch (L.cls)
 	{
 	case RC_1x2:
-		componentCount = 2;
-		break;
+		return UpdateDataFixed<2 * sizeof(float)>(L.index, &A.x);
 	case RC_1x3:
-		componentCount = 3;
-		break;
+		return UpdateDataFixed<3 * sizeof(float)>(L.index, &A.x);
 	case RC_1x4:
-		componentCount = 4;
-		break;
+		return UpdateDataFixed<4 * sizeof(float)>(L.index, &A.x);
 	default:
 		NODEFAULT;
 	}
-	return UpdateData(L.index, &A.x, componentCount * sizeof(float));
+	return false;
 }
 
 IC bool dx10ConstantBuffer::set(R_constant* C, R_constant_load& L, float A)
 {
 	VERIFY(RC_float == C->type);
 	VERIFY(RC_1x1 == L.cls);
-	return UpdateData(L.index, &A, sizeof(A));
+	return UpdateDataFixed<sizeof(A)>(L.index, &A);
 }
 
 IC bool dx10ConstantBuffer::set(R_constant* C, R_constant_load& L, int A)
 {
 	VERIFY(RC_int == C->type);
 	VERIFY(RC_1x1 == L.cls);
-	return UpdateData(L.index, &A, sizeof(A));
+	return UpdateDataFixed<sizeof(A)>(L.index, &A);
 }
 
 IC bool dx10ConstantBuffer::seta(R_constant* C, R_constant_load& L, u32 e, const Fmatrix& A)
@@ -174,30 +181,29 @@ IC bool dx10ConstantBuffer::seta(R_constant* C, R_constant_load& L, u32 e, const
 	VERIFY(RC_float == C->type);
 	u32 base;
 	Fvector4 data[4];
-	u32 lineCount = 0;
 	switch (L.cls)
 	{
 	case RC_2x4:
 		base = (u32)L.index + 2 * lineSize * e;
-		lineCount = 2;
 		data[0].set(A._11, A._21, A._31, A._41);
 		data[1].set(A._12, A._22, A._32, A._42);
-		break;
+		VERIFY(base <= u16(-1));
+		return UpdateDataFixed<2 * lineSize>(static_cast<u16>(base), data);
 	case RC_3x4:
 		base = (u32)L.index + 3 * lineSize * e;
-		lineCount = 3;
 		data[0].set(A._11, A._21, A._31, A._41);
 		data[1].set(A._12, A._22, A._32, A._42);
 		data[2].set(A._13, A._23, A._33, A._43);
-		break;
+		VERIFY(base <= u16(-1));
+		return UpdateDataFixed<3 * lineSize>(static_cast<u16>(base), data);
 	case RC_4x4:
 		base = (u32)L.index + 4 * lineSize * e;
-		lineCount = 4;
 		data[0].set(A._11, A._21, A._31, A._41);
 		data[1].set(A._12, A._22, A._32, A._42);
 		data[2].set(A._13, A._23, A._33, A._43);
 		data[3].set(A._14, A._24, A._34, A._44);
-		break;
+		VERIFY(base <= u16(-1));
+		return UpdateDataFixed<4 * lineSize>(static_cast<u16>(base), data);
 	default:
 #ifdef DEBUG
 		Debug.fatal		(DEBUG_INFO,"Invalid constant run-time-type for '%s'",*C->name);
@@ -205,8 +211,7 @@ IC bool dx10ConstantBuffer::seta(R_constant* C, R_constant_load& L, u32 e, const
 		NODEFAULT;
 #endif
 	}
-	VERIFY(base <= u16(-1));
-	return UpdateData(static_cast<u16>(base), data, lineCount * lineSize);
+	return false;
 }
 
 IC bool dx10ConstantBuffer::seta(R_constant* C, R_constant_load& L, u32 e, const Fvector4& A)
@@ -216,7 +221,7 @@ IC bool dx10ConstantBuffer::seta(R_constant* C, R_constant_load& L, u32 e, const
 
 	u32 base = (u32)L.index + lineSize * e;
 	VERIFY(base <= u16(-1));
-	return UpdateData(static_cast<u16>(base), &A, lineSize);
+	return UpdateDataFixed<lineSize>(static_cast<u16>(base), &A);
 }
 
 IC void* dx10ConstantBuffer::AccessDirect(R_constant_load& L, u32 DataSize)

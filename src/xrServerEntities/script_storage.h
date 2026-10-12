@@ -105,7 +105,8 @@ public:
 	void reset_lua_allocation_stats();
 	IC void current_thread(CScriptThread* thread);
 	IC CScriptThread* current_thread() const;
-	bool load_buffer(lua_State* L, LPCSTR caBuffer, size_t tSize, LPCSTR caScriptName, LPCSTR caNameSpaceName = 0);
+	bool load_buffer(lua_State* L, LPCSTR caBuffer, size_t tSize, LPCSTR caScriptName,
+	    LPCSTR caNameSpaceName = 0, bool recoveredModuleLoad = false);
 	bool load_file_into_namespace(LPCSTR caScriptName, LPCSTR caNamespaceName);
 	bool namespace_loaded(LPCSTR caName, bool remove_from_stack = true);
 	bool object(LPCSTR caIdentifier, int type);
@@ -113,7 +114,8 @@ public:
 	::luabind::object name_space(LPCSTR namespace_name);
 	int error_log(LPCSTR caFormat, ...);
 	static int __cdecl script_log(ELuaMessageType message, LPCSTR caFormat, ...);
-	static bool print_output(lua_State* L, LPCSTR caScriptName, int iErorCode = 0);
+	static bool print_output(lua_State* L, LPCSTR caScriptName, int iErorCode = 0,
+	    bool recoveredModuleLoad = false);
 	static void print_error(lua_State* L, int iErrorCode);
 	virtual void on_error(lua_State* L) = 0;
     void DebuggerAttach();

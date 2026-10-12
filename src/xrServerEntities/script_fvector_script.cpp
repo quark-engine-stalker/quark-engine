@@ -175,4 +175,9 @@ void CScriptFvector::script_register(lua_State* L)
 		.def_readwrite("y2", &Frect::y2)
 
 	];
+
+	// Fvector is a copied script value; none of its bindings transfers native
+	// ownership. Store returned positions and callback arguments with userdata
+	// instead of allocating a second, separately owned 12-byte C++ object.
+	luabind::detail::get_class_rep<Fvector>(L)->enable_inline_value_copies<Fvector>();
 }

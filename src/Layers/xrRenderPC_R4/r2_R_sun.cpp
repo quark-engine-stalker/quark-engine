@@ -207,7 +207,7 @@ Frustum::Frustum(const D3DXMATRIX* matrix)
 }
 
 //////////////////////////////////////////////////////////////////////////
-Fvector3 wform(Fmatrix& m, Fvector3 const& v)
+Fvector3 wform(const Fmatrix& m, Fvector3 const& v)
 {
 	Fvector4 r;
 	r.x = v.x * m._11 + v.y * m._21 + v.z * m._31 + m._41;
@@ -1110,7 +1110,7 @@ void CRender::init_cacades()
 	/// 	m_sun_cascades[m_sun_cascades.size()-1].size = 80;
 }
 
-void CRender::prepare_sun_cascade(u32 cascade_ind)
+void CRender::prepare_sun_cascade(u32 cascade_ind, const Fmatrix& viewport, const Fmatrix& viewport_inverse)
 {
 	VERIFY(cascade_ind < m_sun_cascades.size());
 	VERIFY(cascade_ind < SUN_CASCADE_GATHER_COUNT);
@@ -1125,18 +1125,12 @@ void CRender::prepare_sun_cascade(u32 cascade_ind)
 	// Calculate view-frustum bounds in world space. This is the original cascade
 	// setup, separated from submission so all cascade frustums exist before the
 	// shared caster gather starts.
-	Fmatrix ex_project, ex_full, ex_full_inverse;
-	ex_project = Device.mProject;
-	ex_full.mul(ex_project, Device.mView);
-	D3DXMatrixInverse((D3DXMATRIX*)&ex_full_inverse, 0, (D3DXMATRIX*)&ex_full);
-
 	CFrustum cull_frustum;
 	xr_vector<Fplane> cull_planes;
 	Fvector3 cull_COP;
 	Fmatrix cull_xform;
 
 	FPU::m64r();
-	Fmatrix fullxform_inv = ex_full_inverse;
 	cull_COP.mad(Device.vCameraPosition, fuckingsun->direction, -tweak_COP_initial_offs);
 
 	Fmatrix mdir_View, mdir_Project;
@@ -1159,6 +1153,18 @@ void CRender::prepare_sun_cascade(u32 cascade_ind)
 	t_cuboid light_cuboid;
 	if (cascade_ind == 0 || m_sun_cascades[cascade_ind].reset_chain)
 	{
+		Fmatrix fullxform_inv;
+		// Frame setup already inverted these matrices. Demo/capture callbacks may
+		// replace them later, so only reuse the inverse of the exact saved inputs.
+		if (memcmp(&Device.mProject, &Device.mProject_saved, sizeof(Fmatrix)) == 0 &&
+			memcmp(&Device.mView, &Device.mView_saved, sizeof(Fmatrix)) == 0)
+			fullxform_inv = Device.mInvFullTransform;
+		else
+		{
+			Fmatrix full;
+			full.mul(Device.mProject, Device.mView);
+			D3DXMatrixInverse((D3DXMATRIX*)&fullxform_inv, 0, (D3DXMATRIX*)&full);
+		}
 		Fvector3 near_p, edge_vec;
 		for (int p = 0; p < 4; ++p)
 		{
@@ -1186,16 +1192,6 @@ void CRender::prepare_sun_cascade(u32 cascade_ind)
 	const float map_size = m_sun_cascades[cascade_ind].size;
 	D3DXMatrixOrthoOffCenterLH((D3DXMATRIX*)&mdir_Project, -map_size * 0.5f, map_size * 0.5f,
 		-map_size * 0.5f, map_size * 0.5f, 0.1f, dist + map_size);
-
-	const float view_dim = float(RImplementation.o.smapsize);
-	Fmatrix m_viewport = {
-		view_dim / 2.f, 0.0f, 0.0f, 0.0f,
-		0.0f, -view_dim / 2.f, 0.0f, 0.0f,
-		0.0f, 0.0f, 1.0f, 0.0f,
-		view_dim / 2.f, view_dim / 2.f, 0.0f, 1.0f
-	};
-	Fmatrix m_viewport_inv;
-	D3DXMatrixInverse((D3DXMATRIX*)&m_viewport_inv, 0, (D3DXMATRIX*)&m_viewport);
 
 	cull_xform.mul(mdir_Project, mdir_View);
 	Fmatrix cull_xform_inv;
@@ -1240,10 +1236,10 @@ void CRender::prepare_sun_cascade(u32 cascade_ind)
 			floorf(cam_proj.z / align_aim_step_coef) + align_aim_step_coef / 2);
 		cam_proj.mul(align_aim_step_coef);
 		Fvector cam_pixel = wform(cull_xform, cam_proj);
-		cam_pixel = wform(m_viewport, cam_pixel);
+		cam_pixel = wform(viewport, cam_pixel);
 		Fvector shift_proj = lightXZshift;
 		cull_xform.transform_dir(shift_proj);
-		m_viewport.transform_dir(shift_proj);
+		viewport.transform_dir(shift_proj);
 
 		const float align_granularity = 4.f;
 		shift_proj.x = shift_proj.x > 0 ? align_granularity : -align_granularity;
@@ -1257,7 +1253,7 @@ void CRender::prepare_sun_cascade(u32 cascade_ind)
 		cam_pixel.z = 0;
 		cam_pixel.sub(shift_proj);
 
-		m_viewport_inv.transform_dir(cam_pixel);
+		viewport_inverse.transform_dir(cam_pixel);
 		cull_xform_inv.transform_dir(cam_pixel);
 		Fvector diff = cam_pixel;
 		static float sign_test = -1.f;
@@ -1284,16 +1280,8 @@ void CRender::gather_sun_casters(CSector* cull_sector)
 	m_sunDynamicCasters.clear();
 	m_sunSectorGatherUsed = 0;
 
-	for (u32 i = 0; i < m_sunSectorGather.size(); ++i)
-	{
-		SunSectorGather& record = m_sunSectorGather[i];
-		record.sector = 0;
-		record.root = 0;
-		record.cascade_mask = 0;
-		for (u32 c = 0; c < SUN_CASCADE_GATHER_COUNT; ++c)
-			record.frustums[c].clear();
-	}
-
+	// Every used slot is initialized when its sector enters the new index below.
+	// Clearing all retained slots here repeats that work, including unused ones.
 	if (!cull_sector || m_sun_cascades.empty())
 		return;
 
@@ -1353,6 +1341,7 @@ void CRender::gather_sun_casters(CSector* cull_sector)
 		r_pmask(true, false);
 	set_Object(0);
 	set_Transform(&Fidentity);
+
 
 	// Static level geometry: each sector hierarchy is walked once and every leaf
 	// receives a 3-bit cascade mask. This removes the old three independent
@@ -1445,6 +1434,7 @@ void CRender::submit_sun_cascade_casters(u32 cascade_ind)
 
 	// Leaves were already frustum/portal classified during the shared hierarchy
 	// gather; only the normal shader/packet insertion remains per cascade.
+
 	for (u32 i = 0; i < m_sunStaticCasters.size(); ++i)
 	{
 		SunStaticCaster& caster = m_sunStaticCasters[i];
@@ -1525,24 +1515,20 @@ void CRender::render_sun_cascades()
 	if (b_need_to_render_sunshafts)
 		m_sun_cascades[m_sun_cascades.size() - 1].reset_chain = true;
 
-	CSector* largest_sector = 0;
-	float largest_sector_vol = 0;
-	for (u32 s = 0; s < Sectors.size(); ++s)
-	{
-		CSector* sector = (CSector*)Sectors[s];
-		if (!sector || !sector->root())
-			continue;
-		const float volume = sector->root()->vis.box.getvolume();
-		if (volume > largest_sector_vol)
-		{
-			largest_sector_vol = volume;
-			largest_sector = sector;
-		}
-	}
+	CSector* largest_sector = m_sunLargestSector;
+	const float view_dim = float(RImplementation.o.smapsize);
+	Fmatrix viewport = {
+		view_dim / 2.f, 0.0f, 0.0f, 0.0f,
+		0.0f, -view_dim / 2.f, 0.0f, 0.0f,
+		0.0f, 0.0f, 1.0f, 0.0f,
+		view_dim / 2.f, view_dim / 2.f, 0.0f, 1.0f
+	};
+	Fmatrix viewport_inverse;
+	D3DXMatrixInverse((D3DXMATRIX*)&viewport_inverse, 0, (D3DXMATRIX*)&viewport);
 
 	VERIFY(m_sun_cascades.size() <= SUN_CASCADE_GATHER_COUNT);
 	for (u32 i = 0; i < m_sun_cascades.size() && i < SUN_CASCADE_GATHER_COUNT; ++i)
-		prepare_sun_cascade(i);
+		prepare_sun_cascade(i, viewport, viewport_inverse);
 
 	// Details already use shader-compatible pseudo-instancing (up to hw_BatchSize
 	// instances per draw). Give that renderer the same prepared caster frustums so

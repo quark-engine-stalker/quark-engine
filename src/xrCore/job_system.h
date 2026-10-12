@@ -65,6 +65,8 @@ XRCORE_API u32 total_thread_count();
 // caller when it is not already occupying a worker-pool thread.
 XRCORE_API u32 available_thread_count();
 XRCORE_API bool is_worker_thread();
+// Advisory only. A producer must still use an admission API to reserve work.
+XRCORE_API bool idle();
 
 // A failed pool initialization degrades to synchronous execution, preserving
 // correctness instead of dropping work.
@@ -74,6 +76,12 @@ XRCORE_API bool submit(job_function function, void* context, task_group* group =
 // Publish repeated workers that share one dynamic workload in one queue lock
 // and one semaphore release. Each worker invokes function(context) once.
 XRCORE_API bool submit_many(job_function function, void* context, u32 count,
+    task_group* group = nullptr, priority job_priority = priority::normal);
+
+// Admit a bounded batch only when the pool has no outstanding work. Never
+// initializes the pool, waits for queue space, or steals unrelated callbacks.
+// On false no callbacks were admitted; the caller must use its serial path.
+XRCORE_API bool try_submit_many_idle(job_function function, void* context, u32 count,
     task_group* group = nullptr, priority job_priority = priority::normal);
 
 // Scoped submit is rejected after task_scope::cancel_and_wait() starts. Queued

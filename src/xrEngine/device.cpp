@@ -20,7 +20,7 @@
 #include "x_ray.h"
 #include "Engine.h"
 #include "igame_level.h"
-#include "discord\discord.h"
+
 #include "render.h"
 #include <chrono>
 
@@ -117,8 +117,7 @@ int psLua_ParallelGC_BudgetUS = 400;
 int psLua_ParallelGC_MaxBudgetUS = 1200;
 int psLua_ParallelGC_GrowthKB = 16384;
 
-extern discord::Core* discord_core;
-extern bool use_discord;
+
 
 extern Fvector4 ps_ssfx_grass_interactive;
 
@@ -1852,47 +1851,31 @@ void CRenderDevice::message_loop()
 
 void mt_DiscordThread(void*)
 {
-	bool discord_initialized = false;
-
-	while (true)
-	{
-		if (!pApp)
-		{
-			Msg("[Discord] pApp destroyed, killing thread");
-			return;
-		}
-
-		if (use_discord && psDeviceFlags2.test(rsDiscord))
-		{
-			// Prioritize the first rendered frame and main-menu construction.
-			if (!g_bLoaded)
-			{
-				Sleep(50);
-				continue;
-			}
-
-			if (!discord_initialized)
-			{
-				Init_Discord();
-				discord_initialized = use_discord && discord_core != nullptr;
-				if (!discord_initialized)
-				{
-					Sleep(1000);
-					continue;
-				}
-			}
-
-			START_PROFILE("Discord");
-			discord_core->RunCallbacks();
-			updateDiscordPresence();
-			STOP_PROFILE;
-			Sleep(int(discord_update_rate * 1000));
-		}
-		else
-		{
-			Sleep(1000);
-		}
-	}
+    while (pApp)
+    {
+        if (psDeviceFlags2.test(rsDiscord))
+        {
+            // First-frame preparation still takes priority over RPC startup.
+            if (!g_bLoaded)
+            {
+                Sleep(50);
+                continue;
+            }
+            Init_Discord();
+            START_PROFILE("Discord");
+            PumpDiscordPresence();
+            if (DiscordPresenceReady())
+                updateDiscordPresence();
+            STOP_PROFILE;
+            Sleep(static_cast<DWORD>(std::clamp(discord_update_rate, 0.05f, 1.0f) * 1000));
+        }
+        else
+        {
+            ShutdownDiscordPresence();
+            Sleep(1000);
+        }
+    }
+    ShutdownDiscordPresence();
 }
 
 void CRenderDevice::Run()

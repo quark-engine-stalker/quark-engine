@@ -27,6 +27,7 @@ class CUIWindow;
 // #define ATTACHMENT_HUD_VISBOX
 
 struct attachable_hud_item;
+struct HudMaterialState;
 class motion_marks;
 
 enum ENearWallMode {
@@ -111,6 +112,7 @@ protected:
 	};
 
 	attachable_hud_item* m_attachable;
+	HudMaterialState* m_hud_materials = nullptr;
 
 	float m_fLR_CameraFactor; // Фактор бокового наклона худа при ходьбе [-1; +1]
 	float m_fLR_MovingFactor; // Фактор бокового наклона худа при движении камеры [-1; +1]
@@ -202,6 +204,11 @@ public:
 	IC void RenderHud(BOOL B) { m_huditem_flags.set(fl_renderhud, B); }
 	IC BOOL RenderHud() { return m_huditem_flags.test(fl_renderhud); }
 	attachable_hud_item* HudItemData();
+	// Start resource-only work before a selected item's activation/holster wait.
+	// This never creates a HUD visual or invokes gameplay/Lua callbacks.
+	void PrepareHudResources(bool imminent = false);
+	const HudMaterialState* DeferredHudMaterials();
+	bool DeferHudMaterialChange(int id, LPCSTR shader, LPCSTR texture, bool reset);
 	bool IsAttachedToHUD();
 	virtual bool ParentIsActor();
 	virtual float GetNearWallRange();

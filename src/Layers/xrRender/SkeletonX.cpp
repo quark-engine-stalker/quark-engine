@@ -154,23 +154,29 @@ void CSkeletonX::_Render(ref_geom& hGeom, u32 vCount, u32 iOffset, u32 pCount)
 			}
 		}
 
-		// Build previous WV & WVP
-		if (RenderMode == 1)
+		// Keep motion history above even in a shadow pass: the first draw still
+		// advances it exactly once per frame. Only derive the previous projection
+		// when the active shader actually consumes it. Opaque shadow shaders
+		// usually omit this constant, so the matrix work would be discarded.
+		R_constant* previous_wvp = RCache.get_c(s_wvp_prev_const);
+		if (previous_wvp)
 		{
-			// RM_SINGLE
-			Fmatrix Bone_Prev;
-			Bone_Prev.mul_43(Parent->Matrix_Prev, Parent->bone_instances[u16(RMS_boneid)].mRenderTransform_prev);
-			p_WV.mul_43(RCache.xforms.m_v_prev, Bone_Prev);
-			p_WVP.mul(RCache.xforms.m_p_prev, p_WV);
-		}
-		else
-		{
-			// RM_SKINNING_1B ~ RM_SKINNING_4B
-			p_WV.mul_43(RCache.xforms.m_v_prev, Parent->Matrix_Prev);
-			p_WVP.mul(RCache.xforms.m_p_prev, p_WV);
-		}
+			if (RenderMode == RM_SINGLE)
+			{
+				Fmatrix Bone_Prev;
+				Bone_Prev.mul_43(Parent->Matrix_Prev,
+					Parent->bone_instances[u16(RMS_boneid)].mRenderTransform_prev);
+				p_WV.mul_43(RCache.xforms.m_v_prev, Bone_Prev);
+				p_WVP.mul(RCache.xforms.m_p_prev, p_WV);
+			}
+			else
+			{
+				p_WV.mul_43(RCache.xforms.m_v_prev, Parent->Matrix_Prev);
+				p_WVP.mul(RCache.xforms.m_p_prev, p_WV);
+			}
 
-		RCache.set_c(s_wvp_prev_const, p_WVP); // Apply prev matrix
+			RCache.set_c(previous_wvp, p_WVP);
+		}
 	}
 
 	RCache.stat.r.s_dynamic.add(vCount);

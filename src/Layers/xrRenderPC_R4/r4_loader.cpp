@@ -117,7 +117,8 @@ void CRender::level_Load(IReader* fs)
 	LoadLights(fs);
 
 	// Finish all manifest preparation while the loading screen is still active.
-	Models->FinishLevelPrefetch();
+	// Actor HUD payloads belong to the level being entered, not the old level.
+	Models->FinishLevelPrefetch(false);
 
 	// End
 	pApp->LoadEnd();
@@ -164,6 +165,7 @@ void CRender::level_Unload()
 	pLastSector = 0;
 	vLastCameraPos.set(0, 0, 0);
 	// 2.
+	m_sunLargestSector = nullptr;
 	for (I = 0; I < Sectors.size(); I++) xr_delete(Sectors[I]);
 	Sectors.clear_and_free();
 	// 3.
@@ -222,6 +224,20 @@ void CRender::level_Unload()
 	m_hudLightStateScratch.clear_and_free();
 	m_shadowRefactorScratch.clear_and_free();
 	m_shadowSpotScratch.clear_and_free();
+	m_sunSectorGather.clear_and_free();
+	xr_unordered_flat_map<CSector*, u32>().swap(m_sunSectorGatherIndex);
+	m_sunSectorGatherUsed = 0;
+	m_sunStaticCasters.clear_and_free();
+	m_sunStaticFallback.clear_and_free();
+	m_sunLodCasters.clear_and_free();
+	m_sunSpatialGather.clear_and_free();
+	m_sunDynamicCasters.clear_and_free();
+	for (SunCascadePrepared& prepared : m_sunPrepared)
+		prepared.valid = false;
+
+	// Manifest-only bases have no inactive instance in Pool. Release those
+	// unused resources even when the legacy cross-level instance cache is kept.
+	Models->TrimUnusedBases();
 
 	if (psDeviceFlags2.test(rsClearModels))
 	{
@@ -352,6 +368,7 @@ struct b_portal
 
 void CRender::LoadSectors(IReader* fs)
 {
+	m_sunLargestSector = nullptr;
 	// Keep the portal chunk open once. The old path searched the parent reader
 	// twice and copied each portal record through a temporary stack object.
 	IReader* portal_reader = fs->open_chunk(fsL_PORTALS);
@@ -378,6 +395,21 @@ void CRender::LoadSectors(IReader* fs)
 		Sectors.push_back(sector);
 	}
 	S->close();
+	// Sector roots and their compiled bounds live for the entire loaded level.
+	// Keep the strict '>' tie rule and zero-volume behavior of the sun search.
+	float largest_volume = 0.f;
+	for (IRender_Sector* item : Sectors)
+	{
+		CSector* sector = static_cast<CSector*>(item);
+		if (!sector || !sector->root())
+			continue;
+		const float volume = sector->root()->vis.box.getvolume();
+		if (volume > largest_volume)
+		{
+			largest_volume = volume;
+			m_sunLargestSector = sector;
+		}
+	}
 
 	// load portals
 	if (count)

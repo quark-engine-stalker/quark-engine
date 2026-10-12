@@ -9,6 +9,8 @@
 
 #include "FBasicVisual.h"
 #include "FSkinned.h"
+#include "../../xrCore/job_system.h"
+#include <atomic>
 
 using namespace R_dsgraph;
 
@@ -29,14 +31,13 @@ IC bool cmp_normal_items(const _NormalItem& N1, const _NormalItem& N2)
 	return (N1.ssa > N2.ssa);
 }
 
-void __fastcall mapNormal_Render(mapNormalItems& N)
+void __fastcall mapNormal_Render(mapNormalItems& N, bool items_sorted)
 {
 	// *** DIRECT ***
-	std::sort(N.begin(), N.end(), cmp_normal_items);
-	_NormalItem *I = &*N.begin(), *E = &*N.end();
-	for (; I != E; I++)
+	if (!items_sorted)
+		std::sort(N.begin(), N.end(), cmp_normal_items);
+	for (_NormalItem& Ni : N)
 	{
-		_NormalItem& Ni = *I;
 		float LOD = calcLOD(Ni.ssa, Ni.pVisual->vis.sphere.R);
 		RCache.LOD.set_LOD(LOD);
 		Ni.pVisual->Render(LOD);
@@ -49,14 +50,13 @@ IC bool cmp_matrix_items(const _MatrixItem& N1, const _MatrixItem& N2)
 	return (N1.ssa > N2.ssa);
 }
 
-void __fastcall mapMatrix_Render(mapMatrixItems& N, R_constant* material_constant)
+void __fastcall mapMatrix_Render(mapMatrixItems& N, R_constant* material_constant, bool items_sorted)
 {
 	// *** DIRECT ***
-	std::sort(N.begin(), N.end(), cmp_matrix_items);
-	_MatrixItem *I = &*N.begin(), *E = &*N.end();
-	for (; I != E; I++)
+	if (!items_sorted)
+		std::sort(N.begin(), N.end(), cmp_matrix_items);
+	for (_MatrixItem& Ni : N)
 	{
-		_MatrixItem& Ni = *I;
 		CSkeletonX* skeleton = nullptr;
 		if (Ni.pVisual->Type == MT_SKELETON_GEOMDEF_ST)
 			skeleton = static_cast<CSkeletonX_ST*>(Ni.pVisual);
@@ -324,10 +324,118 @@ void sort_tlist_mat
 	}
 }
 
+namespace
+{
+// Small/local-light graphs stay on the original serial path. Fork/join only
+// pays for itself when several substantial, independent leaves are available.
+constexpr u32 opaque_sort_min_items = 4096;
+constexpr size_t opaque_sort_large_leaf = R_dsgraph_structure::opaque_sort_large_leaf_size;
+
+template <typename VSMap>
+void collect_opaque_sort_ranges(VSMap& vs,
+	xr_frame_vector<R_dsgraph_structure::OpaqueSortRange>& ranges,
+	u32& large_leaves, size_t& large_items)
+{
+	for (auto v = vs.begin(); v != vs.end(); ++v)
+	for (auto g = v->val.begin(); g != v->val.end(); ++g)
+	for (auto p = g->val.begin(); p != g->val.end(); ++p)
+	for (auto c = p->val.mapCS.begin(); c != p->val.mapCS.end(); ++c)
+	for (auto s = c->val.begin(); s != c->val.end(); ++s)
+	for (auto t = s->val.begin(); t != s->val.end(); ++t)
+	{
+		auto& items = t->val;
+		if (items.size() < opaque_sort_large_leaf)
+			continue;
+		if (items.size() >= opaque_sort_large_leaf)
+		{
+			++large_leaves;
+			large_items += items.size();
+		}
+		R_dsgraph_structure::OpaqueSortRange range{};
+		if constexpr (std::is_same_v<VSMap, mapNormalVS>)
+			range.normal = &items;
+		else
+			range.matrix = &items;
+		range.count = items.size();
+		ranges.push_back(range);
+	}
+}
+
+struct OpaqueSortContext
+{
+	R_dsgraph_structure::OpaqueSortRange* ranges;
+	u32 count;
+	std::atomic<u32> next{0};
+};
+
+void opaque_sort_worker(void* parameter)
+{
+	auto& context = *static_cast<OpaqueSortContext*>(parameter);
+	for (;;)
+	{
+		const u32 index = context.next.fetch_add(1, std::memory_order_relaxed);
+		if (index >= context.count)
+			return;
+		const auto& range = context.ranges[index];
+		if (range.normal)
+			std::sort(range.normal->begin(), range.normal->end(), cmp_normal_items);
+		else
+			std::sort(range.matrix->begin(), range.matrix->end(), cmp_matrix_items);
+	}
+}
+} // namespace
+
+bool R_dsgraph_structure::r_dsgraph_prepare_opaque_sort(u32 priority)
+{
+	if (m_opaque_sort_items[priority] < opaque_sort_min_items || m_opaque_sort_leaves[priority] < 4 ||
+		!xr_jobs::worker_count() || !xr_jobs::idle())
+		return false;
+
+	m_opaque_sort_ranges.clear();
+	u32 large_leaves = 0;
+	size_t large_items = 0;
+	for (u32 pass = 0; pass < SHADER_PASSES_MAX; ++pass)
+	{
+		collect_opaque_sort_ranges(mapNormalPasses[priority][pass],
+			m_opaque_sort_ranges, large_leaves, large_items);
+		collect_opaque_sort_ranges(mapMatrixPasses[priority][pass],
+			m_opaque_sort_ranges, large_leaves, large_items);
+	}
+	if (large_leaves < 4 || large_items < opaque_sort_min_items)
+	{
+		m_opaque_sort_ranges.clear();
+		return false;
+	}
+
+	// Long leaves go first to avoid one worker becoming the final straggler.
+	// This changes only task assignment; each leaf keeps the original std::sort,
+	// comparator, input order, and equal-SSA tie behavior.
+	std::sort(m_opaque_sort_ranges.begin(), m_opaque_sort_ranges.end(),
+		[](const OpaqueSortRange& a, const OpaqueSortRange& b) { return a.count > b.count; });
+	OpaqueSortContext context{m_opaque_sort_ranges.data(), u32(m_opaque_sort_ranges.size())};
+	xr_jobs::task_group group;
+	const u32 lanes = _min(large_leaves, _min(xr_jobs::available_thread_count(),
+		_max(2u, u32(CPU::ID.n_cores))));
+	if (!xr_jobs::try_submit_many_idle(&opaque_sort_worker, &context, lanes - 1, &group, xr_jobs::priority::high))
+	{
+		m_opaque_sort_ranges.clear();
+		return false;
+	}
+	opaque_sort_worker(&context);
+	// Join every borrowed range before rendering callbacks, SSA resets, graph
+	// clearing, arena reset, device reset, or resource destruction.
+	{
+		xr_jobs::wait(group);
+	}
+	m_opaque_sort_ranges.clear();
+	return true;
+}
+
 void R_dsgraph_structure::r_dsgraph_render_graph(u32 _priority, bool _clear)
 {
 	//PIX_EVENT(r_dsgraph_render_graph);
 	Device.Statistic->RenderDUMP.Begin();
+	const bool items_sorted = r_dsgraph_prepare_opaque_sort(_priority);
 
 	// **************************************************** NORMAL
 	// Perform sorting based on ScreenSpaceArea
@@ -398,7 +506,7 @@ void R_dsgraph_structure::r_dsgraph_render_graph(u32 _priority, bool _clear)
 
 								mapNormalItems& items = Ntex->val;
 								items.ssa = 0;
-								mapNormal_Render(items);
+								mapNormal_Render(items, items_sorted && items.size() >= opaque_sort_large_leaf);
 								if (_clear) items.clear();
 							}
 							nrmTextures.clear();
@@ -493,7 +601,7 @@ void R_dsgraph_structure::r_dsgraph_render_graph(u32 _priority, bool _clear)
 							// graph node has no items to draw.
 							if (items.empty())
 								RImplementation.apply_lmaterial(material_constant);
-							mapMatrix_Render(items, material_constant);
+							mapMatrix_Render(items, material_constant, items_sorted && items.size() >= opaque_sort_large_leaf);
 						}
 						matTextures.clear();
 						matTexturesTemp.clear();
@@ -515,6 +623,10 @@ void R_dsgraph_structure::r_dsgraph_render_graph(u32 _priority, bool _clear)
 		if (_clear) vs.clear();
 	}
 
+	// Retained static graphs can use serial sorting on their next draw. This
+	// count only controls dispatch; retention and draw ordering never depend on it.
+	m_opaque_sort_items[_priority] = 0;
+	m_opaque_sort_leaves[_priority] = 0;
 	Device.Statistic->RenderDUMP.End();
 }
 

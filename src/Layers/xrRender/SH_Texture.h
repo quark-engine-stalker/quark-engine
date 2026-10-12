@@ -40,7 +40,11 @@ public:
 	//	void								Apply			(u32 dwStage);
 
 	void surface_set(ID3DBaseTexture* surf);
+	// Returns an owning COM reference; callers must Release it.
 	ID3DBaseTexture* surface_get();
+	u64 ResidentBytes() const;
+	void ReleaseReference();
+	u32 last_used_time = 0;
 
 	IC BOOL isUser() { return flags.bUser; }
 	IC u32 get_Width()
@@ -120,6 +124,16 @@ private:
 
 struct resptrcode_texture : public resptr_base<CTexture>
 {
+	protected:
+	void _dec() { if (p_) p_->ReleaseReference(); }
+	public:
+	void _set(CTexture* rhs)
+	{
+		if (rhs) rhs->dwReference.fetch_add(1, std::memory_order_relaxed);
+		_dec();
+		p_ = rhs;
+	}
+	void _set(const resptr_base<CTexture>& rhs) { _set(rhs._get()); }
 	void create(LPCSTR _name);
 	void destroy() { _set(NULL); }
 	shared_str bump_get() { return _get()->m_bumpmap; }

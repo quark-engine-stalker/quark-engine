@@ -129,10 +129,10 @@ void CRenderTarget::phase_heatvision()
 
 void CRenderTarget::phase_3DSSReticle()
 {
-	HW.pContext->CopyResource(rt_Generic_2->pTexture->surface_get(), RImplementation.Target->rt_Position->pTexture->surface_get());
+	HW.pContext->CopyResource(rt_Generic_2->pSurface, RImplementation.Target->rt_Position->pSurface);
 
 	const ref_rt& sceneRT = pp_source_is_generic() ? rt_Generic : rt_Generic_0;
-	HW.pContext->CopyResource(rt_Generic_temp->pTexture->surface_get(), sceneRT->pTexture->surface_get());
+	HW.pContext->CopyResource(rt_Generic_temp->pSurface, sceneRT->pSurface);
 
 	u_setrt(sceneRT, RImplementation.Target->rt_Position, 0, HW.pBaseZB);
 

@@ -65,7 +65,11 @@ private:
 	DEFINE_SET_PRED(file, files_set, files_it, file_pred);
 
 	DEFINE_VECTOR(_finddata_t, FFVec, FFIt);
-	FFVec rec_files;
+
+	// Only alive while fsgame.ltx aliases are initialized. Runtime rescans
+	// always enumerate the filesystem afresh.
+	struct StartupScanCache;
+	StartupScanCache* m_startup_scan_cache = nullptr;
 
 	int m_iLockRescan;
 	void check_pathes();

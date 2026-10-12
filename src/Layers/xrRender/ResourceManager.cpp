@@ -37,7 +37,16 @@ void process_texture_work(void* raw_context)
 
 		CTexture* texture = (*context.textures)[static_cast<u32>(index)]._get();
 		if (context.load)
-			texture->Load();
+		{
+			// UI atlases are consumed as shader resources after this loading
+			// boundary. Create them on the loading lanes once instead of allocating
+			// again on the main thread when the PDA/inventory is first drawn.
+			// Unseen world textures retain the existing RAM/staging policy.
+			const LPCSTR name = texture->cName.c_str();
+			const bool ui_texture = name &&
+				(!_strnicmp(name, "ui\\", 3) || !_strnicmp(name, "ui_", 3));
+			texture->Load(!ui_texture);
+		}
 		else
 			texture->Unload();
 	}

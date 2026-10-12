@@ -117,7 +117,7 @@ void CRenderTarget::phase_ssfx_taa()
 	RCache.set_Geometry(g_combine);
 	RCache.Render(D3DPT_TRIANGLELIST, Offset, 0, 4, 0, 2);
 	
-	HW.pContext->CopyResource(rt_ssfx_taa->pTexture->surface_get(), rt_ssfx_accum->pTexture->surface_get());
+	HW.pContext->CopyResource(rt_ssfx_taa->pSurface, rt_ssfx_accum->pSurface);
 
 	// A level transition invalidates the persistent temporal surfaces. Seed the
 	// first frame from the current scene before running the blend, otherwise TAA
@@ -125,8 +125,8 @@ void CRenderTarget::phase_ssfx_taa()
 	if (!m_temporal_history_valid)
 	{
 		const ref_rt& current_rt = sourceGeneric ? rt_Generic : rt_Generic_0;
-		HW.pContext->CopyResource(rt_ssfx_prev_frame->pTexture->surface_get(), current_rt->pTexture->surface_get());
-		HW.pContext->CopyResource(rt_ssfx_prevPos->pTexture->surface_get(), rt_Position->pTexture->surface_get());
+		HW.pContext->CopyResource(rt_ssfx_prev_frame->pSurface, current_rt->pSurface);
+		HW.pContext->CopyResource(rt_ssfx_prevPos->pSurface, rt_Position->pSurface);
 	}
 
 	// TAA
@@ -151,7 +151,7 @@ void CRenderTarget::phase_ssfx_taa()
 	RCache.Render(D3DPT_TRIANGLELIST, Offset, 0, 4, 0, 2);
 
 	// Accumulate
-	HW.pContext->CopyResource(rt_ssfx_prev_frame->pTexture->surface_get(), dest_rt->pTexture->surface_get());
+	HW.pContext->CopyResource(rt_ssfx_prev_frame->pSurface, dest_rt->pSurface);
 	m_temporal_history_valid = true;
 
 	// Sharpening phase

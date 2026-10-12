@@ -89,26 +89,49 @@ namespace fast_dcast
     if (!ptr)
       return nullptr;
 
-    DCAST_THREADLOCAL static ptrdiff_t offset = DCAST_NO_OFFSET;
-    DCAST_THREADLOCAL static v_table_ptr src_vtable_ptr;
-
-    v_table_ptr this_vtable = get_vtable(ptr);
-    if (offset != DCAST_NO_OFFSET && src_vtable_ptr == this_vtable)
+    // Cache both successful and failed type checks. Nearby-object queries often
+    // mix NPCs, inventory items and non-target objects; one positive entry kept
+    // rerunning RTTI for every rejected object. Eight thread-owned entries retain
+    // that small working set without object pointers or heap allocations.
+    struct cache_entry
     {
-      // In case we have a cache hit, casting the pointer is straightforward
-      char* new_ptr = reinterpret_cast<char*>(ptr) + offset;
-      return reinterpret_cast<_To>(new_ptr);
-    }
-    else {
-      // Need to construct cache entry
-      auto result = dynamic_cast<_To>(ptr);
-      if (result == nullptr)
-        return nullptr;
+      v_table_ptr vtable;
+      ptrdiff_t offset; // DCAST_NO_OFFSET denotes a known failed conversion.
+    };
+    DCAST_THREADLOCAL static cache_entry cache[8] = {};
+    DCAST_THREADLOCAL static unsigned next_entry = 0;
+    DCAST_THREADLOCAL static v_table_ptr recent_vtable = nullptr;
+    DCAST_THREADLOCAL static ptrdiff_t recent_offset = DCAST_NO_OFFSET;
 
-      src_vtable_ptr = this_vtable;
-      offset = reinterpret_cast<const char*>(result) - reinterpret_cast<const char*>(ptr);
-      return result;
+    const v_table_ptr this_vtable = get_vtable(ptr);
+    if (recent_offset != DCAST_NO_OFFSET && recent_vtable == this_vtable)
+    {
+      return reinterpret_cast<_To>(reinterpret_cast<char*>(ptr) + recent_offset);
     }
+    if (recent_vtable == this_vtable)
+      return nullptr;
+    for (const cache_entry& entry : cache)
+    {
+      if (entry.vtable == this_vtable)
+      {
+        recent_vtable = this_vtable;
+        recent_offset = entry.offset;
+        if (entry.offset == DCAST_NO_OFFSET)
+          return nullptr;
+        return reinterpret_cast<_To>(reinterpret_cast<char*>(ptr) + entry.offset);
+      }
+    }
+
+    // RTTI stays authoritative on misses, including cross-casts and ambiguity.
+    auto result = dynamic_cast<_To>(ptr);
+    cache_entry& entry = cache[next_entry];
+    next_entry = (next_entry + 1u) & 7u;
+    entry.vtable = this_vtable;
+    entry.offset = result ? reinterpret_cast<const char*>(result) -
+      reinterpret_cast<const char*>(ptr) : DCAST_NO_OFFSET;
+    recent_vtable = this_vtable;
+    recent_offset = entry.offset;
+    return result;
   };
 
   // const T*

@@ -27,12 +27,33 @@ struct address_wait_api
 
     address_wait_api()
     {
-        HMODULE kernel = GetModuleHandleW(L"kernel32.dll");
-        if (!kernel)
-            return;
+        // The address-wait API belongs to the synchronization API set. Recent
+        // Windows versions export its implementation from KernelBase, but do
+        // not necessarily forward these names through kernel32. Looking only
+        // there silently turns every fork/join wait into a Sleep(1) poll.
+        // These modules are already owned by the process; no loader reference
+        // or worker-resource lifetime is introduced here.
+        const LPCWSTR modules[] =
+        {
+            L"api-ms-win-core-synch-l1-2-0.dll", L"kernelbase.dll", L"kernel32.dll"
+        };
+        for (LPCWSTR name : modules)
+        {
+            const HMODULE module = GetModuleHandleW(name);
+            if (!module)
+                continue;
 
-        wait = reinterpret_cast<wait_on_address_function>(GetProcAddress(kernel, "WaitOnAddress"));
-        wake_all = reinterpret_cast<wake_by_address_all_function>(GetProcAddress(kernel, "WakeByAddressAll"));
+            const auto wait_function = reinterpret_cast<wait_on_address_function>(
+                GetProcAddress(module, "WaitOnAddress"));
+            const auto wake_function = reinterpret_cast<wake_by_address_all_function>(
+                GetProcAddress(module, "WakeByAddressAll"));
+            if (wait_function && wake_function)
+            {
+                wait = wait_function;
+                wake_all = wake_function;
+                return;
+            }
+        }
     }
 };
 
@@ -312,6 +333,34 @@ public:
         return true;
     }
 
+    bool try_submit_many_idle(job_function function, void* context, u32 count,
+        task_group* group, priority job_priority)
+    {
+        if (!initialized_ || !worker_count_ || !count || count > queue_capacity ||
+            InterlockedCompareExchange(&accepting_, TRUE, TRUE) == FALSE)
+            return false;
+
+        // Reserve an idle pool atomically. A competing producer either sees this
+        // batch as outstanding or makes us fall back without delaying the caller.
+        const LONG signed_count = static_cast<LONG>(count);
+        if (InterlockedCompareExchange(&outstanding_, signed_count, 0) != 0)
+            return false;
+        if (group)
+            InterlockedExchangeAdd(&group->pending_, signed_count);
+
+        const job_record job{function, context, group, nullptr, 0, job_priority};
+        if (!try_push_many(job, count, job_priority, true))
+        {
+            if (group && InterlockedExchangeAdd(&group->pending_, -signed_count) == signed_count)
+                wake_address_waiters(&group->pending_);
+            if (InterlockedExchangeAdd(&outstanding_, -signed_count) == signed_count)
+                wake_address_waiters(&outstanding_);
+            return false;
+        }
+        ReleaseSemaphore(semaphore_, signed_count, nullptr);
+        return true;
+    }
+
     void wait(task_group& group)
     {
 
@@ -350,6 +399,7 @@ public:
     }
 
     u32 worker_count() const { return worker_count_; }
+    bool idle() { return InterlockedCompareExchange(&outstanding_, 0, 0) == 0; }
     u32 total_thread_count() const { return total_threads_; }
 
 private:
@@ -419,14 +469,20 @@ private:
         return true;
     }
 
-    bool try_push_many(const job_record& job, u32 count, priority job_priority)
+    bool try_push_many(const job_record& job, u32 count, priority job_priority, bool nonblocking = false)
     {
         const u32 queue_index = static_cast<u32>(job_priority);
         R_ASSERT(queue_index < priority_count);
         R_ASSERT(count <= queue_capacity);
         priority_queue& queue = queues_[queue_index];
 
-        EnterCriticalSection(&queue.lock);
+        if (nonblocking)
+        {
+            if (!TryEnterCriticalSection(&queue.lock))
+                return false;
+        }
+        else
+            EnterCriticalSection(&queue.lock);
         if (queue_capacity - queue.size < count)
         {
             LeaveCriticalSection(&queue.lock);
@@ -853,6 +909,12 @@ bool is_worker_thread()
     return worker_thread_;
 }
 
+bool idle()
+{
+    job_system_impl* system = get_system();
+    return !system || system->idle();
+}
+
 bool submit(job_function function, void* context, task_group* group, priority job_priority)
 {
     if (!function)
@@ -908,6 +970,25 @@ bool submit_many(job_function function, void* context, u32 count, task_group* gr
     }
 
     return system->submit_many(function, context, count, group, job_priority);
+}
+
+bool try_submit_many_idle(job_function function, void* context, u32 count,
+    task_group* group, priority job_priority)
+{
+    if (!count)
+        return true;
+    if (!function || static_cast<u32>(job_priority) >= priority_count)
+        return false;
+
+    // Nonblocking admission also protects semaphore/worker lifetime. In
+    // particular, a callback racing shutdown must fail instead of taking a
+    // shared lock while shutdown owns it and waits for that callback to finish.
+    if (!TryAcquireSRWLockShared(&initialization_lock))
+        return false;
+    job_system_impl* system = get_system();
+    const bool admitted = system && system->try_submit_many_idle(function, context, count, group, job_priority);
+    ReleaseSRWLockShared(&initialization_lock);
+    return admitted;
 }
 
 bool submit_scoped(job_function function, void* context, task_scope& scope,

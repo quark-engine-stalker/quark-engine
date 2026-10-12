@@ -60,6 +60,15 @@ void CPatrolPathStorage::load(IReader& stream)
 
 	chunk = stream.open_chunk(1);
 	R_ASSERT(chunk);
+	// Every saved path is available before the registry is consumed. Accumulate
+	// in stream order, then sort once instead of shifting shared_str entries
+	// (and updating their atomic references) for every insertion.
+	xr_vector<PATROL_REGISTRY::value_type> entries;
+	xr_unordered_flat_map<shared_str, u32> entry_indices;
+	const u32 reserve_count = _min(size, chunk->length() / 8u);
+	entries.reserve(reserve_count);
+	entry_indices.reserve(reserve_count);
+
 	u32 chunk_id = 0;
 	u32 loaded_count = 0;
 	for (IReader* chunk1 = chunk->open_chunk_iterator(chunk_id); chunk1;
@@ -75,18 +84,25 @@ void CPatrolPathStorage::load(IReader& stream)
 		load_data(pair.second, *chunk2);
 		chunk2->close();
 
-		const_iterator I = m_registry.find(pair.first);
-		VERIFY3(I == m_registry.end(), "Duplicated patrol path found ", *pair.first);
+		const auto inserted = entry_indices.emplace(pair.first, static_cast<u32>(entries.size()));
+		VERIFY3(inserted.second, "Duplicated patrol path found ", *pair.first);
 
 #ifdef DEBUG
 		pair.second->name(pair.first);
 #endif
 
-		m_registry.insert(pair);
+		if (inserted.second)
+			entries.push_back(pair);
+		else
+			// associative_vector::insert replaces an existing value. Preserve
+			// that last-value behavior if a duplicate assertion is ignored.
+			entries[inserted.first->second] = pair;
 		++loaded_count;
 	}
 
 	R_ASSERT(loaded_count == size);
+	PATROL_REGISTRY loaded_registry(entries.begin(), entries.end());
+	m_registry.swap(loaded_registry);
 	chunk->close();
 }
 

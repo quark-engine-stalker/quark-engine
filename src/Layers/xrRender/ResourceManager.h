@@ -80,7 +80,19 @@ private:
 	xr_vector<Shader*> v_shaders;
 
 	xr_vector<ref_texture> m_necessary;
-	xr_vector<ref_texture> m_warm_textures;
+	struct warm_texture_entry
+	{
+		ref_texture texture;
+		u64 source_bytes;
+		u32 retained_at;
+	};
+	xr_vector<warm_texture_entry> m_warm_textures;
+	u64 m_warm_texture_bytes = 0;
+	u64 m_warm_texture_resident_bytes = 0;
+	u64 m_warm_texture_reclaimable_bytes = 0;
+	u64 m_video_memory_budget = 0;
+	u64 m_video_memory_usage = 0;
+	xr_atomic_bool m_allow_speculative_texture_upload{true};
 	// Resource registries are independent. Keeping one lock per domain avoids
 	// serializing texture streaming, geometry creation and shader compilation
 	// behind a single global critical section.
@@ -127,7 +139,9 @@ public:
 #endif
 
 	// Low level resource creation
-	CTexture* _CreateTexture(LPCSTR Name, bool prefer_gpu_resident = false);
+	CTexture* _CreateTexture(LPCSTR Name, bool prefer_gpu_resident = false, bool acquire_reference = false);
+	ref_texture CreateTextureRef(LPCSTR Name);
+	void ReleaseTextureReference(CTexture* texture);
 	void PrefetchTextureGpuResident(LPCSTR Name);
 	void _DeleteTexture(const CTexture* T);
 
@@ -232,6 +246,8 @@ public:
 	void StoreNecessaryTextures();
 	void DestroyNecessaryTextures();
 	void PinTexture(LPCSTR name);
+	void SetVideoMemoryBudget(u64 budget, u64 usage);
+	void TrimWarmTextures(u32 now, bool pressure, bool hard_pressure, u32 max_releases = 8);
 	void Dump(bool bBrief);
 
 private:

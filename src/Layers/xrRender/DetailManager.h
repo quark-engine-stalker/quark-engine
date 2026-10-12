@@ -135,6 +135,10 @@ public:
 		// Reused by the three hardware detail variants and by all model parts
 		// belonging to this slot during one Render() call. This is transient
 		// renderer state and is not part of the on-disk detail format.
+		// Invalidated by physical reuse and actual visible-list/alpha changes,
+		// independently of the scheduled visibility refresh frame.
+		u64 grass_upload_source_generation = 0;
+		u64 grass_visibility_parameters_generation = 0;
 		u64 grass_render_fade_generation;
 		float grass_render_fade;
 
@@ -173,6 +177,7 @@ public:
 	{
 		SlotItemVec* items;
 		Slot* slot;
+		// Per-frame packed CPU data; two fade coefficients cover main/sun.
 	};
 
 	typedef xr_vector<xr_vector<VisibleSlotItems>> vis_list;
@@ -332,6 +337,59 @@ private:
 		const Fvector4* previous_benders = 0;
 	};
 
+	struct PackedDetailSlot
+	{
+		const SlotItemVec* source;
+		u64 source_generation;
+		float scale;
+		u32 offset;
+		u32 capacity;
+		u32 count;
+		u32 last_used_frame;
+	};
+	struct PackedDetailKey
+	{
+		u32 entries[2] = {u32(-1), u32(-1)};
+	};
+	struct PackedDetailGroup
+	{
+		u64 generation = 0;
+		u32 offset = 0;
+		u32 count = 0;
+	};
+	// At most 20 MiB of CPU-only packed instance data. Stable slot contents
+	// survive frame changes; appearance/fading and point lights use the old path.
+	static constexpr u32 detail_upload_instance_limit = 262144;
+	static constexpr u32 detail_upload_slot_limit = 16384;
+	static constexpr u32 detail_upload_build_limit = 32768;
+	u32 m_detail_upload_build_count = 0;
+	u32 m_detail_upload_count = 0;
+	u32 m_detail_upload_frame = u32(-1);
+	u64 m_detail_upload_generation = 1;
+	u32 m_detail_upload_last_reset_frame = 0;
+	u32 m_detail_upload_fp_control = 0;
+	bool m_detail_upload_reset_pending = false;
+	xr_vector<PackedDetailSlot> m_detail_upload_slots;
+	xr_unordered_map<const SlotItemVec*, PackedDetailKey> m_detail_upload_sources;
+	xr_vector<PackedDetailKey> m_detail_upload_keys;
+	xr_vector<PackedDetailGroup> m_detail_upload_groups[3];
+	u32 m_detail_upload_key_count = 0;
+	xr_vector<Fvector4> m_detail_upload_xforms;
+	xr_vector<Fvector4> m_detail_upload_extra;
+	template <bool packed_upload>
+	void hw_Render_dump_impl(const Fvector4& consts, const Fvector4& wave, const Fvector4& wind,
+		const Fvector4& prev_wave, const Fvector4& prev_wind, u32 var_id, u32 lod_id,
+		const Fvector4* current_benders, const Fvector4* previous_benders, u32 bender_count);
+	PackedDetailKey* prepare_upload_keys(u32 variant, u32 object, u32 visible_count, u32& key_count);
+	bool cached_slot_upload(const VisibleSlotItems& visible, PackedDetailKey& key, u32 variant, float slot_scale,
+		const Fvector4*& transforms, const Fvector4*& extra, u32& count);
+
+	// Classification settings are checked once per UpdateVisibleM; slots keep
+	// their original staggered refresh cadence when a console setting changes.
+	u64 m_grass_visibility_parameters_generation = 1;
+	float m_grass_visibility_ssa_discard = 0.f;
+	u32 m_grass_visibility_fp_control = 0;
+	bool m_grass_visibility_no_scale = false;
 	DetailFrameState m_frame_state;
 	float m_previous_time = 0.f;
 	Fvector4 m_previous_dir1 = { 0.f, 0.f, 0.f, 0.f };

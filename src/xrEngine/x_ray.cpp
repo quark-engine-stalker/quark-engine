@@ -29,7 +29,10 @@
 
 #include <unicode\unistr.h>
 #include <unicode\ucnv.h>
-#include <discord\discord.h>
+#include <discord\types.h>
+#include "DiscordRpcClient.h"
+#include "engine_version.h"
+#include <atomic>
 #include "../xrCore/profiler.h"
 
 #include "xrSash.h"
@@ -43,7 +46,7 @@ extern "C"
 //#include "securom_api.h"
 
 //---------------------------------------------------------------------
-#define QUARK_ENGINE_VERSION "Quark Engine v0.0.2"
+// Version text and Windows file resources share engine_version.h.
 ENGINE_API CInifile* pGameIni = NULL;
 BOOL g_bIntroFinished = FALSE;
 extern void Intro(void* fn);
@@ -60,11 +63,11 @@ XRCORE_API u32 build_id;
 #endif // #ifdef MASTER_GOLD
 
 //Discord
-discord::Core* discord_core{};
+static thread_local quark_discord::Client discord_client;
+static std::atomic<bool> discord_clear_requested{false};
 discord::Activity discordPresence{};
 static int64_t StartTime;
-bool use_discord = true;
-#pragma comment(lib, "discord_game_sdk.lib")
+
 rpc_info discord_gameinfo;
 rpc_strings discord_strings;
 float discord_update_rate = .5f;
@@ -346,6 +349,10 @@ void execUserScript()
 {
 	Console->Execute("default_controls");
 	Console->ExecuteScript(Console->ConfigFile);
+    // Older user.ltx files may contain the last active script-owned NVG state.
+    // Clear it before device/game/Lua initialization; later script commands
+    // still enable all NVG modes through the unchanged console interface.
+    Console->Execute("r__nightvision 0");
 	if (IsLoadDiagnosticsEnabled())
 		Console->Execute("dump_cvar");
 }
@@ -420,16 +427,11 @@ LPCSTR xr_ToUTF8(LPCSTR input, int max_length)
 
 //Discord Rich Presence - Rezy ------------------------------------------------
 
-void DiscordLog(discord::LogLevel level, std::string message)
-{
-	Msg("[Discord RPC]: %s", message.c_str());
-}
-
 void updateDiscordPresence()
 {
 	PROF_EVENT();
 
-	if (!use_discord)
+	if (!discord_client.Ready())
 		return;
 
 	static char details_buffer[128];
@@ -438,7 +440,7 @@ void updateDiscordPresence()
 	// Main Menu
 	if (discord_gameinfo.mainmenu)
 	{
-		snprintf(state_buffer, 128, discord_strings.mainmenu);
+		snprintf(state_buffer, 128, "%s", discord_strings.mainmenu);
 		discordPresence.GetAssets().SetLargeImage("gamelogo");
 		discordPresence.GetAssets().SetLargeText("");
 		discordPresence.GetAssets().SetSmallImage("");
@@ -446,7 +448,7 @@ void updateDiscordPresence()
 
 		// Pause Menu
 		if (discord_gameinfo.ingame)
-			snprintf(state_buffer, 128, discord_strings.paused);
+			snprintf(state_buffer, 128, "%s", discord_strings.paused);
 		else
 			discordPresence.SetDetails("");
 	}	
@@ -454,7 +456,7 @@ void updateDiscordPresence()
 	// Loading
 	else if (discord_gameinfo.loadscreen)
 	{
-		snprintf(state_buffer, 128, discord_strings.loading);
+		snprintf(state_buffer, 128, "%s", discord_strings.loading);
 		discordPresence.SetDetails("");
 		discordPresence.GetAssets().SetLargeImage("gamelogo");
 		discordPresence.GetAssets().SetLargeText("");
@@ -475,7 +477,7 @@ void updateDiscordPresence()
 		}
 		else if (discord_gameinfo.level_name)
 		{
-			snprintf(levelname_time, 128, discord_gameinfo.level_name);
+			snprintf(levelname_time, 128, "%s", discord_gameinfo.level_name);
 			discordPresence.GetAssets().SetLargeText(levelname_time);
 		}
 		else
@@ -489,7 +491,7 @@ void updateDiscordPresence()
 			if (discord_gameinfo.rank_name && discord_gameinfo.reputation)
 				snprintf(rank_faction_rep, 128, "%s | %s", discord_gameinfo.rank_name, discord_gameinfo.reputation);
 			else
-				snprintf(rank_faction_rep, 128, discord_gameinfo.faction_name);
+				snprintf(rank_faction_rep, 128, "%s", discord_gameinfo.faction_name);
 			discordPresence.GetAssets().SetSmallText(rank_faction_rep);
 		}
 
@@ -499,7 +501,7 @@ void updateDiscordPresence()
 			if (discord_gameinfo.task_name && 0 != xr_strcmp(discord_gameinfo.task_name, ""))
 				snprintf(details_buffer, 128, "%s | %s", discord_gameinfo.gamemode, discord_gameinfo.task_name);
 			else
-				snprintf(details_buffer, 128, discord_gameinfo.gamemode);
+				snprintf(details_buffer, 128, "%s", discord_gameinfo.gamemode);
 			discordPresence.SetDetails(details_buffer);
 		}
 
@@ -579,35 +581,50 @@ void updateDiscordPresence()
 	}
 
 	discordPresence.SetState(state_buffer);
-	discord_core->ActivityManager().UpdateActivity(discordPresence, [](discord::Result result) {});
+	discord_client.Submit(discordPresence);
 }
 
 ENGINE_API void Init_Discord()
 {
-	auto result = discord::Core::Create(477910171964801060, DiscordCreateFlags_NoRequireDiscord, &discord_core);
+    if (!StartTime)
+    {
+        StartTime = time(0);
+        discordPresence.SetName(quark_discord::application_name);
+        discordPresence.SetType(discord::ActivityType::Playing);
+        discordPresence.GetTimestamps().SetStart(StartTime);
+        discordPresence.GetAssets().SetLargeImage("gamelogo");
+    }
+    discord_client.Connect();
+}
 
-	if (result != discord::Result::Ok)
-	{
-		Msg("[Discord RPC] Failed to create Discord RPC");
-		use_discord = false;
-		return;
-	}
+bool DiscordPresenceReady()
+{
+    return discord_client.Ready();
+}
 
-	discord_core->SetLogHook(discord::LogLevel::Error, DiscordLog);
-	Msg("[Discord RPC] Created successfully!");
+void PumpDiscordPresence()
+{
+    if (discord_clear_requested.exchange(false, std::memory_order_acq_rel))
+        discord_client.Clear();
+    discord_client.Pump();
+    static bool error_reported = false;
+    if (discord_client.Rejected() && !error_reported)
+        Msg("[Discord RPC] Activity rejected; check the application and its image assets");
+    error_reported = discord_client.Rejected();
+}
 
-	//Set up basic RPC
-	StartTime = time(0);
-	discordPresence.SetType(discord::ActivityType::Playing);
-	discordPresence.GetTimestamps().SetStart(StartTime);
-	discordPresence.GetAssets().SetLargeImage("gamelogo");
-	discord_core->ActivityManager().UpdateActivity(discordPresence, [](discord::Result result) {});
+void ShutdownDiscordPresence()
+{
+    discord_client.Clear();
+    discord_client.Close();
+    discord_clear_requested.store(false, std::memory_order_release);
 }
 
 void clearDiscordPresence()
 {
-	if (discord_core)
-		discord_core->ActivityManager().ClearActivity([](discord::Result result) {});
+    // Console commands and shutdown run on the game thread. IPC ownership
+    // stays on the Discord worker, including clearing and disconnection.
+    discord_clear_requested.store(true, std::memory_order_release);
 }
 
 void Startup()

@@ -125,6 +125,7 @@ extern int psModelFinalizeBudgetMs;
 extern int psModelPrefetchManifest;
 extern int psModelPrefetchManifestMax;
 extern int psModelPrefetchInFlight;
+extern int psModelPrefetchMemoryMb;
 extern float r__dtex_range;
 
 Flags32 ps_r__common_flags = {/*RFLAG_NO_RAM_TEXTURES*/ }; // All renders
@@ -536,6 +537,24 @@ int opt_dynamic = 2;
 #ifndef _EDITOR
 #include	"../../xrEngine/xr_ioconsole.h"
 #include	"../../xrEngine/xr_ioc_cmd.h"
+
+// Shader night vision is an active gameplay effect controlled by scripts, not
+// a persistent graphics preference. Saving a configuration must not turn the
+// effect on for an actor in the next process that has no NVG equipped.
+class CCC_NightVision : public CCC_Integer
+{
+public:
+    CCC_NightVision(LPCSTR name, int* value, int minimum, int maximum)
+        : CCC_Integer(name, value, minimum, maximum) {}
+
+    void Save(IWriter* writer) override
+    {
+        // Do not modify the live value: cfg_save while NVG is active must keep
+        // the current effect and its script-owned animation/state intact.
+        writer->w_printf("%s 0\r\n", cName);
+    }
+};
+
 
 #include "../xrRenderDX10/StateManager/dx10SamplerStateCache.h"
 
@@ -1066,6 +1085,7 @@ void xrRender_initconsole()
 	CMD4(CCC_Integer, "model_prefetch_manifest", &psModelPrefetchManifest, 0, 1);
 	CMD4(CCC_Integer, "model_prefetch_manifest_max", &psModelPrefetchManifestMax, 128, 16384);
 	CMD4(CCC_Integer, "model_prefetch_inflight", &psModelPrefetchInFlight, 8, 512);
+	CMD4(CCC_Integer, "model_prefetch_memory_mb", &psModelPrefetchMemoryMb, 0, 4096);
 #ifdef	DEBUG
 	CMD1(CCC_DumpResources,		"dump_resources");
 #endif	//	 DEBUG
@@ -1299,7 +1319,7 @@ void xrRender_initconsole()
 	Fvector4 twb_max = { 1.f, 1.f, 1.f, 1.f };
 	CMD4(CCC_Vector4, "r__bloom_weight", &ps_pp_bloom_weight, twb_min, twb_max);
 	CMD4(CCC_Vector4, "r__bloom_thresh", &ps_pp_bloom_thresh, twb_min, twb_max);
-	CMD4(CCC_Integer, "r__nightvision", &ps_r2_nightvision, 0, 3); //For beef's nightvision shader or other stuff
+	CMD4(CCC_NightVision, "r__nightvision", &ps_r2_nightvision, 0, 3); //For beef's nightvision shader or other stuff
 
 	CMD4(CCC_Integer, "r__fakescope", &scope_fake_enabled, 0, 1); //crookr for fake scope
 	CMD4(CCC_Integer, "r__3Dfakescope", &scope_3D_fake_enabled, 0, 1); // Redotix99: for 3D Shader Based Scopes

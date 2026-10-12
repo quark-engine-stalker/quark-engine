@@ -25,11 +25,11 @@ bool CAI_Stalker::feel_vision_isRelevant(CObject* O)
 {
 	if (!g_Alive())
 		return false;
-	CEntityAlive* E = smart_cast<CEntityAlive*>(O);
-	CInventoryItem* I = smart_cast<CInventoryItem*>(O);
-	if (!E && !I) return (false);
-	//	if (E && (E->g_Team() == g_Team()))			return false;
-	return (true);
+    // An entity is already relevant. Do not perform a second RTTI check for
+    // inventory-item inheritance on every candidate NPC in every observer.
+    if (smart_cast<CEntityAlive*>(O))
+        return true;
+    return smart_cast<CInventoryItem*>(O) != nullptr;
 }
 
 void CAI_Stalker::renderable_Render()

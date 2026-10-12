@@ -175,17 +175,123 @@ namespace R_dsgraph
 	typedef mapMatrixVS mapMatrix_T;
 	typedef mapMatrix_T mapMatrixPasses_T[SHADER_PASSES_MAX];
 
+	// Distance queues are append-only: no caller searches/deduplicates these
+	// entries. Building an unbalanced tree costs O(N^2) for ordered/equal keys.
+	// Sort insertion indices once before consuming them, preserving the exact
+	// FixedMAP order: newest equal key first for LR, oldest first for RL.
+	template <typename Item>
+	class DistanceRenderQueue
+	{
+	public:
+		typedef FixedMAP<float, Item, render_allocator> backing_map;
+		typedef typename backing_map::TNode TNode;
+		typedef void __fastcall callback(TNode*);
+		typedef xr_vector<u32, render_allocator::helper<u32>::result> index_vector;
+	private:
+		backing_map nodes;
+		index_vector order;
+		bool flat = false;
+		bool sorted = true;
+		bool has_nan = false;
+		bool ordered_prefix()
+		{
+			bool ascending = true, descending = true;
+			for (u32 i = 1; i < nodes.size(); ++i)
+			{
+				ascending = ascending && nodes[i - 1].key <= nodes[i].key;
+				descending = descending && nodes[i - 1].key >= nodes[i].key;
+				if (!ascending && !descending) return false;
+			}
+			return true;
+		}
+		void sort_nodes()
+		{
+			if (sorted) return;
+			if (has_nan)
+			{
+				// NaN is not an ordered key. Preserve the original <= branches.
+				FixedMAP<float, u32, render_allocator> legacy;
+				for (u32 i = 0; i < nodes.size(); ++i)
+					legacy.insertInAnyWay(nodes[i].key)->val = i;
+				order.clear();
+				legacy.getLR(order);
+			}
+			else
+			{
+				order.resize(nodes.size());
+				for (u32 i = 0; i < nodes.size(); ++i) order[i] = i;
+				// Sort only 32-bit indices. Packets, matrices and insertion storage
+				// stay in place, including across multiple passes of a retained graph.
+				std::sort(order.begin(), order.end(), [this](u32 a, u32 b)
+				{
+					if (nodes[a].key < nodes[b].key) return true;
+					if (nodes[a].key > nodes[b].key) return false;
+					return a > b;
+				});
+			}
+			sorted = true;
+		}
+	public:
+		TNode* insertInAnyWay(const float& key)
+		{
+			const u32 count = nodes.size();
+			// Small/unstructured graphs retain the old fast tree. Detect ordered
+			// input at power-of-two checkpoints, avoiding an O(N) check per insert.
+			if (!flat && count >= 16 && ((count & (count - 1)) == 0) &&
+				(count >= 4096 || ordered_prefix()))
+			{
+				flat = true;
+				for (u32 i = 0; i < count; ++i) has_nan |= nodes[i].key != nodes[i].key;
+			}
+			if (!flat) return nodes.insertInAnyWay(key);
+			has_nan |= key != key;
+			sorted = false;
+			return nodes.append(key);
+		}
+		void traverseLR(callback consume)
+		{
+			if (!flat) { nodes.traverseLR(consume); return; }
+			sort_nodes();
+			for (u32 index : order) consume(&nodes[index]);
+		}
+		void traverseRL(callback consume)
+		{
+			if (!flat) { nodes.traverseRL(consume); return; }
+			sort_nodes();
+			for (auto i = order.rbegin(); i != order.rend(); ++i) consume(&nodes[*i]);
+		}
+		u32 size() { return nodes.size(); }
+		void clear()
+		{
+			// Repeated large/ordered frames need no tree construction next time.
+			// A small following frame resets that prediction at its next clear.
+			flat = (flat && nodes.size() >= 16) || nodes.size() >= 4096;
+			nodes.clear();
+			order.clear();
+			sorted = true;
+			has_nan = false;
+		}
+		void destroy()
+		{
+			nodes.destroy();
+			index_vector().swap(order);
+			flat = false;
+			sorted = true;
+			has_nan = false;
+		}
+	};
+
 	// Top level
-	typedef FixedMAP<float, _MatrixItemS, render_allocator> mapSorted_T;
+	typedef DistanceRenderQueue<_MatrixItemS> mapSorted_T;
 	typedef mapSorted_T::TNode mapSorted_Node;
 
-	typedef FixedMAP<float, _MatrixItemS, render_allocator> mapHUD_T;
+	typedef DistanceRenderQueue<_MatrixItemS> mapHUD_T;
 	typedef mapHUD_T::TNode mapHUD_Node;
 
-	typedef FixedMAP<float, _MatrixItemS, render_allocator> mapScopeHUD_T; // Redotix99: for 3D Shader Based Scopes
+	typedef DistanceRenderQueue<_MatrixItemS> mapScopeHUD_T; // Redotix99: for 3D Shader Based Scopes
 	typedef mapScopeHUD_T::TNode mapScopeHUD_T_Node;
 
-	typedef FixedMAP<float, _MatrixItemS, render_allocator> HUDMask_T;
+	typedef DistanceRenderQueue<_MatrixItemS> HUDMask_T;
 	typedef HUDMask_T::TNode HUDMask_Node;
 
 	// LOD entries are never searched or deduplicated: the renderer only appends
@@ -273,10 +379,10 @@ namespace R_dsgraph
 	};
 	typedef mapLOD_T::TNode mapLOD_Node;
 
-	typedef FixedMAP<float, _MatrixItemS, render_allocator> mapLandscape_T;
+	typedef DistanceRenderQueue<_MatrixItemS> mapLandscape_T;
 	typedef mapLandscape_T::TNode mapLandscape_Node;
 
-	typedef FixedMAP<float, _MatrixItemS, render_allocator> mapWater_T;
+	typedef DistanceRenderQueue<_MatrixItemS> mapWater_T;
 	typedef mapWater_T::TNode mapWater_Node;
 
 };

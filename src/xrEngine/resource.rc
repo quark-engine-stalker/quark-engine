@@ -1,6 +1,7 @@
 // Microsoft Visual C++ generated resource script.
 //
 #include "resource.h"
+#include "engine_version.h"
 
 #define APSTUDIO_READONLY_SYMBOLS
 /////////////////////////////////////////////////////////////////////////////
@@ -46,8 +47,8 @@ IDR_SPLASH_PNG          RCDATA                  "splash_xrcs_en.png"
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 0,0,2,0
- PRODUCTVERSION 0,0,2,0
+ FILEVERSION QUARK_ENGINE_VERSION_RESOURCE
+ PRODUCTVERSION QUARK_ENGINE_VERSION_RESOURCE
  FILEFLAGSMASK 0x17L
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -64,12 +65,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "GSC Game World"
             VALUE "FileDescription", "Quark Engine"
-            VALUE "FileVersion", "0.0.2"
+            VALUE "FileVersion", QUARK_ENGINE_VERSION_STRING
             VALUE "InternalName", "Quark Engine"
             VALUE "LegalCopyright", "Copyright 2009 GSC Game World"
             VALUE "OriginalFilename", "AnomalyDX11AVX.exe"
             VALUE "ProductName", "Quark Engine"
-            VALUE "ProductVersion", "0.0.2"
+            VALUE "ProductVersion", QUARK_ENGINE_VERSION_STRING
         END
     END
     BLOCK "VarFileInfo"

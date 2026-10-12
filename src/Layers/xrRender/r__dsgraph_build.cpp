@@ -58,12 +58,6 @@ struct CStaticShaderPacket
 	// Hold the element alive while its raw pass/state pointers are cached. The
 	// cache is explicitly cleared before renderer/device reset and destruction.
 	ref_selement owner;
-	u32 priority = 0;
-	bool water = false;
-	bool strict_b2f = false;
-	bool emissive = false;
-	bool wmark = false;
-	bool landscape = false;
 	xr_vector<CStaticPassPacket> passes;
 };
 
@@ -81,40 +75,19 @@ const CStaticShaderPacket& static_shader_packet(ShaderElement* shader)
 		found = g_static_shader_packets.emplace(shader, CStaticShaderPacket()).first;
 
 	CStaticShaderPacket& packet = found->second;
-	if (!packet.owner)
-		packet.owner = ref_selement(shader);
-
-	const u32 priority = shader->flags.iPriority / 2;
-	const bool water = !!shader->flags.isWater;
-	const bool strict_b2f = !!shader->flags.bStrictB2F;
-	const bool emissive = !!shader->flags.bEmissive;
-	const bool wmark = !!shader->flags.bWmark;
-	const bool landscape = !!shader->flags.bLandscape;
-
-	bool valid = packet.priority == priority && packet.water == water &&
-		packet.strict_b2f == strict_b2f && packet.emissive == emissive &&
-		packet.wmark == wmark && packet.landscape == landscape &&
-		packet.passes.size() == shader->passes.size();
-	if (valid)
+	if (packet.owner)
 	{
+		// _CreateElement publishes a copy of the completed Blender/Lua result.
+		// Its passes/resources are immutable; reset/unload clears this owning cache.
+		// Flags used for routing/priority remain live at the insertion site.
+#ifdef DEBUG
+		VERIFY(packet.passes.size() == shader->passes.size());
 		for (u32 i = 0; i < shader->passes.size(); ++i)
-		{
-			if (packet.passes[i].source != &*shader->passes[i])
-			{
-				valid = false;
-				break;
-			}
-		}
-	}
-	if (valid)
+			VERIFY(packet.passes[i].source == &*shader->passes[i]);
+#endif
 		return packet;
-
-	packet.priority = priority;
-	packet.water = water;
-	packet.strict_b2f = strict_b2f;
-	packet.emissive = emissive;
-	packet.wmark = wmark;
-	packet.landscape = landscape;
+	}
+	packet.owner = ref_selement(shader);
 	packet.passes.resize(shader->passes.size());
 
 	for (u32 i = 0; i < shader->passes.size(); ++i)
@@ -394,6 +367,7 @@ void R_dsgraph_structure::r_dsgraph_insert_dynamic(dxRender_Visual* pVisual, Fve
 		mapMatrixTextures::TNode* Ntex = Nstate->val.insert(pass.T._get());
 		mapMatrixItems& items = Ntex->val;
 		items.push_back(item);
+		r_dsgraph_note_opaque_item(sh->flags.iPriority / 2, items.size());
 
 		// Need to sort for HZB efficient use
 		if (SSA > Ntex->val.ssa)
@@ -549,12 +523,13 @@ void R_dsgraph_structure::r_dsgraph_insert_static(dxRender_Visual* pVisual)
 	// cache for them. Runtime script flag mutations remain visible because the
 	// routing decisions above read the live ShaderElement flags directly.
 	const CStaticShaderPacket& shader_packet = static_shader_packet(sh);
-	VERIFY(shader_packet.priority == shader_priority);
+	const u32 packet_priority = sh->flags.iPriority / 2;
+	VERIFY(packet_priority == shader_priority);
 
 	for (u32 iPass = 0; iPass < shader_packet.passes.size(); ++iPass)
 	{
 		const CStaticPassPacket& pass = shader_packet.passes[iPass];
-		mapNormal_T& map = mapNormalPasses[shader_packet.priority][iPass];
+		mapNormal_T& map = mapNormalPasses[packet_priority][iPass];
 		mapNormalVS::TNode* Nvs = map.insert(pass.vs);
 		mapNormalGS::TNode* Ngs = Nvs->val.insert(pass.gs);
 		mapNormalPS::TNode* Nps = Ngs->val.insert(pass.ps);
@@ -585,6 +560,7 @@ void R_dsgraph_structure::r_dsgraph_insert_static(dxRender_Visual* pVisual)
 #endif
 
 		// Need to sort for HZB efficient use
+		r_dsgraph_note_opaque_item(shader_priority, items.size());
 		if (SSA > Ntex->val.ssa)
 		{
 			Ntex->val.ssa = SSA;

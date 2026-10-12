@@ -51,9 +51,11 @@ private:
 		TNode* newNodes = (TNode*)allocator::alloc(sizeof(TNode) * newLimit);
 		VERIFY(newNodes);
 
-		ZeroMemory(newNodes, Size(newLimit));
 		if (limit)
 			CopyMemory(newNodes, nodes, Size(limit));
+		// Existing slots are overwritten by the relocation copy; clearing them
+		// first only writes the same memory twice. Initialize the new tail alone.
+		ZeroMemory(newNodes + limit, Size(newLimit - limit));
 
 		for (u32 I = 0; I < pool; I++)
 		{
@@ -274,6 +276,10 @@ public:
 			return Alloc(k);
 		}
 	}
+
+	// Append-only consumers can keep allocation/storage semantics without a
+	// search-tree walk. They must provide their own ordered traversal.
+	IC TNode* append(const K& k) { return Alloc(k); }
 
 	IC TNode* insert(const K& k, const T& v)
 	{

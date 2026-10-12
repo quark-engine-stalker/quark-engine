@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "../../xrCore/engine_error_logger.h"
 #include "dxRenderDeviceRender.h"
 
 #include "ResourceManager.h"
@@ -336,7 +337,12 @@ void dxRenderDeviceRender::End()
 
 		{
 
-			m_lastPresentResult = HW.m_pSwapChain->Present(present_interval, present_flags);
+            const HRESULT previousResult = m_lastPresentResult;
+            m_lastPresentResult = HW.m_pSwapChain->Present(present_interval, present_flags);
+            if (FAILED(m_lastPresentResult) && m_lastPresentResult != previousResult)
+                EngineErrorLogger::ReportRenderFailure(m_lastPresentResult,
+                    HW.pDevice ? HW.pDevice->GetDeviceRemovedReason() : m_lastPresentResult,
+                    "IDXGISwapChain::Present", __FILE__, __LINE__, __FUNCTION__);
 		}
 
 	}

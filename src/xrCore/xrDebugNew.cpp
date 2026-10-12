@@ -124,8 +124,12 @@ void LogStackTrace(LPCSTR header = nullptr, bool printStack = false)
     if (printStack) {
         printLuaStack();
         Msg("\n");
-        auto s = xr_StackWalker();
-        s.ShowCallstack();
+        if (EngineErrorLogger::TryBeginSymbolWork())
+        {
+            { auto walker = xr_StackWalker(); walker.ShowCallstack(); }
+            EngineErrorLogger::EndSymbolWork();
+        }
+        else Msg("! Native symbols skipped: DbgHelp is busy");
     }
 }
 
@@ -427,32 +431,31 @@ void xrDebug::backend(const char* expression, const char* description, const cha
 
 LPCSTR xrDebug::error2string(long code)
 {
-	char* result = 0;
-	static string1024 desc_storage;
-
-#ifdef _M_AMD64
-#else
-	WCHAR err_result[1024];
-    DXGetErrorDescription(code,err_result,sizeof(err_result));
-	wcstombs(result, err_result, sizeof(err_result));
-#endif
-	if (0 == result)
-	{
-		FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM, 0, code, 0, desc_storage, sizeof(desc_storage) - 1, 0);
-		result = desc_storage;
-	}
-	return result;
+    // Independent per-thread buffer, IGNORE_INSERTS, and a numeric fallback.
+    // FormatMessage does not understand every DXGI HRESULT.
+    static thread_local char description[1024] = {};
+    const DWORD lastError = GetLastError();
+    wchar_t wide[512] = {};
+    if (!FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+        nullptr, static_cast<DWORD>(code), 0, wide, DWORD(_countof(wide)), nullptr) ||
+        !WideCharToMultiByte(CP_UTF8, 0, wide, -1, description, sizeof(description), nullptr, nullptr))
+        _snprintf_s(description, sizeof(description), _TRUNCATE, "HRESULT 0x%08lX (system description unavailable)",
+            static_cast<unsigned long>(code));
+    SetLastError(lastError);
+    return description;
 }
 
 void xrDebug::error(long hr, const char* expr, const char* file, int line, const char* function, bool& ignore_always)
 {
-	backend(expr, error2string(hr), 0, 0, file, line, function, ignore_always);
+    EngineErrorLogger::FailureCodeScope diagnosticCode(hr);
+    backend(expr, error2string(hr), 0, 0, file, line, function, ignore_always);
 }
 
 void xrDebug::error(long hr, const char* expr, const char* e2, const char* file, int line, const char* function,
                     bool& ignore_always)
 {
-	backend(expr, error2string(hr), e2, 0, file, line, function, ignore_always);
+    EngineErrorLogger::FailureCodeScope diagnosticCode(hr);
+    backend(expr, error2string(hr), e2, 0, file, line, function, ignore_always);
 }
 
 void xrDebug::fail(const char* e1, const char* file, int line, const char* function, bool& ignore_always)
@@ -540,7 +543,7 @@ void __cdecl xrDebug::fatal(const char* file, int line, const char* function, co
 
 	va_list p;
 	va_start(p, F);
-	vsprintf(buffer, F, p);
+	_vsnprintf_s(buffer, sizeof(buffer), _TRUNCATE, F, p);
 	va_end(p);
 
 	bool ignore_always = true;
@@ -696,76 +699,24 @@ void format_message(LPSTR buffer, const u32& buffer_size)
 //AVO: simplify function
 LONG WINAPI UnhandledFilter(_EXCEPTION_POINTERS* pExceptionInfo)
 {
-	if (!error_after_dialog)
-		EngineErrorLogger::ReportUnhandledException(pExceptionInfo);
-
-	string256 error_message;
-	format_message(error_message, sizeof(error_message));
-
-	CONTEXT save = *pExceptionInfo->ContextRecord;
-	//    BuildStackTrace(pExceptionInfo);
-	*pExceptionInfo->ContextRecord = save;
-
-    if (Debug.get_crashhandler())
-        Debug.get_crashhandler()();
-
-	if (shared_str_initialized)
-		Msg("stack trace:\n");
-
-    LogStackTrace(nullptr, true);
-
-	if (!IsDebuggerPresent())
-	{
-		os_clipboard::copy_to_clipboard("stack trace:\r\n\r\n");
-	}
-
-	//    string4096 buffer;
-	//    for (int i = 0; i < g_stackTraceCount; ++i)
-	//    {
-	//        if (shared_str_initialized)
-	//            Msg("%s", g_stackTrace[i]);
-	//        xr_sprintf(buffer, sizeof(buffer), "%s\r\n", g_stackTrace[i]);
-	//#ifdef DEBUG
-	//        if (!IsDebuggerPresent())
-	//            os_clipboard::update_clipboard(buffer);
-	//#endif //-DEBUG
-	//    }
-
-	if (*error_message)
-	{
-		if (shared_str_initialized)
-			Msg("\n%s", error_message);
-
-		xr_strcat(error_message, sizeof(error_message), "\r\n");
-#ifdef DEBUG
-        if (!IsDebuggerPresent())
-            os_clipboard::update_clipboard(buffer);
-#endif //-DEBUG
-	}
-
-	if (pExceptionInfo->ExceptionRecord)
-	{
-		Msg("at address 0x%p", pExceptionInfo->ExceptionRecord->ExceptionAddress);
-	}
-	//return EXCEPTION_CONTINUE_EXECUTION;
-
-	FlushLog();
-
+    // Do not re-enter the VM, console-variable dump or ordinary buffered logger
+    // after an arbitrary native fault. They may belong to another thread, or
+    // the failed thread may own their locks. v2 captures the original context
+    // directly and persists it before optional symbolization.
+    InterlockedIncrement(&g_fatal_backend_depth);
+    if (!error_after_dialog)
+        EngineErrorLogger::ReportUnhandledException(pExceptionInfo);
 
     if (IsDebuggerPresent())
-        DebugBreak();
+        return EXCEPTION_CONTINUE_SEARCH; // pass the original exception to debugger
 
-	ShowCursor(true);
-	ShowWindow(GetActiveWindow(), SW_FORCEMINIMIZE);
-	MessageBox(
-		GetTopWindow(NULL),
-		"Unhandled exception occured. See log for details",
-		"Fatal Error",
-		MB_OK | MB_ICONERROR | MB_SYSTEMMODAL
-	);
-	//    TerminateProcess(GetCurrentProcess(), 1);
-
-	return (EXCEPTION_CONTINUE_SEARCH);
+    ShowCursor(true);
+    ShowWindow(GetActiveWindow(), SW_FORCEMINIMIZE);
+    MessageBoxA(nullptr,
+        "Unhandled exception. Check QUARK ENGINE/ERROR for v2 diagnostics. "
+        "Keep the matching EXE/PDB for analysis.",
+        "QUARK ENGINE - Fatal Error", MB_OK | MB_ICONERROR | MB_SYSTEMMODAL);
+    return EXCEPTION_CONTINUE_SEARCH; // preserve process termination policy
 }
 
 //-AVO
@@ -1045,6 +996,8 @@ static void termination_handler(int signal)
 
 void debug_on_thread_spawn()
 {
+    ULONG crashStackReserve = 64u * 1024u;
+    SetThreadStackGuarantee(&crashStackReserve);
 #ifdef USE_BUG_TRAP
     BT_SetTerminate();
 #else // USE_BUG_TRAP

@@ -17,6 +17,48 @@
 
 int psAIVisualMemoryIndexedMerge = 1;
 
+namespace
+{
+u16 visual_memory_object_id(const MemorySpace::CVisibleObject& entry)
+{
+	return object_id(entry.m_object);
+}
+}
+
+u32 CAgentMemoryManager::visual_object_index(const VISIBLES& objects, u16 id) const
+{
+	if (m_visible_objects != &objects)
+	{
+		const auto found = std::find(objects.begin(), objects.end(), id);
+		return found != objects.end() ? static_cast<u32>(found - objects.begin()) : u32(-1);
+	}
+	return m_visible_object_index.find(objects, id, visual_memory_object_id);
+}
+
+void CAgentMemoryManager::invalidate_visual_object_index()
+{
+	m_visible_object_index.invalidate();
+}
+
+bool CAgentMemoryManager::try_visual_object_index(const VISIBLES& objects, u16 id, u32& index) const
+{
+	return m_visible_objects == &objects &&
+		m_visible_object_index.try_find(objects, id, visual_memory_object_id, index);
+}
+
+bool CAgentMemoryManager::visual_object_index_ready() const
+{
+	return m_visible_object_index.ready();
+}
+
+void CAgentMemoryManager::visual_object_replaced(u32 index, u16 old_id,
+	squad_mask_type old_mask, bool old_enabled)
+{
+	if (m_visible_objects)
+		m_visible_object_index.replaced(*m_visible_objects, index, old_id, visual_memory_object_id);
+	visual_object_filter_changed(index, old_mask, old_enabled);
+}
+
 u32 CAgentMemoryManager::visual_merge_mask_index(squad_mask_type mask) const
 {
 	if (!mask || (mask & (mask - 1)))
@@ -200,6 +242,9 @@ void CAgentMemoryManager::visual_object_filter_changed(
 
 void CAgentMemoryManager::visual_object_appended(u32 index)
 {
+	if (m_visible_objects)
+		m_visible_object_index.appended(*m_visible_objects, index, visual_memory_object_id);
+
 	if (!m_visual_merge_indices_valid)
 		return;
 
@@ -277,7 +322,6 @@ u32 CAgentMemoryManager::find_object_index(
 void CAgentMemoryManager::update()
 {
 	reset_memory_masks();
-	ensure_object_index(visibles(), m_visible_index);
 	ensure_object_index(sounds(), m_sound_index);
 	ensure_object_index(hits(), m_hit_index);
 }
@@ -357,7 +401,7 @@ void CAgentMemoryManager::object_information(const CObject* object, u32& level_t
 	const ALife::_OBJECT_ID id = object_id(object);
 
 	const VISIBLES& visible_objects = visibles();
-	visible_index = find_object_index(visible_objects, m_visible_index, id);
+	visible_index = visual_object_index(visible_objects, id);
 	if (visible_index < visible_objects.size())
 	{
 		const CVisibleObject& visible = visible_objects[visible_index];

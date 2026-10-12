@@ -12,6 +12,8 @@
 #include <atomic>
 #include <climits>
 #include <cstring>
+#include <immintrin.h>
+#include <memory>
 
 // #include "std_classes.h"
 // #include "xr_avi.h"
@@ -337,6 +339,44 @@ bool surface_info(u32 width, u32 height, DXGI_FORMAT format, size_t& row_bytes, 
     return true;
 }
 
+// RGB24 has no DXGI resource format. Expand directly to the byte-identical
+// RGBA8 image used by the legacy loader, without its intermediate float image.
+// Both SIMD loads stay within the current eight pixels (24 source bytes).
+void expand_rgb24(const u8* source, u8* destination, size_t pixels)
+{
+    const __m128i first = _mm_setr_epi8(2, 1, 0, -128, 5, 4, 3, -128,
+        8, 7, 6, -128, 11, 10, 9, -128);
+    const __m128i second = _mm_setr_epi8(6, 5, 4, -128, 9, 8, 7, -128,
+        12, 11, 10, -128, 15, 14, 13, -128);
+    const __m128i alpha = _mm_set1_epi32(static_cast<int>(0xff000000u));
+    while (pixels >= 8)
+    {
+        const __m128i a = _mm_loadu_si128(reinterpret_cast<const __m128i*>(source));
+        const __m128i b = _mm_loadu_si128(reinterpret_cast<const __m128i*>(source + 8));
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(destination),
+            _mm_or_si128(_mm_shuffle_epi8(a, first), alpha));
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(destination + 16),
+            _mm_or_si128(_mm_shuffle_epi8(b, second), alpha));
+        source += 24;
+        destination += 32;
+        pixels -= 8;
+    }
+    while (pixels--)
+    {
+        destination[0] = source[2];
+        destination[1] = source[1];
+        destination[2] = source[0];
+        destination[3] = 255;
+        source += 3;
+        destination += 4;
+    }
+}
+
+struct rgb24_pixels_deleter
+{
+    void operator()(u8* pixels) const { xr_free(pixels); }
+};
+
 bool create_from_memory(const void* data, size_t size, int requested_lod, bool staging,
     ID3DBaseTexture** out_texture, u32& out_mip_count, int& out_loaded_lod)
 {
@@ -359,6 +399,7 @@ bool create_from_memory(const void* data, size_t size, int requested_lod, bool s
     u32 dimension = dim_texture2d;
     u32 array_size = 1;
     bool cube = false;
+    bool rgb24 = false;
     u32 depth = hdr->depth ? hdr->depth : 1;
 
     if ((hdr->format.flags & ddpf_fourcc) && hdr->format.fourcc == fourcc('D', 'X', '1', '0'))
@@ -387,6 +428,19 @@ bool create_from_memory(const void* data, size_t size, int requested_lod, bool s
     else
     {
         format = legacy_format(hdr->format);
+        // Unknown/malformed masks, SRGB metadata, palettes and non-packed
+        // rows keep the legacy compatibility path. Never reinterpret them.
+        if (format == DXGI_FORMAT_UNKNOWN && requested_lod == 0 &&
+            !(hdr->caps2 & (caps2_volume | caps2_cubemap)) &&
+            hdr->format.flags == ddpf_rgb &&
+            hdr->format.rgb_bit_count == 24 &&
+            is_mask(hdr->format, 0x00ff0000, 0x0000ff00, 0x000000ff, 0) &&
+            (!(hdr->flags & 0x8u) ||
+                static_cast<u64>(hdr->pitch_or_linear_size) == static_cast<u64>(hdr->width) * 3u))
+        {
+            format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            rgb24 = true;
+        }
         if (hdr->caps2 & caps2_volume)
             dimension = dim_texture3d;
         if (hdr->caps2 & caps2_cubemap)
@@ -435,6 +489,9 @@ bool create_from_memory(const void* data, size_t size, int requested_lod, bool s
 
     xr_vector<D3D11_SUBRESOURCE_DATA> init_data;
     init_data.reserve(dimension == dim_texture3d ? load_mips : array_size * load_mips);
+    // Own conversion storage until CreateTexture has consumed every initial
+    // subresource. No decoded image or extra cache survives this call.
+    std::unique_ptr<u8, rgb24_pixels_deleter> converted_mips[D3D11_REQ_MIP_LEVELS];
     const u8* src = bytes + offset;
     const u8* end = bytes + size;
 
@@ -448,7 +505,12 @@ bool create_from_memory(const void* data, size_t size, int requested_lod, bool s
         {
             size_t row_bytes = 0;
             size_t slice_bytes = 0;
-            if (!surface_info(w, h, format, row_bytes, slice_bytes))
+            if (rgb24)
+            {
+                row_bytes = static_cast<size_t>(w) * 3u;
+                slice_bytes = row_bytes * h;
+            }
+            else if (!surface_info(w, h, format, row_bytes, slice_bytes))
                 return false;
             if (d && slice_bytes > SIZE_MAX / d)
                 return false;
@@ -461,9 +523,29 @@ bool create_from_memory(const void* data, size_t size, int requested_lod, bool s
                 if (row_bytes > UINT_MAX || slice_bytes > UINT_MAX)
                     return false;
                 D3D11_SUBRESOURCE_DATA sub = {};
-                sub.pSysMem = src;
-                sub.SysMemPitch = static_cast<UINT>(row_bytes);
-                sub.SysMemSlicePitch = static_cast<UINT>(slice_bytes);
+                if (rgb24)
+                {
+                    const size_t output_row = static_cast<size_t>(w) * 4u;
+                    const size_t output_slice = output_row * h;
+                    if (output_row > UINT_MAX || output_slice > UINT_MAX ||
+                        (d && output_slice > SIZE_MAX / d))
+                        return false;
+                    // Every output byte is written by expand_rgb24. Do not
+                    // zero a large temporary image just to overwrite it.
+                    converted_mips[mip].reset(static_cast<u8*>(
+                        xr_malloc_uninitialized(output_slice * d)));
+                    u8* pixels = converted_mips[mip].get();
+                    expand_rgb24(src, pixels, static_cast<size_t>(w) * h * d);
+                    sub.pSysMem = pixels;
+                    sub.SysMemPitch = static_cast<UINT>(output_row);
+                    sub.SysMemSlicePitch = static_cast<UINT>(output_slice);
+                }
+                else
+                {
+                    sub.pSysMem = src;
+                    sub.SysMemPitch = static_cast<UINT>(row_bytes);
+                    sub.SysMemSlicePitch = static_cast<UINT>(slice_bytes);
+                }
                 init_data.push_back(sub);
             }
 
@@ -541,6 +623,62 @@ bool create_from_memory(const void* data, size_t size, int requested_lod, bool s
     return true;
 }
 } // namespace quark_dds
+
+u64 CTexture::ResidentBytes() const
+{
+    // Texture payload estimate, not a driver heap allocation measurement. Do not
+    // convert a staging resource or issue an immediate-context call to price it.
+    if (!pSurface || flags.bLoadedAsStaging)
+        return 0;
+
+    D3D_RESOURCE_DIMENSION dimension;
+    pSurface->GetType(&dimension);
+    u32 width = 0, height = 1, depth = 1, mips = 0, slices = 1, samples = 1;
+    DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+    switch (dimension)
+    {
+    case D3D_RESOURCE_DIMENSION_TEXTURE1D:
+        {
+            D3D11_TEXTURE1D_DESC d = {};
+            static_cast<ID3D11Texture1D*>(pSurface)->GetDesc(&d);
+            if (d.Usage == D3D11_USAGE_STAGING) return 0;
+            width = d.Width; mips = d.MipLevels; slices = d.ArraySize; format = d.Format;
+        }
+        break;
+    case D3D_RESOURCE_DIMENSION_TEXTURE2D:
+        {
+            D3D11_TEXTURE2D_DESC d = {};
+            static_cast<ID3D11Texture2D*>(pSurface)->GetDesc(&d);
+            if (d.Usage == D3D11_USAGE_STAGING) return 0;
+            width = d.Width; height = d.Height; mips = d.MipLevels;
+            slices = d.ArraySize; samples = d.SampleDesc.Count; format = d.Format;
+        }
+        break;
+    case D3D_RESOURCE_DIMENSION_TEXTURE3D:
+        {
+            D3D11_TEXTURE3D_DESC d = {};
+            static_cast<ID3D11Texture3D*>(pSurface)->GetDesc(&d);
+            if (d.Usage == D3D11_USAGE_STAGING) return 0;
+            width = d.Width; height = d.Height; depth = d.Depth; mips = d.MipLevels; format = d.Format;
+        }
+        break;
+    default:
+        return 0;
+    }
+
+    u64 bytes = 0;
+    for (u32 mip = 0; mip < mips; ++mip)
+    {
+        size_t row = 0, slice = 0;
+        if (!quark_dds::surface_info(width, height, format, row, slice))
+            return 0; // Unknown formats stay on the conservative source-byte price.
+        bytes += static_cast<u64>(slice) * depth * slices * samples;
+        width = _max(1u, width >> 1u);
+        height = _max(1u, height >> 1u);
+        depth = _max(1u, depth >> 1u);
+    }
+    return bytes;
+}
 
 static std::atomic<u32> g_quark_dds_legacy_fallbacks{0};
 

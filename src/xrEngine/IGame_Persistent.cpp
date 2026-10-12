@@ -2,6 +2,7 @@
 #pragma hdrstop
 
 #include "IGame_Persistent.h"
+#include "../xrCore/ResourceWarmBudget.h"
 #include "../xrCore/adaptive_memory_policy.h"
 
 #ifndef _EDITOR
@@ -30,6 +31,7 @@ ENGINE_API BOOL psTextureWarmupManifest = TRUE;
 ENGINE_API BOOL psTextureWarmupUiOnly = TRUE;
 ENGINE_API int psTextureWarmupSlowMs = 4;
 ENGINE_API int psTextureWarmupMax = 1024;
+int psTextureWarmupMemoryMb = 256;
 
 namespace
 {
@@ -282,6 +284,8 @@ void IGame_Persistent::LoadTextureWarmupManifest(xr_vector<shared_str>& names)
 		return;
 	}
 
+	resource_warm_budget<shared_str, xr_unordered_set<shared_str>> warm_budget;
+	warm_budget.reset(static_cast<u64>(_max(0, psTextureWarmupMemoryMb)) * 1024u * 1024u);
 	names.reserve(names.size() + count);
 	for (u32 index = 0; index < count; ++index)
 	{
@@ -302,8 +306,16 @@ void IGame_Persistent::LoadTextureWarmupManifest(xr_vector<shared_str>& names)
 			if (inserted)
 				m_texture_warmup_order.push_back(name);
 		}
-		if (inserted)
-			names.push_back(name);
+		// Keep every valid learned name in the manifest. Only automatic warming
+		// is capped; required UI loads continue through the normal shader path.
+		string_path resolved;
+		const CLocatorAPI::file* file = FS.exist(resolved, "$game_textures$", normalized, ".dds");
+		if (inserted && file)
+		{
+			const decltype(warm_budget)::cost cost{shared_str(file->name), file->size_real};
+			if (warm_budget.admit(&cost, 1))
+				names.push_back(name);
+		}
 	}
 	FS.r_close(manifest);
 }

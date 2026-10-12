@@ -170,7 +170,7 @@ namespace luabind { namespace detail {
             base.pointer_offset = i->ptr_offset;
             base.base = bcrep;
 
-            crep->add_base_class(base);
+            crep->add_base_class(base, L);
 
             // copy base class table
 			crep->get_table(L);

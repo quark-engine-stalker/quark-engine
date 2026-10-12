@@ -30,7 +30,7 @@ IC CAgentManager& CAgentMemoryManager::object() const
 IC void CAgentMemoryManager::set_squad_objects(VISIBLES* objects)
 {
 	m_visible_objects = objects;
-	m_visible_index.clear();
+	m_visible_object_index.reset();
 	invalidate_visual_merge_candidates();
 }
 

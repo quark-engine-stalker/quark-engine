@@ -214,8 +214,8 @@ void CRenderTarget::phase_ssfx_ao()
 	aoCopyBox.right = (UINT)clampr(iCeil(scale_X), 1, (int)Device.dwWidth);
 	aoCopyBox.bottom = (UINT)clampr(iCeil(scale_Y), 1, (int)Device.dwHeight);
 	aoCopyBox.back = 1;
-	HW.pContext->CopySubresourceRegion(rt_ssfx_ao->pTexture->surface_get(), 0, 0, 0, 0,
-		rt_ssfx_temp->pTexture->surface_get(), 0, &aoCopyBox);
+	HW.pContext->CopySubresourceRegion(rt_ssfx_ao->pSurface, 0, 0, 0, 0,
+		rt_ssfx_temp->pSurface, 0, &aoCopyBox);
 
 	//scale_X = w / (ScaleFactor * 2.0f);
 	//scale_Y = h / (ScaleFactor * 2.0f);
@@ -360,8 +360,8 @@ void CRenderTarget::phase_ssfx_il()
 	ilCopyBox.right = (UINT)clampr(iCeil(scale_X), 1, (int)Device.dwWidth);
 	ilCopyBox.bottom = (UINT)clampr(iCeil(scale_Y), 1, (int)Device.dwHeight);
 	ilCopyBox.back = 1;
-	HW.pContext->CopySubresourceRegion(rt_ssfx_il->pTexture->surface_get(), 0, 0, 0, 0,
-		rt_ssfx_temp2->pTexture->surface_get(), 0, &ilCopyBox);
+	HW.pContext->CopySubresourceRegion(rt_ssfx_il->pSurface, 0, 0, 0, 0,
+		rt_ssfx_temp2->pSurface, 0, &ilCopyBox);
 
 	//scale_X = w / ScaleFactor;
 	//scale_Y = h / ScaleFactor;

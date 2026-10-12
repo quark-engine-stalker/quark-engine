@@ -281,6 +281,7 @@ void CRender::initialize_resource_policy()
     {
         m_vramBudget = info.Budget;
         m_vramUsage = info.CurrentUsage;
+        dxRenderDeviceRender::Instance().Resources->SetVideoMemoryBudget(m_vramBudget, m_vramUsage);
         Msg("* DXGI local video memory: %.0f / %.0f MB",
             bytes_to_megabytes(m_vramUsage), bytes_to_megabytes(m_vramBudget));
     }
@@ -290,6 +291,8 @@ void CRender::initialize_resource_policy()
 
 void CRender::destroy_resource_policy()
 {
+	if (dxRenderDeviceRender::Instance().Resources)
+		dxRenderDeviceRender::Instance().Resources->SetVideoMemoryBudget(0, 0);
     _RELEASE(m_vramAdapter);
     if (m_resourceCreationSemaphore)
     {
@@ -321,6 +324,7 @@ void CRender::release_worker_resource_creation_lane()
 
 void CRender::trim_video_memory_caches(bool hard_pressure)
 {
+    dxRenderDeviceRender::Instance().Resources->TrimWarmTextures(Device.dwTimeGlobal, true, hard_pressure);
     if (Models)
         Models->ClearPool(false);
 
@@ -337,6 +341,7 @@ void CRender::trim_video_memory_caches(bool hard_pressure)
     {
         m_vramBudget = info.Budget;
         m_vramUsage = info.CurrentUsage;
+        dxRenderDeviceRender::Instance().Resources->SetVideoMemoryBudget(m_vramBudget, m_vramUsage);
     }
 
     Msg("* VRAM pressure trim (%s): %.0f / %.0f MB",
@@ -358,6 +363,7 @@ void CRender::update_video_memory_budget()
 
     m_vramBudget = info.Budget;
     m_vramUsage = info.CurrentUsage;
+    dxRenderDeviceRender::Instance().Resources->SetVideoMemoryBudget(m_vramBudget, m_vramUsage);
 
     if (m_vramBudget == 0)
         return;
@@ -777,6 +783,10 @@ void CRender::create()
 
 void CRender::destroy()
 {
+	// Preparation uses the resource-creation semaphore and the live device.
+	// Join before closing either, including background HUD requests.
+	if (Models)
+		Models->FinishLevelPrefetch();
 	destroy_resource_policy();
 	m_bMakeAsyncSS = false;
 	FluidManager.Destroy();
@@ -796,6 +806,10 @@ void CRender::destroy()
 
 void CRender::reset_begin()
 {
+	// No worker may still publish a texture while reset replaces resources or
+	// closes the resource-creation semaphore. No renderer lock is held here.
+	if (Models)
+		Models->FinishLevelPrefetch();
 	// Cached static pass packets hold raw renderer-resource pointers. Drop them
 	// before any device/resource reset can replace those objects.
 	r_dsgraph_static_packet_cache_clear();
@@ -894,7 +908,12 @@ void CRender::OnFrame()
 	update_video_memory_budget();
 
 	if ((Device.dwFrame % 200) == 0)
+	{
 		TrimCachedUIShaders(Device.dwFrame, 1800, 8);
+		if (g_loading_events.empty())
+			dxRenderDeviceRender::Instance().Resources->TrimWarmTextures(Device.dwTimeGlobal,
+				m_vramPressure, m_vramBudget && static_cast<double>(m_vramUsage) / m_vramBudget >= kVideoMemoryHardPressure);
+	}
 	if (ps_r2_ls_flags.test(R2FLAG_EXP_MT_CALC))
 	{
 		// HOM and detail visibility use separate state and can be calculated in
@@ -981,6 +1000,7 @@ IRenderVisual* CRender::model_CreateParticles(LPCSTR name)
 
 void CRender::models_Prefetch() { Models->Prefetch(); }
 void CRender::models_PrefetchOne(LPCSTR name, bool assert) { Models->Prefetch_One(name, assert); }
+void CRender::models_PrepareHud(LPCSTR name, bool imminent) { Models->PrepareHudModel(name, imminent); }
 void CRender::models_Clear(BOOL b_complete) { Models->ClearPool(b_complete); }
 bool CRender::models_Exists(LPCSTR name) { return Models->Exists(name); }
 

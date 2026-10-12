@@ -101,6 +101,8 @@ DO_DECOMPRESS  ( const lzo_bytep in , lzo_uint  in_len,
     op = out;
     ip = in;
 
+    /* Every LZO1X stream needs at least the three-byte EOF marker. */
+    NEED_IP(3);
     if (*ip > 17)
     {
         t = *ip++ - 17;
@@ -169,6 +171,7 @@ first_literal_run:
         t = *ip++;
         if (t >= 16)
             goto match;
+        NEED_IP(1);
 #if defined(COPY_DICT)
 #if defined(LZO1Z)
         m_off = (1 + M2_MAX_OFFSET) + (t << 6) + (*ip++ >> 2);
@@ -199,6 +202,7 @@ first_literal_run:
 match:
             if (t >= 64)                /* a M2 match */
             {
+                NEED_IP(1);
 #if defined(COPY_DICT)
 #if defined(LZO1X)
                 m_off = 1 + ((t >> 2) & 7) + (*ip++ << 3);
@@ -264,6 +268,7 @@ match:
                     }
                     t += 31 + *ip++;
                 }
+                NEED_IP(2);
 #if defined(COPY_DICT)
 #if defined(LZO1Z)
                 m_off = 1 + (ip[0] << 6) + (ip[1] >> 2);
@@ -308,6 +313,7 @@ match:
                     }
                     t += 7 + *ip++;
                 }
+                NEED_IP(2);
 #if defined(COPY_DICT)
 #if defined(LZO1Z)
                 m_off += (ip[0] << 6) + (ip[1] >> 2);
@@ -340,6 +346,7 @@ match:
             }
             else                            /* a M1 match */
             {
+                NEED_IP(1);
 #if defined(COPY_DICT)
 #if defined(LZO1Z)
                 m_off = 1 + (t << 6) + (*ip++ >> 2);

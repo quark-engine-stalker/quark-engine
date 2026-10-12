@@ -200,13 +200,19 @@ void CVisualMemoryManager::set_squad_objects(VISIBLES* squad_objects)
 void CVisualMemoryManager::set_squad_objects(VISIBLES* squad_objects, CAgentMemoryManager* merge_index)
 {
 	if (m_squad_merge_index)
+	{
+		m_squad_merge_index->invalidate_visual_object_index();
 		m_squad_merge_index->invalidate_visual_merge_candidates();
+	}
 
 	m_objects = squad_objects;
 	m_squad_merge_index = merge_index;
 	m_visible_object_indices.clear();
 	if (m_squad_merge_index)
+	{
+		m_squad_merge_index->invalidate_visual_object_index();
 		m_squad_merge_index->invalidate_visual_merge_candidates();
+	}
 
 	if (!m_objects)
 	{
@@ -242,7 +248,10 @@ void CVisualMemoryManager::reinit()
 	if (!m_client)
 	{
 		if (m_squad_merge_index)
+		{
+			m_squad_merge_index->invalidate_visual_object_index();
 			m_squad_merge_index->invalidate_visual_merge_candidates();
+		}
 		m_objects = 0;
 		m_squad_merge_index = 0;
 	}
@@ -305,9 +314,13 @@ IC const CVisionParameters& CVisualMemoryManager::current_state() const
 	}
 }
 
-CVisualMemoryManager::VISIBLES::iterator CVisualMemoryManager::find_visible_object(u16 id)
+CVisualMemoryManager::VISIBLES::iterator CVisualMemoryManager::find_visible_object(u16 id, bool use_shared_index)
 {
 	VERIFY(m_objects);
+	u32 shared_index;
+	if (use_shared_index && m_squad_merge_index &&
+		m_squad_merge_index->try_visual_object_index(*m_objects, id, shared_index))
+		return shared_index != u32(-1) ? m_objects->begin() + shared_index : m_objects->end();
 
 	OBJECT_INDEX_CACHE::iterator cached = m_visible_object_indices.find(id);
 	if (cached != m_visible_object_indices.end())
@@ -336,6 +349,9 @@ CVisualMemoryManager::VISIBLES::const_iterator CVisualMemoryManager::find_visibl
 {
 	VERIFY(m_objects);
 	const VISIBLES& values = *m_objects;
+	u32 shared_index;
+	if (m_squad_merge_index && m_squad_merge_index->try_visual_object_index(values, id, shared_index))
+		return shared_index != u32(-1) ? values.begin() + shared_index : values.end();
 
 	OBJECT_INDEX_CACHE::iterator cached = m_visible_object_indices.find(id);
 	if (cached != m_visible_object_indices.end())
@@ -873,20 +889,25 @@ void CVisualMemoryManager::add_visible_object(const CObject* object, float time_
 			const squad_mask_type old_mask = oldest->m_squad_mask.get();
 			const bool old_enabled = !!oldest->m_enabled;
 			const u32 index = static_cast<u32>(oldest - m_objects->begin());
+			const u16 old_id = object_id(oldest->m_object);
 			*oldest = visible_object;
-			m_visible_object_indices.clear();
 			if (m_squad_merge_index)
-				m_squad_merge_index->visual_object_filter_changed(index, old_mask, old_enabled);
+				m_squad_merge_index->visual_object_replaced(index, old_id, old_mask, old_enabled);
+			if (!m_squad_merge_index || !m_squad_merge_index->visual_object_index_ready())
+				m_visible_object_indices.clear();
 		}
 		else
 		{
 			m_objects->push_back(visible_object);
 			const u32 index = static_cast<u32>(m_objects->size() - 1);
-			if (m_visible_object_indices.size() >= m_max_object_count * 2)
-				m_visible_object_indices.clear();
-			m_visible_object_indices[game_object->ID()] = index;
 			if (m_squad_merge_index)
 				m_squad_merge_index->visual_object_appended(index);
+			if (!m_squad_merge_index || !m_squad_merge_index->visual_object_index_ready())
+			{
+				if (m_visible_object_indices.size() >= m_max_object_count * 2)
+					m_visible_object_indices.clear();
+				m_visible_object_indices[game_object->ID()] = index;
+			}
 		}
 	}
 	else
@@ -936,20 +957,25 @@ void CVisualMemoryManager::add_visible_object(const CVisibleObject visible_objec
 		const squad_mask_type old_mask = oldest->m_squad_mask.get();
 		const bool old_enabled = !!oldest->m_enabled;
 		const u32 index = static_cast<u32>(oldest - m_objects->begin());
+		const u16 old_id = object_id(oldest->m_object);
 		*oldest = visible_object;
-		m_visible_object_indices.clear();
 		if (m_squad_merge_index)
-			m_squad_merge_index->visual_object_filter_changed(index, old_mask, old_enabled);
+			m_squad_merge_index->visual_object_replaced(index, old_id, old_mask, old_enabled);
+		if (!m_squad_merge_index || !m_squad_merge_index->visual_object_index_ready())
+			m_visible_object_indices.clear();
 	}
 	else
 	{
 		m_objects->push_back(visible_object);
 		const u32 index = static_cast<u32>(m_objects->size() - 1);
-		if (m_visible_object_indices.size() >= m_max_object_count * 2)
-			m_visible_object_indices.clear();
-		m_visible_object_indices[visible_object.m_object->ID()] = index;
 		if (m_squad_merge_index)
 			m_squad_merge_index->visual_object_appended(index);
+		if (!m_squad_merge_index || !m_squad_merge_index->visual_object_index_ready())
+		{
+			if (m_visible_object_indices.size() >= m_max_object_count * 2)
+				m_visible_object_indices.clear();
+			m_visible_object_indices[visible_object.m_object->ID()] = index;
+		}
 	}
 }
 
@@ -1022,7 +1048,10 @@ void CVisualMemoryManager::remove_links(CObject* object)
 		{
 			m_visible_object_indices.clear();
 			if (m_squad_merge_index)
+			{
+				m_squad_merge_index->invalidate_visual_object_index();
 				m_squad_merge_index->invalidate_visual_merge_candidates();
+			}
 		}
 
 		const u32 pending_size = m_not_yet_visible_objects.size();
@@ -1035,13 +1064,19 @@ void CVisualMemoryManager::remove_links(CObject* object)
 		return;
 	}
 
-	VISIBLES::iterator visible = find_visible_object(object->ID());
+	// A relcase burst must not rebuild the shared lookup index between individual
+	// erases. Use the legacy local cache here; normal perception queries will
+	// rebuild its index only when enough subsequent lookups can amortize the cost.
+	VISIBLES::iterator visible = find_visible_object(object->ID(), false);
 	if (visible != m_objects->end())
 	{
 		m_objects->erase(visible);
 		m_visible_object_indices.clear();
 		if (m_squad_merge_index)
+		{
+			m_squad_merge_index->invalidate_visual_object_index();
 			m_squad_merge_index->invalidate_visual_merge_candidates();
+		}
 	}
 
 	NOT_YET_VISIBLES::iterator pending = find_not_yet_visible_object(object->ID());
@@ -1181,7 +1216,10 @@ void CVisualMemoryManager::update(float time_delta)
 				{
 					m_visible_object_indices.clear();
 					if (m_squad_merge_index)
+					{
+						m_squad_merge_index->invalidate_visual_object_index();
 						m_squad_merge_index->invalidate_visual_merge_candidates();
+					}
 				}
 			}
 

@@ -748,6 +748,24 @@ namespace luabind { namespace detail
 			// trying to use an unregistered type
 			assert(crep && "you are trying to use an unregistered type");
 
+			if constexpr (std::is_trivially_copyable_v<T> && std::is_trivially_destructible_v<T>
+				&& alignof(T) <= alignof(double))
+			{
+				if (crep->inline_value_copies())
+				{
+					// Keep an independent, mutable copy alive in its userdata. The
+					// normal object_rep finalizer still releases Lua fields/dependencies;
+					// only the separate native allocation and delete disappear.
+					constexpr size_t offset = (sizeof(object_rep) + alignof(T) - 1) & ~(alignof(T) - 1);
+					char* storage = static_cast<char*>(lua_newuserdata(L, offset + sizeof(T)));
+					T* value = new(storage + offset) T(ref);
+					new(storage) object_rep(value, crep, object_rep::owner, destruct_only_s<T>::apply);
+					detail::getref(L, crep->metatable_ref());
+					lua_setmetatable(L, -2);
+					return;
+				}
+			}
+
 			void* obj_rep;
 			void* held;
 

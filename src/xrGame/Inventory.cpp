@@ -606,6 +606,13 @@ void CInventory::Activate(u16 slot, bool bForce)
 	if (slot != NO_ACTIVE_SLOT && !m_slots[slot].CanBeActivated())
 		return;
 
+	// The chosen actor item is known before the current weapon starts hiding.
+	// Use that interval for OGF/OMF/DDS preparation; the real activation and
+	// HudItemData keep their existing order and HUD shader context.
+	if (tmp_item && smart_cast<CActor*>(m_pOwner))
+		if (CHudItem* hud_item = tmp_item->cast_hud_item())
+			hud_item->PrepareHudResources(true);
+
 #ifdef DEBUG
 	//	Msg("--- Activating slot [%d], inventory owner: [%s], Frame[%d]", slot, m_pOwner->Name(), Device.dwFrame);
 #endif // #ifdef DEBUG

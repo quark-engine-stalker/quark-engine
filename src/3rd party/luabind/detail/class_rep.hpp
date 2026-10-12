@@ -25,6 +25,7 @@
 #include <utility>
 #include <list>
 #include <functional>
+#include <type_traits>
 
 #include <luabind/config.hpp>
 #include <luabind/detail/primitives.hpp>
@@ -139,7 +140,7 @@ namespace luabind { namespace detail
 			class_rep* base;
 		};
 
-		void add_base_class(const base_info& binfo);
+		void add_base_class(const base_info& binfo, lua_State* L);
 
 		const vector_class<base_info>& bases() const throw() { return m_bases; }
 
@@ -148,6 +149,19 @@ namespace luabind { namespace detail
 		LUABIND_TYPE_INFO holder_type() const throw() { return m_holder_type; }
 		LUABIND_TYPE_INFO const_holder_type() const throw() { return m_const_holder_type; }
 		bool has_holder() const throw() { return m_construct_holder != 0; }
+
+		// Opt in only value types that have no ownership-transferring (adopt)
+		// bindings. Pointers, constructors, holders and Lua-derived classes keep
+		// their existing storage and ownership rules.
+		template<class T>
+		void enable_inline_value_copies()
+		{
+			static_assert(std::is_trivially_copyable_v<T> && std::is_trivially_destructible_v<T>);
+			static_assert(alignof(T) <= alignof(double), "Lua userdata alignment is insufficient");
+			assert(LUABIND_TYPE_INFO_EQUAL(m_type, LUABIND_TYPEID(T)) && !has_holder());
+			m_inline_value_copies = true;
+		}
+		bool inline_value_copies() const { return m_inline_value_copies; }
 
 		const char* name() const throw() { return m_name; }
 
@@ -312,6 +326,7 @@ namespace luabind { namespace detail
 	private:
 
 		void cache_operators(lua_State*);
+        void prepare_static_lookup(lua_State* L);
 
 		// this is a pointer to the type_info structure for
 		// this type
@@ -353,6 +368,7 @@ namespace luabind { namespace detail
 		// in the same memory (to avoid fragmentation)
 		int m_holder_size;
 		int m_holder_alignment;
+		bool m_inline_value_copies = false;
 
 		// a list of info for every class this class derives from
 		// the information stored here is sufficient to do

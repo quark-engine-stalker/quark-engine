@@ -101,6 +101,7 @@ extern ECORE_API int psModelFinalizeBudgetMs;
 extern ECORE_API int psModelPrefetchManifest;
 extern ECORE_API int psModelPrefetchManifestMax;
 extern ECORE_API int psModelPrefetchInFlight;
+extern ECORE_API int psModelPrefetchMemoryMb;
 extern ECORE_API int ps_r__portal_traverse_optimized;
 extern ECORE_API int ps_r__static_multifrustum;
 extern ECORE_API int ps_r__visibility_submission;

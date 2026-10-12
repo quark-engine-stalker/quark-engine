@@ -7,6 +7,7 @@
 #include "../xrRenderDX10/dx10BufferUtils.h"
 #include <xmmintrin.h>
 #include <smmintrin.h>
+#include <immintrin.h>
 
 const int c_hdr = 10;
 const int c_size = 4;
@@ -115,7 +116,242 @@ ICN void render_detail_batch(const CDetail& object, u32 batch_count, u32 vertex_
 	RCache.Render(D3DPT_TRIANGLELIST, vertex_offset, 0, vertex_count, index_offset, primitive_count);
 	RCache.stat.r.s_details.add(vertex_count);
 }
+
+// Packing is independent of shaders, cascade matrices and bender state. Keep
+// the original operations and order, so cached rows are bit-for-bit identical.
+ICF void pack_detail_instance(const CDetailManager::SlotItem& instance, float scale,
+	Fvector4* rows, Fvector4* extra)
+{
+	const __m128 scale_xyz = _mm_blend_ps(_mm_set1_ps(scale), _mm_set1_ps(1.f), 0x8);
+	_mm_store_ps(&rows[0].x, _mm_mul_ps(_mm_load_ps(&instance.xform[0].x), scale_xyz));
+	_mm_store_ps(&rows[1].x, _mm_mul_ps(_mm_load_ps(&instance.xform[1].x), scale_xyz));
+	_mm_store_ps(&rows[2].x, _mm_mul_ps(_mm_load_ps(&instance.xform[2].x), scale_xyz));
+	const __m128 color = _mm_blend_ps(_mm_set1_ps(instance.c_sun),
+		_mm_set1_ps(instance.c_hemi), 0x8);
+	_mm_store_ps(&rows[3].x, color);
+	if (extra)
+		_mm_store_ps(&extra->x, _mm_load_ps(&instance.normal.x));
 }
+
+ICF void copy_detail_rows(Fvector4* destination, const Fvector4* source, u32 rows)
+{
+	u32 i = 0;
+#if defined(__AVX2__) || defined(_M_AVX2)
+	for (; i + 2 <= rows; i += 2)
+		_mm256_storeu_ps(&destination[i].x, _mm256_loadu_ps(&source[i].x));
+#endif
+	for (; i < rows; ++i)
+		_mm_store_ps(&destination[i].x, _mm_load_ps(&source[i].x));
+}
+}
+
+
+__declspec(noinline) CDetailManager::PackedDetailKey* CDetailManager::prepare_upload_keys(
+	u32 variant, u32 object, u32 visible_count, u32& key_count)
+{
+	const u32 frame = RDEVICE.dwFrame;
+	const bool new_frame = m_detail_upload_frame != frame;
+	if (new_frame)
+	{
+		m_detail_upload_frame = frame;
+		++m_detail_upload_generation;
+		m_detail_upload_key_count = 0;
+		m_detail_upload_build_count = 0;
+	}
+	const u32 fp_control = _mm_getcsr() & ~0x3fu;
+	if (m_detail_upload_fp_control != fp_control ||
+		(new_frame && m_detail_upload_reset_pending && frame - m_detail_upload_last_reset_frame >= 120))
+	{
+		m_detail_upload_slots.clear_not_free();
+		m_detail_upload_sources.clear();
+		m_detail_upload_count = 0;
+		m_detail_upload_reset_pending = false;
+		m_detail_upload_last_reset_frame = frame;
+		m_detail_upload_fp_control = fp_control;
+		++m_detail_upload_generation;
+		m_detail_upload_key_count = 0;
+	}
+	xr_vector<PackedDetailGroup>& groups = m_detail_upload_groups[variant];
+	if (groups.size() != objects.size())
+		groups.resize(objects.size());
+	PackedDetailGroup& group = groups[object];
+	if (group.generation != m_detail_upload_generation)
+	{
+		group.generation = m_detail_upload_generation;
+		group.offset = m_detail_upload_key_count;
+		group.count = _min(visible_count, detail_upload_slot_limit - group.offset);
+		const u32 requested = group.offset + group.count;
+		u32 capacity = 32;
+		while (capacity < requested)
+			capacity *= 2;
+		if (m_detail_upload_keys.capacity() < capacity)
+			m_detail_upload_keys.reserve(capacity);
+		if (m_detail_upload_keys.size() < requested)
+			m_detail_upload_keys.resize(requested);
+		for (u32 i = group.offset; i < requested; ++i)
+			m_detail_upload_keys[i] = PackedDetailKey{};
+		m_detail_upload_key_count = requested;
+	}
+	key_count = group.count;
+	return group.count ? m_detail_upload_keys.data() + group.offset : nullptr;
+}
+
+__declspec(noinline) bool CDetailManager::cached_slot_upload(const VisibleSlotItems& visible,
+	PackedDetailKey& frame_key, u32 variant, float slot_scale,
+	const Fvector4*& transforms, const Fvector4*& extra, u32& count)
+{
+	if ((_mm_getcsr() & ~0x3fu) != m_detail_upload_fp_control)
+		return false;
+	const Slot& slot = *visible.slot;
+	const SlotPart* part = nullptr;
+	for (const SlotPart& candidate : slot.G)
+		if (&candidate.r_items[variant] == visible.items)
+		{
+			part = &candidate;
+			break;
+		}
+	// Content generation covers list changes and every alpha step. Fading
+	// variants still use the original packing path.
+	if (!part || (part->alpha_fading_mask & (1u << variant)))
+		return false;
+	const SlotItemVec& items = *visible.items;
+	if (items.size() < 8 || items.size() > detail_upload_instance_limit)
+		return false;
+	const u32 frame = RDEVICE.dwFrame;
+	for (u32 i = 0; i < 2; ++i)
+	{
+		const u32 index = frame_key.entries[i];
+		if (index >= m_detail_upload_slots.size())
+			continue;
+		PackedDetailSlot& entry = m_detail_upload_slots[index];
+		if (entry.source == &items && entry.source_generation == slot.grass_upload_source_generation &&
+			memcmp(&entry.scale, &slot_scale, sizeof(float)) == 0)
+		{
+			entry.last_used_frame = frame;
+			transforms = m_detail_upload_xforms.data() + entry.offset * 4;
+			extra = m_detail_upload_extra.data() + entry.offset;
+			count = entry.count;
+			return true;
+		}
+	}
+	PackedDetailKey* source_key = nullptr;
+	u32 replace_index = u32(-1), free_key = u32(-1);
+	const auto existing = m_detail_upload_sources.find(&items);
+	if (existing != m_detail_upload_sources.end())
+	{
+		source_key = &existing->second;
+		frame_key = *source_key;
+		for (u32 i = 0; i < 2; ++i)
+		{
+			const u32 index = source_key->entries[i];
+			if (index == u32(-1))
+			{
+				free_key = i;
+				continue;
+			}
+			VERIFY(index < m_detail_upload_slots.size());
+			PackedDetailSlot& entry = m_detail_upload_slots[index];
+			const bool same_scale = memcmp(&entry.scale, &slot_scale, sizeof(float)) == 0;
+			if (entry.source_generation == slot.grass_upload_source_generation &&
+				same_scale)
+			{
+				entry.last_used_frame = frame;
+				transforms = m_detail_upload_xforms.data() + entry.offset * 4;
+				extra = m_detail_upload_extra.data() + entry.offset;
+				count = entry.count;
+				return true;
+			}
+			if (same_scale || entry.source_generation != slot.grass_upload_source_generation)
+				replace_index = index;
+		}
+		if (replace_index == u32(-1) && free_key == u32(-1))
+		{
+			const u32 left = source_key->entries[0], right = source_key->entries[1];
+			replace_index = m_detail_upload_slots[left].last_used_frame <=
+				m_detail_upload_slots[right].last_used_frame ? left : right;
+		}
+	}
+	u32 capacity = 8;
+	while (capacity < items.size())
+		capacity *= 2;
+	// Limit cold-cache preparation and simultaneous list refreshes. A declined
+	// request uses the original draw loop, so a large scene cannot force one
+	// frame to populate the entire arena.
+	if (items.size() > detail_upload_build_limit - m_detail_upload_build_count)
+		return false;
+	const bool reuse_range = replace_index != u32(-1) &&
+		m_detail_upload_slots[replace_index].capacity >= items.size();
+	if ((!reuse_range && capacity > detail_upload_instance_limit - m_detail_upload_count) ||
+		(replace_index == u32(-1) && m_detail_upload_slots.size() >= detail_upload_slot_limit))
+	{
+		m_detail_upload_reset_pending = true;
+		return false;
+	}
+	u32 offset;
+	if (reuse_range)
+	{
+		offset = m_detail_upload_slots[replace_index].offset;
+		capacity = m_detail_upload_slots[replace_index].capacity;
+	}
+	else
+	{
+		offset = m_detail_upload_count;
+		const u32 requested = offset + capacity;
+		u32 arena_capacity = 64;
+		while (arena_capacity < requested)
+			arena_capacity *= 2;
+		if (m_detail_upload_extra.capacity() < arena_capacity)
+			m_detail_upload_extra.reserve(arena_capacity);
+		if (m_detail_upload_xforms.capacity() < arena_capacity * 4)
+			m_detail_upload_xforms.reserve(arena_capacity * 4);
+		if (m_detail_upload_extra.size() < requested)
+			m_detail_upload_extra.resize(requested);
+		if (m_detail_upload_xforms.size() < requested * 4)
+			m_detail_upload_xforms.resize(requested * 4);
+		m_detail_upload_count = requested;
+	}
+	u32 packed_count = 0;
+	m_detail_upload_build_count += static_cast<u32>(items.size());
+	for (const SlotItem* item : items)
+	{
+		VERIFY(item->alpha_target != 0);
+		if (item->alpha <= 0.f)
+			continue;
+		const float scale = item->scale * slot_scale;
+		if (scale <= 0.f)
+			continue;
+		pack_detail_instance(*item, scale,
+			m_detail_upload_xforms.data() + (offset + packed_count) * 4,
+			m_detail_upload_extra.data() + offset + packed_count);
+		++packed_count;
+	}
+	const PackedDetailSlot entry = {&items, slot.grass_upload_source_generation,
+		slot_scale, offset, capacity, packed_count, frame};
+	if (replace_index != u32(-1))
+		m_detail_upload_slots[replace_index] = entry;
+	else
+	{
+		u32 slot_capacity = 32;
+		while (slot_capacity <= m_detail_upload_slots.size())
+			slot_capacity *= 2;
+		if (m_detail_upload_slots.capacity() < slot_capacity)
+			m_detail_upload_slots.reserve(slot_capacity);
+		const u32 index = static_cast<u32>(m_detail_upload_slots.size());
+		m_detail_upload_slots.push_back(entry);
+		if (!source_key)
+		{
+			source_key = &m_detail_upload_sources.emplace(&items, PackedDetailKey{}).first->second;
+			free_key = 0;
+		}
+		source_key->entries[free_key] = index;
+	}
+	frame_key = *source_key;
+	transforms = m_detail_upload_xforms.data() + offset * 4;
+	extra = m_detail_upload_extra.data() + offset;
+	count = packed_count;
+	return true;
+}
+
 
 void CDetailManager::hw_Load_Shaders()
 {
@@ -156,6 +392,20 @@ void CDetailManager::hw_Render_dump(const Fvector4& consts, const Fvector4& wave
 	const Fvector4& prev_wave, const Fvector4& prev_wind, u32 var_id, u32 lod_id,
 	const Fvector4* current_benders, const Fvector4* previous_benders, u32 bender_count)
 {
+	const bool reuse_upload = fade_distance > -1.f;
+	if (reuse_upload)
+		hw_Render_dump_impl<true>(consts, wave, wind, prev_wave, prev_wind, var_id, lod_id,
+			current_benders, previous_benders, bender_count);
+	else
+		hw_Render_dump_impl<false>(consts, wave, wind, prev_wave, prev_wind, var_id, lod_id,
+			current_benders, previous_benders, bender_count);
+}
+
+template <bool packed_upload>
+void CDetailManager::hw_Render_dump_impl(const Fvector4& consts, const Fvector4& wave, const Fvector4& wind,
+	const Fvector4& prev_wave, const Fvector4& prev_wind, u32 var_id, u32 lod_id,
+	const Fvector4* current_benders, const Fvector4* previous_benders, u32 bender_count)
+{
 	// One guarded initialization instead of thirteen TLS guard checks per call.
 	static DetailConstantNames constant_names;
 	DetailPassConstants pass_constants;
@@ -181,6 +431,7 @@ void CDetailManager::hw_Render_dump(const Fvector4& consts, const Fvector4& wave
 		m_grass_sun_cascade_index < m_grass_sun_cascade_count;
 	const u32 sun_cascade_bit = use_sun_cascade_filter ? (1u << m_grass_sun_cascade_index) : 0;
 	const u64 render_fade_generation = m_grass_render_fade_generation;
+	const bool use_packed_upload = packed_upload && !use_light_fade;
 	const u32 batch_size = hw_BatchSize;
 	const u32 array_bytes = batch_size * sizeof(Fvector4) * 4;
 	const u32 extra_data_bytes = batch_size * sizeof(Fvector4);
@@ -291,6 +542,9 @@ void CDetailManager::hw_Render_dump(const Fvector4& consts, const Fvector4& wave
 					bool batch_storage_needs_reacquire = true;
 
 					u32 dwBatch = 0;
+					u32 upload_key_count = 0;
+					PackedDetailKey* upload_keys = use_packed_upload ? prepare_upload_keys(
+						var_id, O, static_cast<u32>(vis.size()), upload_key_count) : nullptr;
 
 					xr_vector<VisibleSlotItems>::iterator _vI = vis.begin();
 					xr_vector<VisibleSlotItems>::iterator _vE = vis.end();
@@ -329,6 +583,48 @@ void CDetailManager::hw_Render_dump(const Fvector4& consts, const Fvector4& wave
 					const size_t item_count = items.size();
 					if (!item_count)
 						continue;
+
+
+					if (upload_keys && static_cast<u32>(_vI - vis.begin()) < upload_key_count)
+					{
+						const Fvector4* cached_transforms;
+						const Fvector4* cached_extra;
+						u32 cached_count;
+						if (cached_slot_upload(*_vI, upload_keys[_vI - vis.begin()], var_id, slot_scale,
+							cached_transforms, cached_extra, cached_count))
+						{
+							u32 copied = 0;
+							while (copied < cached_count)
+							{
+								if (batch_storage_needs_reacquire)
+								{
+									void* extra_data;
+									RCache.get_ConstantDirect(c_extra_data, extra_data_bytes, &extra_data, 0, 0);
+									c_ExData = static_cast<Fvector4*>(extra_data);
+									VERIFY(c_ExData);
+									void* array_data;
+									RCache.get_ConstantDirect(c_array, array_bytes, &array_data, 0, 0);
+									c_storage = static_cast<Fvector4*>(array_data);
+									VERIFY(c_storage);
+									batch_storage_needs_reacquire = false;
+								}
+								const u32 take = _min(cached_count - copied, batch_size - dwBatch);
+								copy_detail_rows(c_storage + dwBatch * 4,
+									cached_transforms + copied * 4, take * 4);
+								if (c_ExData)
+									copy_detail_rows(c_ExData + dwBatch, cached_extra + copied, take);
+								copied += take;
+								dwBatch += take;
+								if (dwBatch == batch_size)
+								{
+									render_detail_batch(Object, dwBatch, vOffset, iOffset);
+									dwBatch = 0;
+									batch_storage_needs_reacquire = true;
+								}
+							}
+							continue;
+						}
+					}
 
 					SlotItem* const* item = items.data();
 					SlotItem* const* const item_end = item + item_count;

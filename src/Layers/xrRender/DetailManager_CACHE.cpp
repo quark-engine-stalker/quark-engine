@@ -53,6 +53,7 @@ void CDetailManager::cache_Task(int gx, int gz, Slot* D)
 	// Unpacking
 	u32 old_type = D->type;
 	D->type = stPending;
+	++D->grass_upload_source_generation;
 	D->sx = sx;
 	D->sz = sz;
 	D->frame = 0;

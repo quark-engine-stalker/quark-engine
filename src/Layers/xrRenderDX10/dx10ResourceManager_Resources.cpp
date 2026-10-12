@@ -624,7 +624,7 @@ void CResourceManager::DeleteGeom(const SGeometry* Geom)
 }
 
 //--------------------------------------------------------------------------------------------------------------
-CTexture* CResourceManager::_CreateTexture(LPCSTR _Name, bool prefer_gpu_resident)
+CTexture* CResourceManager::_CreateTexture(LPCSTR _Name, bool /*prefer_gpu_resident*/, bool acquire_reference)
 {
 	if (0 == xr_strcmp(_Name, "null")) return nullptr;
 	R_ASSERT(_Name && _Name[0]);
@@ -640,14 +640,20 @@ CTexture* CResourceManager::_CreateTexture(LPCSTR _Name, bool prefer_gpu_residen
 		xrCriticalSectionGuard guard(textureGuard);
 		map_TextureIt found = m_textures.find(LPSTR(Name));
 		if (found != m_textures.end())
+		{
+			if (acquire_reference)
+				found->second->dwReference.fetch_add(1, std::memory_order_relaxed);
 			return found->second;
+		}
 	}
 
 	CTexture* candidate = xr_new<CTexture>();
 	candidate->set_name(Name);
 	candidate->Preload();
 	if (Device.b_is_Ready && !bDeferredLoad.load(std::memory_order_acquire))
-		candidate->Load(!prefer_gpu_resident);
+		// This is a demanded shader/UI texture. Creating a staging resource here
+		// merely defers a second allocation and CopyResource to its first draw.
+		candidate->Load(false);
 
 	// Another thread may have completed the same texture while this one was
 	// loading. Publish only one registered object and discard the duplicate.
@@ -657,19 +663,49 @@ CTexture* CResourceManager::_CreateTexture(LPCSTR _Name, bool prefer_gpu_residen
 		if (found != m_textures.end())
 		{
 			xr_delete(candidate);
+			if (acquire_reference)
+				found->second->dwReference.fetch_add(1, std::memory_order_relaxed);
 			return found->second;
 		}
 
 		candidate->dwFlags |= xr_resource_flagged::RF_REGISTERED;
 		m_textures.insert(mk_pair(*candidate->cName, candidate));
+		if (acquire_reference)
+			candidate->dwReference.fetch_add(1, std::memory_order_relaxed);
 	}
 
 	return candidate;
 }
 
+ref_texture CResourceManager::CreateTextureRef(LPCSTR name)
+{
+	// Acquire under the same registry lock as lookup/publication. A speculative
+	// cache may retire its final owner before the caller installs a shader ref.
+	return ref_texture(_CreateTexture(name, false, true), false);
+}
+
+void CResourceManager::ReleaseTextureReference(CTexture* texture)
+{
+	{
+		xrCriticalSectionGuard guard(textureGuard);
+		if (texture->dwReference.fetch_sub(1, std::memory_order_acq_rel) != 1)
+			return;
+		if (texture->dwFlags & xr_resource_flagged::RF_REGISTERED)
+		{
+			const auto found = m_textures.find(texture->cName.c_str());
+			if (found != m_textures.end() && found->second == texture)
+				m_textures.erase(found);
+			texture->dwFlags &= ~xr_resource_flagged::RF_REGISTERED;
+		}
+	}
+	// Unload/destruction may release other resources. Registry lookup can now
+	// publish a replacement with this name safely while the old object retires.
+	xr_delete(texture);
+}
+
 void CResourceManager::PrefetchTextureGpuResident(LPCSTR _Name)
 {
-	if (!_Name || !_Name[0])
+	if (!m_allow_speculative_texture_upload.load(std::memory_order_acquire) || !_Name || !_Name[0])
 		return;
 
 	string_path Name;

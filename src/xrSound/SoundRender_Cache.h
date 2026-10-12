@@ -44,6 +44,11 @@ class CSoundRender_Cache
 	u32 _total; // bytes total (heap)
 	u32 _line; // line size (bytes)
 	u32 _count; // number of lines
+    size_t reserved_bytes = 0;
+    size_t committed_begin = 0;
+    size_t page_size = 0;
+    bool virtual_storage = false;
+    void commit_line(cache_line* line);
 public:
 	u32 _stat_hit;
 	u32 _stat_miss;

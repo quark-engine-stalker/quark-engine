@@ -99,7 +99,7 @@ private:
 	void add_visible_object(const CObject* object, float time_delta, bool fictitious,
 	                        const SVisionObserverContext& context, const ::luabind::functor<float>* callback);
 
-	VISIBLES::iterator find_visible_object(u16 id);
+	VISIBLES::iterator find_visible_object(u16 id, bool use_shared_index = true);
 	VISIBLES::const_iterator find_visible_object(u16 id) const;
 	NOT_YET_VISIBLES::iterator find_not_yet_visible_object(u16 id);
 

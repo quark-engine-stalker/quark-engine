@@ -508,6 +508,15 @@ static ptrdiff_t posrelat(ptrdiff_t pos, size_t len)
   return (pos >= 0) ? pos : 0;
 }
 
+/* Only a mandatory leading literal can be used to skip impossible starts.
+** Captures/classes and zero-repeat quantifiers retain the original matcher.
+*/
+static int pattern_literal_start(const char *p)
+{
+  return *p && !strchr("^$*+?-.()[]%", *p) &&
+    p[1] != '*' && p[1] != '?' && p[1] != '-';
+}
+
 static int str_find_aux(lua_State *L, int find)
 {
   size_t l1, l2;
@@ -536,12 +545,17 @@ static int str_find_aux(lua_State *L, int find)
   } else {
     MatchState ms;
     int anchor = (*p == '^') ? (p++, 1) : 0;
+    int literal_start = !anchor && pattern_literal_start(p);
     const char *s1=s+init;
     ms.L = L;
     ms.src_init = s;
     ms.src_end = s+l1;
     do {
       const char *res;
+      if (literal_start && s1 < ms.src_end && uchar(*s1) != uchar(*p)) {
+	s1 = (const char *)memchr(s1, uchar(*p), (size_t)(ms.src_end-s1));
+	if (!s1) break;
+      }
       ms.level = ms.depth = 0;
       if ((res=match(&ms, s1, p)) != NULL) {
 	if (find) {
@@ -575,12 +589,17 @@ LJLIB_NOREG LJLIB_CF(string_gmatch_aux)
   const char *s = strdata(str);
   TValue *tvpos = lj_lib_upvalue(L, 3);
   const char *src = s + tvpos->u32.lo;
+  int literal_start = pattern_literal_start(p);
   MatchState ms;
   ms.L = L;
   ms.src_init = s;
   ms.src_end = s + str->len;
   for (; src <= ms.src_end; src++) {
     const char *e;
+    if (literal_start && src < ms.src_end && uchar(*src) != uchar(*p)) {
+      src = (const char *)memchr(src, uchar(*p), (size_t)(ms.src_end-src));
+      if (!src) break;
+    }
     ms.level = ms.depth = 0;
     if ((e = match(&ms, src, p)) != NULL) {
       int32_t pos = (int32_t)(e - s);
@@ -663,6 +682,11 @@ LJLIB_CF(string_gsub)
   int  tr = lua_type(L, 3);
   int max_s = luaL_optint(L, 4, (int)(srcl+1));
   int anchor = (*p == '^') ? (p++, 1) : 0;
+  /* A mandatory leading literal cannot match at any other byte. Keep
+  ** optional/empty items, captures, classes and anchored patterns on the
+  ** original matcher. In particular '-' also permits zero repetitions.
+  */
+  int literal_start = !anchor && pattern_literal_start(p);
   int n = 0;
   MatchState ms;
   luaL_Buffer b;
@@ -675,6 +699,13 @@ LJLIB_CF(string_gsub)
   ms.src_end = src+srcl;
   while (n < max_s) {
     const char *e;
+    if (literal_start && src < ms.src_end && uchar(*src) != uchar(*p)) {
+      const char *next = (const char *)memchr(src, uchar(*p),
+        (size_t)(ms.src_end-src));
+      if (!next) break;  /* The unchanged suffix is appended below. */
+      luaL_addlstring(&b, src, (size_t)(next-src));
+      src = next;
+    }
     ms.level = ms.depth = 0;
     e = match(&ms, src, p);
     if (e) {

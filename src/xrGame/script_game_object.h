@@ -7,6 +7,7 @@
 ////////////////////////////////////////////////////////////////////////////
 
 #pragma once
+#include <cstdlib>
 
 #include "script_space_forward.h"
 #include "script_bind_macroses.h"
@@ -1257,11 +1258,16 @@ struct SafeWrapBase
     template <typename Ret>
     static Ret handle_invalid()
     {
-        // This part is never reached because we crash the game,
-        // but we need to satisfy the compiler.
-        if constexpr (std::is_reference_v<Ret>)
+        if constexpr (!std::is_void_v<Ret> && (std::is_reference_v<Ret> || !std::is_default_constructible_v<Ret>))
         {
-            return *static_cast<std::remove_reference_t<Ret>*>(nullptr);
+            // A borrowed reference cannot represent an absent object. Never
+            // manufacture a reference by dereferencing a null pointer.
+            FATAL("Cannot return a reference/value from a destroyed Lua object");
+            std::abort();
+        }
+        else if constexpr (std::is_void_v<Ret>)
+        {
+            return;
         }
         else
         {
@@ -1286,26 +1292,22 @@ struct SafeWrapBase
     static auto execute(InstanceT instance, FuncT memFunc, Args&&... args)
         -> decltype((instance->*memFunc)(std::forward<Args>(args)...))
     {
-        if (lua_busy_hands_debug)
+        bool valid = instance != nullptr;
+        if constexpr (has_is_valid<InstanceT>::value)
+            valid = valid && instance->is_valid();
+
+        // Lifetime checks are required even when diagnostic logging is off.
+        // A prevented native call does not corrupt Lua and must not invoke the
+        // fatal-error UI/autosave callback or continue into the member function.
+        if (!valid)
         {
-            bool is_valid = false;
+            if (lua_busy_hands_debug)
+                log("Skipping method call on a destroyed object");
 
-            if (instance != nullptr)
-            {
-                if constexpr (has_is_valid<InstanceT>::value)
-                    // The class has is_valid(), so we use it
-                    is_valid = instance->is_valid();
-                else
-                    // The class does NOT have is_valid(), so being non-null is good enough
-                    is_valid = true;
-            }
-
-            // Send one last call to Lua to warn users that Lua is about to die
-            if (!is_valid)
-                log_and_callback("Accessing destroyed object");
+            using Ret = decltype((instance->*memFunc)(std::forward<Args>(args)...));
+            return handle_invalid<Ret>();
         }
 
-        // Sayonara
         return (instance->*memFunc)(std::forward<Args>(args)...);
     }
 };

@@ -85,7 +85,7 @@ namespace luabind { namespace detail
 
 		binfo.pointer_offset = 0;
 		binfo.base = base;
-		cl_rep->add_base_class(binfo);
+		cl_rep->add_base_class(binfo, L);
 
 		// set holder size and alignment so that we can class_rep::allocate
 		// can return the correctly sized buffers

@@ -930,7 +930,7 @@ bool CScriptStorage::parse_namespace(LPCSTR caNamespaceName, LPSTR b, u32 const 
 }
 
 bool CScriptStorage::load_buffer(lua_State* L, LPCSTR caBuffer, size_t tSize, LPCSTR caScriptName,
-                                 LPCSTR caNameSpaceName)
+                                 LPCSTR caNameSpaceName, bool recoveredModuleLoad)
 {
 	int l_iErrorCode;
 	if (caNameSpaceName && xr_strcmp("_G", caNameSpaceName))
@@ -996,7 +996,7 @@ bool CScriptStorage::load_buffer(lua_State* L, LPCSTR caBuffer, size_t tSize, LP
 	if (l_iErrorCode)
 	{
 //#ifdef DEBUG
-		if (strstr(Core.Params, "-dbg")) print_output(L,caScriptName,l_iErrorCode);
+		if (strstr(Core.Params, "-dbg")) print_output(L,caScriptName,l_iErrorCode,recoveredModuleLoad);
 //#endif //-DEBUG
 		on_error(L);
 		return (false);
@@ -1184,10 +1184,10 @@ bool CScriptStorage::do_file(LPCSTR caScriptName, LPCSTR caNameSpaceName)
 
 	bool bufferLoaded = false;
 	if (unlocalPerformed) {
-		bufferLoaded = load_buffer(lua(), scriptContents, scriptLength, l_caLuaFileName, caNameSpaceName);
+		bufferLoaded = load_buffer(lua(), scriptContents, scriptLength, l_caLuaFileName, caNameSpaceName, true);
 	} else {
 		l_tpFileReader->rewind();
-		bufferLoaded = load_buffer(lua(), static_cast<LPCSTR>(l_tpFileReader->pointer()), (size_t)l_tpFileReader->length(), l_caLuaFileName, caNameSpaceName);
+		bufferLoaded = load_buffer(lua(), static_cast<LPCSTR>(l_tpFileReader->pointer()), (size_t)l_tpFileReader->length(), l_caLuaFileName, caNameSpaceName, true);
 	}
 
 	if (!bufferLoaded)
@@ -1228,7 +1228,7 @@ bool CScriptStorage::do_file(LPCSTR caScriptName, LPCSTR caNameSpaceName)
 	if (l_iErrorCode)
 	{
 //#ifdef DEBUG
-		if (strstr(Core.Params, "-dbg")) print_output(lua(),caScriptName,l_iErrorCode);
+		if (strstr(Core.Params, "-dbg")) print_output(lua(),caScriptName,l_iErrorCode,true);
 //#endif
 		on_error(lua());
 		lua_settop(lua(), start);
@@ -1312,6 +1312,26 @@ bool CScriptStorage::namespace_loaded(LPCSTR N, bool remove_from_stack)
 bool CScriptStorage::object(LPCSTR identifier, int type)
 {
 	int start = lua_gettop(lua());
+	// Probe the live namespace by its string key. Optional callbacks can be
+	// queried for every released inventory item; enumerating _G on each miss
+	// makes their cost depend on the number of unrelated script globals.
+	// Raw access keeps this check free of __index side effects and value caches.
+	lua_pushstring(lua(), identifier);
+	// The legacy scan also accepted stringified numeric keys. Keep that path,
+	// including locales whose decimal separator Lua's scanner does not accept.
+	const char first = identifier[0];
+	const bool numeric_identifier = (first >= '0' && first <= '9') ||
+		first == '-' || lua_isnumber(lua(), -1) != 0;
+	lua_rawget(lua(), -2);
+	const bool found = type != LUA_TNIL && lua_type(lua(), -1) == type;
+	if (found || !numeric_identifier)
+	{
+		lua_pop(lua(), 2);
+		VERIFY(lua_gettop(lua()) == start - 1);
+		return found;
+	}
+	lua_pop(lua(), 1);
+
 	lua_pushnil(lua());
 	while (lua_next(lua(), -2))
 	{
@@ -1397,10 +1417,66 @@ struct raii_guard : private xray::noncopyable
 	}
 }; //-struct raii_guard
 
-bool CScriptStorage::print_output(lua_State* L, LPCSTR caScriptFileName, int iErorCode)
+namespace
 {
-	if (iErorCode)
-		print_error(L, iErorCode);
+// Read debug metadata only. No locals, values, Lua allocations or script hooks.
+// Called before the protected-call error value is popped by its original caller.
+void collect_lua_error_trace(lua_State* state, int status, char* output, size_t capacity)
+{
+    if (!capacity) return;
+    output[0] = 0;
+    if (status == LUA_ERRMEM)
+    {
+        strncpy_s(output, capacity, "Lua traceback skipped for memory-allocation failure", _TRUNCATE);
+        return;
+    }
+    size_t used = 0;
+    for (int index = 0; index < 32 && used + 1 < capacity; ++index)
+    {
+        lua_Debug frame = {};
+        if (!lua_getstack(state, index, &frame)) break;
+        if (!lua_getinfo(state, "nSl", &frame)) continue;
+        const char* source = "<dynamic chunk>";
+        if (frame.what && !strcmp(frame.what, "C")) source = "<native Lua binding>";
+        else if (frame.source && frame.source[0] == '@') source = frame.source + 1;
+        else if (frame.source)
+        {
+            // X-Ray also names chunks by a module/namespace without '@'. Keep
+            // such identifiers, but never dump arbitrary Lua source text.
+            bool identifier = frame.source[0] != 0;
+            size_t length = 0;
+            for (const char* c = frame.source; *c && identifier; ++c)
+            {
+                if (++length > 160 || !((*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') ||
+                    (*c >= '0' && *c <= '9') || *c == '_' || *c == '.')) identifier = false;
+            }
+            if (identifier) source = frame.source;
+        }
+        const int written = _snprintf_s(output + used, capacity - used, _TRUNCATE,
+            "  #%02d %s:%d (%s)\r\n", index, source, frame.currentline,
+            frame.name ? frame.name : "<anonymous>");
+        if (written < 0) { used = strlen(output); break; }
+        used += static_cast<size_t>(written);
+    }
+    if (!used) strncpy_s(output, capacity,
+        "Lua frames unavailable after protected-call unwind; consult error message/chunk", _TRUNCATE);
+}
+}
+
+bool CScriptStorage::print_output(lua_State* L, LPCSTR caScriptFileName, int iErorCode, bool recoveredModuleLoad)
+{
+    const char* message = lua_type(L, -1) == LUA_TSTRING ? lua_tostring(L, -1) : nullptr;
+    if (EngineErrorLogger::IsEnabled() &&
+        EngineErrorLogger::ShouldReportScriptFailure(iErorCode, recoveredModuleLoad, message))
+    {
+        char traceback[8192] = {};
+        collect_lua_error_trace(L, iErorCode, traceback, sizeof(traceback));
+        EngineErrorLogger::ReportScriptFailure(iErorCode, caScriptFileName,
+            message, traceback,
+            __FILE__, __LINE__, __FUNCTION__, recoveredModuleLoad);
+    }
+    if (iErorCode)
+        print_error(L, iErorCode);
 
 	LPCSTR S = "see call_stack for details!";
 

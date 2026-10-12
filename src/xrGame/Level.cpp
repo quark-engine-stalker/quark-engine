@@ -1526,6 +1526,18 @@ int CLevel::LuaGC()
 		++Device.LuaGCAtomicCommits;
 	const int result = luaJIT_gcstep(
 		lua_state, work_bytes, allocation_headroom_kb << 10);
+	if (Device.LuaGCNativeState == 2u)
+	{
+		// ProcessLuaGCWork samples the native state at pass boundaries. After
+		// committing atomic, another call in the same post-frame budget must not
+		// run the pre-atomic helper with that stale snapshot: outside atomic the
+		// helper returns false without doing work, causing a busy loop until the
+		// entire remaining budget is exhausted. Refresh only at this transition;
+		// ordinary marking/sweep calls keep the existing cheap host path.
+		luaJIT_GCStateInfo native_gc_state = {};
+		luaJIT_getgcstate(lua_state, &native_gc_state);
+		Device.LuaGCNativeState = static_cast<u32>(native_gc_state.state);
+	}
 	if (result != 2)
 		Device.LuaGCAtomicPrepared = false;
 	lua_gc(lua_state, LUA_GCSETSTEPMUL, previous_step_multiplier);

@@ -237,6 +237,7 @@
     <ClInclude Include="Lock.hpp" />
     <ClInclude Include="log.h" />
     <ClInclude Include="engine_error_logger.h" />
+    <ClInclude Include="diagnostic_privacy.h" />
     <ClInclude Include="lzhuf.h" />
     <ClInclude Include="lzo_compressor.h" />
     <ClInclude Include="memory_monitor.h" />

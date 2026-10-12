@@ -3,6 +3,8 @@
 
 #include "ModelPool.h"
 #include "../../xrCore/adaptive_memory_policy.h"
+#include "../../xrCore/ResourceWarmBudget.h"
+#include "dxRenderDeviceRender.h"
 
 #include "../../xrCore/job_system.h"
 #include <algorithm>
@@ -44,6 +46,7 @@ int psModelFinalizeBudgetMs = 2;
 int psModelPrefetchManifest = 1;
 int psModelPrefetchManifestMax = 4096;
 int psModelPrefetchInFlight = 64;
+int psModelPrefetchMemoryMb = 512;
 
 namespace
 {
@@ -77,7 +80,8 @@ enum class prepared_model_stage : u32
 	ready,
 	finalizing,
 	finalized,
-	failed
+	failed,
+	deferred // Optional warm-up declined; normal demand loading remains available.
 };
 
 enum class prepared_motion_stage : u32
@@ -592,8 +596,12 @@ struct CModelPool::AsyncStorage
 		xr_string error;
 		bool assert_on_missing = false;
 		std::atomic<bool> from_manifest{false};
+		std::atomic<bool> required{true};
 		bool manifest_counted = false;
 		bool manifest_completed = false;
+		// CPU/texture preparation only. HUD shader creation must wait for the
+		// real HudItemData caller's hud_loading/current_player_hud_sect context.
+		bool prepare_only = false;
 	};
 
 	using state_ptr = std::shared_ptr<PreparedModel>;
@@ -618,6 +626,10 @@ struct CModelPool::AsyncStorage
 	xr_unordered_set<shared_str> observed_models;
 	xr_vector<shared_str> observed_order;
 	xr_unordered_set<shared_str> failed_models;
+	using warm_budget_type = resource_warm_budget<shared_str, xr_unordered_set<shared_str>>;
+	warm_budget_type manifest_memory;
+	warm_budget_type hud_memory;
+	u32 manifest_deferred = 0;
 	shared_str active_level;
 	xr_jobs::task_scope job_scope;
 	xr_jobs::task_group job_group;
@@ -640,10 +652,33 @@ struct CModelPool::AsyncStorage
 
 namespace
 {
+void reset_model_warm_budgets(CModelPool::AsyncStorage* storage, u64 total_bytes)
+{
+	// Reserve a small runtime HUD lane inside, rather than on top of, the
+	// existing speculative source-byte limit. A large learned level manifest
+	// must not consume every byte before the first inventory callback.
+	const u64 hud_bytes = _min<u64>(128ull * 1024ull * 1024ull, total_bytes / 4ull);
+	storage->manifest_memory.reset(total_bytes - hud_bytes);
+	storage->hud_memory.reset(hud_bytes);
+}
+
 void erase_in_flight(CModelPool* owner, const CModelPool::AsyncStorage::state_ptr& state);
 CModelPool::AsyncStorage::state_ptr queue_model_preparation(CModelPool* owner,
-	LPCSTR normalized_name, LPCSTR requested_name, bool assert_on_missing, bool from_manifest);
+	LPCSTR normalized_name, LPCSTR requested_name, bool assert_on_missing, bool from_manifest,
+	bool prepare_only = false, bool imminent_hud = false);
 void pump_manifest_preparations(CModelPool* owner);
+
+CModelPool::AsyncStorage::state_ptr queue_model_dependency(CModelPool* owner,
+	const CModelPool::AsyncStorage::state_ptr& parent, const shared_str& dependency)
+{
+	// from_manifest tracks completion accounting, not whether a model is still
+	// optional: a spawn can upgrade it while preparation is already running.
+	const bool optional = parent->from_manifest.load(std::memory_order_acquire) &&
+		!parent->required.load(std::memory_order_acquire);
+	return queue_model_preparation(owner, dependency.c_str(), dependency.c_str(), false,
+		optional, parent->prepare_only,
+		parent->prepare_only && parent->required.load(std::memory_order_acquire));
+}
 
 void mark_manifest_complete_locked(CModelPool::AsyncStorage* storage,
 	const CModelPool::AsyncStorage::state_ptr& state)
@@ -675,24 +710,26 @@ void finish_preparation(CModelPool* owner, const CModelPool::AsyncStorage::state
 {
 	if (error && error != state->error.c_str())
 		state->error = error;
-	if (stage == prepared_model_stage::failed)
+	if (stage == prepared_model_stage::failed || stage == prepared_model_stage::deferred)
 	{
 		release_prepared_payload(state);
 	}
 	state->stage.store(stage, std::memory_order_release);
-	if (stage == prepared_model_stage::ready)
+	if (stage == prepared_model_stage::ready && !state->prepare_only)
 	{
 		xrCriticalSectionGuard guard(owner->AsyncStorageData()->guard);
 		owner->AsyncStorageData()->ready_to_finalize.push_back(state);
 	}
 	state->wait_condition.notify_all();
-	if (stage == prepared_model_stage::failed)
+	if (stage == prepared_model_stage::failed || stage == prepared_model_stage::deferred)
 	{
 		{
 			CModelPool::AsyncStorage* storage = owner->AsyncStorageData();
 			xrCriticalSectionGuard guard(storage->guard);
 			mark_manifest_complete_locked(storage, state);
-			if (storage->level_recording)
+			if (stage == prepared_model_stage::deferred)
+				++storage->manifest_deferred;
+			if (stage == prepared_model_stage::failed && storage->level_recording)
 			{
 				storage->failed_models.emplace(state->key);
 				storage->observed_models.erase(state->key);
@@ -765,12 +802,138 @@ prepared_motion_ptr acquire_prepared_motion(CModelPool* owner, LPCSTR motion_nam
 	return blob;
 }
 
+
+using model_warm_cost = CModelPool::AsyncStorage::warm_budget_type::cost;
+
+bool has_speculative_memory_headroom()
+{
+	MEMORYSTATUSEX memory = {};
+	memory.dwLength = sizeof(memory);
+	// Optional work must leave room for the actual scene and other applications.
+	// Failure to query memory disables warm-up, never a required asset load.
+	return GlobalMemoryStatusEx(&memory) && memory.ullAvailPhys >= 2ull * 1024u * 1024u * 1024u &&
+		memory.ullAvailPageFile >= 512ull * 1024u * 1024u;
+}
+
+void append_warm_file_cost(xr_vector<model_warm_cost>& costs, const CLocatorAPI::file* file)
+{
+	if (file)
+		costs.push_back({shared_str(file->name), file->size_real});
+}
+
+void append_warm_texture_cost(xr_vector<model_warm_cost>& costs, LPCSTR name)
+{
+	if (!name || !name[0] || !xr_strcmp(name, "null") || strstr(name, "$user$"))
+		return;
+	string_path path;
+	const CLocatorAPI::file* file = FS.exist(path, "$level$", name, ".dds");
+	if (!file)
+		file = FS.exist(path, "$game_saves$", name, ".dds");
+	if (!file)
+		file = FS.exist(path, "$game_textures$", name, ".dds");
+	append_warm_file_cost(costs, file);
+#ifndef _EDITOR
+	if (!Device.m_pRender || !dxRenderDeviceRender::Instance().Resources)
+		return;
+	const shared_str bump = dxRenderDeviceRender::Instance().Resources->m_textures_description.GetBumpName(name);
+	if (!bump.size())
+		return;
+	append_warm_file_cost(costs, FS.exist(path, "$game_textures$", bump.c_str(), ".dds"));
+	string_path bump_x;
+	xr_strcpy(bump_x, bump.c_str());
+	if (xr_strlen(bump_x) + 1 < sizeof(bump_x))
+	{
+		xr_strcat(bump_x, sizeof(bump_x), "#");
+		append_warm_file_cost(costs, FS.exist(path, "$game_textures$", bump_x, ".dds"));
+	}
+#endif
+}
+
+void append_warm_model_cost(xr_vector<model_warm_cost>& costs, LPCSTR resolved,
+	u64 ogf_bytes, const xr_vector<shared_str>& motions, const xr_vector<shared_str>& textures)
+{
+	const CLocatorAPI::file* model = FS.exist(resolved);
+	costs.push_back({shared_str(model ? model->name : resolved), ogf_bytes});
+	string_path path;
+	for (const shared_str& name : motions)
+	{
+		const CLocatorAPI::file* motion = FS.exist(path, "$level$", name.c_str());
+		if (!motion)
+			motion = FS.exist(path, "$game_meshes$", name.c_str());
+		append_warm_file_cost(costs, motion);
+	}
+	for (const shared_str& texture : textures)
+		append_warm_texture_cost(costs, texture.c_str());
+}
+
+bool collect_manifest_warm_costs(const CModelPool::AsyncStorage::state_ptr& state,
+	const xr_vector<shared_str>& motions, const xr_vector<shared_str>& dependencies,
+	const xr_vector<shared_str>& textures, xr_vector<model_warm_cost>& costs)
+{
+	append_warm_model_cost(costs, state->resolved_name.c_str(), state->ogf_bytes.size(), motions, textures);
+	// Include external LODs in the same admission decision. Otherwise finalizing
+	// a warmed parent would load a declined dependency synchronously and bypass
+	// the budget. Temporary child bytes are released before the next child.
+	xr_vector<shared_str> pending = dependencies;
+	xr_unordered_set<shared_str> visited;
+	visited.emplace(state->key);
+	for (size_t i = 0; i < pending.size(); ++i)
+	{
+		if (!visited.emplace(pending[i]).second)
+			continue;
+		// Pathological graphs stay on the existing demand loader; this is only
+		// speculative preparation, not a validity rule for game assets.
+		if (visited.size() > 64)
+			return false;
+		prepared_byte_buffer bytes;
+		xr_string resolved, error;
+		ogf_header header{};
+		xr_vector<shared_str> child_motions, child_dependencies, child_textures;
+		if (!open_model_bytes(pending[i].c_str(), bytes, resolved) ||
+			!inspect_ogf(bytes, header, child_motions, child_dependencies, child_textures, error))
+			return false;
+		append_warm_model_cost(costs, resolved.c_str(), bytes.size(), child_motions, child_textures);
+		pending.insert(pending.end(), child_dependencies.begin(), child_dependencies.end());
+	}
+	return true;
+}
+
+bool admit_manifest_model(CModelPool* owner, const CModelPool::AsyncStorage::state_ptr& state,
+	const xr_vector<shared_str>& motions, const xr_vector<shared_str>& dependencies,
+	const xr_vector<shared_str>& textures)
+{
+	if (state->required.load(std::memory_order_acquire))
+		return true;
+	xr_vector<model_warm_cost> costs;
+	const bool priced = collect_manifest_warm_costs(state, motions, dependencies, textures, costs);
+	CModelPool::AsyncStorage* storage = owner->AsyncStorageData();
+	xrCriticalSectionGuard guard(storage->guard);
+	// A spawn may upgrade an already queued manifest entry while it is priced.
+	// Required model loads never depend on the speculative memory budget.
+	return state->required.load(std::memory_order_acquire) ||
+		(priced && (state->prepare_only ? storage->hud_memory : storage->manifest_memory).
+			admit(costs.data(), costs.size()));
+}
+
 void prepare_model_state(CModelPool* owner, const CModelPool::AsyncStorage::state_ptr& state)
 {
 	prepared_model_stage expected = prepared_model_stage::queued;
 	if (!state->stage.compare_exchange_strong(expected, prepared_model_stage::preparing,
 		std::memory_order_acq_rel, std::memory_order_acquire))
 		return;
+
+	bool optional_enabled = true;
+	{
+		xrCriticalSectionGuard guard(owner->AsyncStorageData()->guard);
+		const auto* storage = owner->AsyncStorageData();
+		optional_enabled = (state->prepare_only ? storage->hud_memory : storage->manifest_memory).limit() != 0;
+	}
+	if (!state->required.load(std::memory_order_acquire) &&
+		(!optional_enabled || !has_speculative_memory_headroom()))
+	{
+		finish_preparation(owner, state, prepared_model_stage::deferred);
+		return;
+	}
 
 	if (!open_model_bytes(state->requested_name.c_str(), state->ogf_bytes, state->resolved_name))
 	{
@@ -787,6 +950,12 @@ void prepare_model_state(CModelPool* owner, const CModelPool::AsyncStorage::stat
 	if (!inspect_ogf(state->ogf_bytes, state->header, motion_names, dependency_names, texture_names, state->error))
 	{
 		finish_preparation(owner, state, prepared_model_stage::failed, state->error.c_str());
+		return;
+	}
+
+	if (!admit_manifest_model(owner, state, motion_names, dependency_names, texture_names))
+	{
+		finish_preparation(owner, state, prepared_model_stage::deferred);
 		return;
 	}
 
@@ -851,8 +1020,7 @@ void prepare_model_state(CModelPool* owner, const CModelPool::AsyncStorage::stat
 	{
 		if (dependency == state->key || !unique_dependencies.emplace(dependency).second)
 			continue;
-		state->dependencies.push_back(queue_model_preparation(owner, dependency.c_str(),
-			dependency.c_str(), false, state->from_manifest.load(std::memory_order_acquire)));
+		state->dependencies.push_back(queue_model_dependency(owner, state, dependency));
 	}
 
 	finish_preparation(owner, state, prepared_model_stage::ready);
@@ -868,23 +1036,39 @@ void prepare_model_job(void* raw_context)
 }
 
 CModelPool::AsyncStorage::state_ptr queue_model_preparation(CModelPool* owner,
-	LPCSTR normalized_name, LPCSTR requested_name, bool assert_on_missing, bool from_manifest)
+	LPCSTR normalized_name, LPCSTR requested_name, bool assert_on_missing, bool from_manifest,
+	bool prepare_only, bool imminent_hud)
 {
 	CModelPool::AsyncStorage* storage = owner->AsyncStorageData();
 	const shared_str key = normalized_name;
 	CModelPool::AsyncStorage::state_ptr state;
 	{
 		xrCriticalSectionGuard guard(storage->guard);
-		const auto existing = storage->in_flight.find(key);
+		auto existing = storage->in_flight.find(key);
+		if (existing != storage->in_flight.end() && !from_manifest && (!prepare_only || imminent_hud))
+		{
+			const prepared_model_stage stage = existing->second->stage.load(std::memory_order_acquire);
+			if (stage == prepared_model_stage::deferred || stage == prepared_model_stage::failed)
+			{
+				// The worker publishes completion before erasing its map entry.
+				// An imminent/demand request in that window must not inherit a
+				// declined optional result and fall back to a cold synchronous load.
+				storage->in_flight.erase(existing);
+				existing = storage->in_flight.end();
+			}
+		}
 		if (existing != storage->in_flight.end())
 		{
+			if (!from_manifest && (!prepare_only || imminent_hud))
+				existing->second->required.store(true, std::memory_order_release);
 			existing->second->assert_on_missing = existing->second->assert_on_missing || assert_on_missing;
-			if (from_manifest && !existing->second->manifest_counted)
+			if (from_manifest && !existing->second->manifest_counted && !existing->second->prepare_only)
 			{
 				const prepared_model_stage existing_stage =
 					existing->second->stage.load(std::memory_order_acquire);
 				if (existing_stage != prepared_model_stage::finalized &&
-					existing_stage != prepared_model_stage::failed)
+					existing_stage != prepared_model_stage::failed &&
+					existing_stage != prepared_model_stage::deferred)
 				{
 					existing->second->from_manifest.store(true, std::memory_order_release);
 					existing->second->manifest_counted = true;
@@ -894,12 +1078,28 @@ CModelPool::AsyncStorage::state_ptr queue_model_preparation(CModelPool* owner,
 			}
 			return existing->second;
 		}
+		// The HUD window must count HUD states, not unrelated world/manifest
+		// requests. The latter can already occupy a 96-entry window on this
+		// machine, silently rejecting every early PDA/inventory request.
+		// Both speculative and imminent HUD payloads remain entry-bounded.
+		if (prepare_only)
+		{
+			// Leave four entries for the item the actor actually selected and its
+			// LODs. A large inventory's optional warm-up must not fill that lane.
+			const size_t hud_limit = imminent_hud ? 64 : 60;
+			size_t hud_count = 0;
+			for (const auto& entry : storage->in_flight)
+				if (entry.second->prepare_only && ++hud_count >= hud_limit)
+					return nullptr;
+		}
 
 		state = std::make_shared<CModelPool::AsyncStorage::PreparedModel>();
 		state->key = key;
 		state->requested_name = requested_name;
 		state->assert_on_missing = assert_on_missing;
 		state->from_manifest.store(from_manifest, std::memory_order_relaxed);
+		state->required.store(!from_manifest && (!prepare_only || imminent_hud), std::memory_order_relaxed);
+		state->prepare_only = prepare_only;
 		storage->in_flight.emplace(key, state);
 		if (from_manifest)
 		{
@@ -927,7 +1127,7 @@ CModelPool::AsyncStorage::state_ptr queue_model_preparation(CModelPool* owner,
 	// miss, however, is followed immediately by wait_for_preparation() on the
 	// render thread, so leaving it in the background lane directly creates a
 	// frame-time spike behind unrelated queued work.
-	const xr_jobs::priority preparation_priority = from_manifest ?
+	const xr_jobs::priority preparation_priority = (from_manifest || (prepare_only && !imminent_hud)) ?
 		xr_jobs::priority::background : xr_jobs::priority::high;
 	if (!xr_jobs::submit_scoped(&prepare_model_job, context, storage->job_scope,
 		&storage->job_group, preparation_priority))
@@ -968,7 +1168,7 @@ void wait_for_preparation(const CModelPool::AsyncStorage::state_ptr& state)
 	{
 		const prepared_model_stage stage = state->stage.load(std::memory_order_acquire);
 		return stage == prepared_model_stage::ready || stage == prepared_model_stage::failed ||
-			stage == prepared_model_stage::finalized;
+			stage == prepared_model_stage::finalized || stage == prepared_model_stage::deferred;
 	});
 }
 
@@ -1050,6 +1250,8 @@ bool finalize_prepared_model(CModelPool* owner, const CModelPool::AsyncStorage::
 			"render-thread model finalization failed");
 		return false;
 	}
+	if (!state->required.load(std::memory_order_acquire))
+		owner->MarkManifestBase(base);
 
 	// A successful visual load guarantees that every supplied OMF has been
 	// installed in the shared motion container. Publish that fact before raw
@@ -1136,6 +1338,7 @@ dxRender_Visual* CModelPool::Instance_Duplicate(dxRender_Visual* V)
 	{
 		VERIFY(index->second < Models.size());
 		Models[index->second].refs++;
+		Models[index->second].unused_manifest_base = false;
 	}
 	return N;
 }
@@ -1222,6 +1425,14 @@ void CModelPool::Instance_Register(LPCSTR N, dxRender_Visual* V)
 	VERIFY(ModelIndexByPointer.find(V) == ModelIndexByPointer.end());
 	ModelByName.emplace(M.name, V);
 	ModelIndexByPointer.emplace(V, index);
+}
+
+void CModelPool::MarkManifestBase(dxRender_Visual* V)
+{
+	xrCriticalSectionGuard guard(modelPoolGuard);
+	const auto found = ModelIndexByPointer.find(V);
+	if (found != ModelIndexByPointer.end() && Models[found->second].refs == 0)
+		Models[found->second].unused_manifest_base = true;
 }
 
 void CModelPool::EraseModelIndex(u32 index)
@@ -1380,6 +1591,26 @@ void CModelPool::RecordLevelModel(LPCSTR normalized_name)
 	const shared_str name = normalized_name;
 	if (asyncStorage->observed_models.emplace(name).second)
 		asyncStorage->observed_order.push_back(name);
+}
+
+void CModelPool::PrepareHudModel(LPCSTR name, bool imminent)
+{
+	if (!name || !name[0] || !psModelAsyncPrepare || xr_jobs::worker_count() == 0 ||
+		xr_jobs::is_worker_thread() || GetCurrentThreadId() != asyncStorage->finalization_thread_id)
+		return;
+	string_path normalized;
+	normalize_model_name(name, normalized);
+	if (!is_prefetch_model_name_safe(normalized) || Instance_Find(normalized))
+		return;
+	{
+		xrCriticalSectionGuard guard(asyncStorage->guard);
+		if ((!imminent && (!asyncStorage->level_recording || !asyncStorage->hud_memory.limit())) ||
+			(!imminent && asyncStorage->in_flight.find(shared_str(normalized)) != asyncStorage->in_flight.end()))
+			return;
+	}
+	// Copy only the resource name into pool-owned state: no item, actor, Lua or
+	// player_hud pointer may survive on a worker. Real visual creation is lazy.
+	queue_model_preparation(this, normalized, name, false, false, true, imminent);
 }
 
 dxRender_Visual* CModelPool::Create(const char* name, IReader* data, bool assert)
@@ -1662,10 +1893,11 @@ void CModelPool::Discard(dxRender_Visual* & V, BOOL b_complete)
 				{
 					dxRender_Visual* base = model.model;
 					EraseModelIndex(index);
+					const BOOL previous_discard = bForceDiscard;
 					bForceDiscard = TRUE;
 					base->Release();
 					xr_delete(base);
-					bForceDiscard = FALSE;
+					bForceDiscard = previous_discard;
 				}
 			}
 			else if (model.refs > 0)
@@ -1761,6 +1993,10 @@ void CModelPool::BeginLevelPrefetch(LPCSTR level_name)
 	// reset. Complete any previous manifest jobs before changing the recording key,
 	// even when the feature was disabled through the console between levels.
 	FinishLevelPrefetch();
+	{
+		xrCriticalSectionGuard guard(asyncStorage->guard);
+		asyncStorage->hud_memory.release_storage();
+	}
 	if (!psModelPrefetchManifest || !psModelAsyncPrepare || xr_jobs::worker_count() == 0 ||
 		!level_name || !level_name[0])
 		return;
@@ -1788,6 +2024,11 @@ void CModelPool::BeginLevelPrefetch(LPCSTR level_name)
 
 		asyncStorage->manifest_cursor = 0;
 		asyncStorage->manifest_inflight = 0;
+		asyncStorage->manifest_deferred = 0;
+		// Budget source bytes for optional OGF/OMF/DDS resource graphs, not
+		// process RAM. Never enlarge it automatically just because RAM is large.
+		reset_model_warm_budgets(asyncStorage,
+			static_cast<u64>(_max(0, psModelPrefetchMemoryMb)) * 1024u * 1024u);
 		asyncStorage->level_recording = true;
 	}
 
@@ -1861,7 +2102,7 @@ void CModelPool::BeginLevelPrefetch(LPCSTR level_name)
 	}
 }
 
-void CModelPool::FinishLevelPrefetch()
+void CModelPool::FinishLevelPrefetch(bool release_hud)
 {
 	if (GetCurrentThreadId() != asyncStorage->finalization_thread_id)
 		return;
@@ -1869,15 +2110,36 @@ void CModelPool::FinishLevelPrefetch()
 	ProcessAsyncFinalization(0, true);
 	{
 		xrCriticalSectionGuard guard(asyncStorage->guard);
+		// Loading completion and resource teardown are different boundaries.
+		// Keep same-level HUD preparation for its real caller after loading;
+		// reset/unload/destruction must release it after all jobs have joined.
+		if (release_hud)
+		{
+			for (auto it = asyncStorage->in_flight.begin(); it != asyncStorage->in_flight.end();)
+			{
+				if (it->second->prepare_only)
+					it = asyncStorage->in_flight.erase(it);
+				else
+					++it;
+			}
+		}
 		// Manifest payload is level-scoped. Return its high-water backing storage
 		// after all preparation jobs are drained instead of carrying the largest
 		// level's allocation through menus and subsequent smaller levels.
+		if (!asyncStorage->manifest_pending.empty())
+			Msg("* [model-prefetch] optional source budget: %llu/%llu MiB, deferred=%u",
+				asyncStorage->manifest_memory.used() / (1024u * 1024u),
+				asyncStorage->manifest_memory.limit() / (1024u * 1024u), asyncStorage->manifest_deferred);
+		asyncStorage->manifest_memory.release_storage();
 		asyncStorage->manifest_states.clear_and_free();
 		asyncStorage->manifest_pending.clear_and_free();
 		asyncStorage->manifest_cursor = 0;
 		asyncStorage->manifest_inflight = 0;
-		asyncStorage->motion_in_flight.clear();
-		asyncStorage->motion_in_flight.rehash(0);
+		if (release_hud || asyncStorage->in_flight.empty())
+		{
+			asyncStorage->motion_in_flight.clear();
+			asyncStorage->motion_in_flight.rehash(0);
+		}
 		if (asyncStorage->in_flight.empty())
 			asyncStorage->in_flight.rehash(0);
 	}
@@ -2066,18 +2328,71 @@ dxRender_Visual* CModelPool::CreatePG(PS::CPGDef* source)
 	return V;
 }
 
+
 void CModelPool::ClearPool(BOOL b_complete)
 {
+	const bool complete_cleanup = b_complete &&
+		GetCurrentThreadId() == asyncStorage->finalization_thread_id;
+	// Joining preparation while holding load/pool locks can deadlock workers.
+	if (complete_cleanup)
+		FinishLevelPrefetch();
 	xrCriticalSectionGuard load_guard(modelLoadGuard);
 	xrCriticalSectionGuard pool_guard(modelPoolGuard);
 	POOL_IT _I = Pool.begin();
 	POOL_IT _E = Pool.end();
 	for (; _I != _E; _I++)
-	{
 		Discard(_I->second, b_complete);
-	}
 	Pool.clear();
+	if (!complete_cleanup)
+		return;
+
+	ReleaseUnusedBases(false);
 }
+
+void CModelPool::TrimUnusedBases()
+{
+	if (GetCurrentThreadId() != asyncStorage->finalization_thread_id)
+		return;
+	FinishLevelPrefetch();
+	xrCriticalSectionGuard load_guard(modelLoadGuard);
+	xrCriticalSectionGuard pool_guard(modelPoolGuard);
+	ReleaseUnusedBases(true);
+}
+
+void CModelPool::ReleaseUnusedBases(bool manifest_only)
+{
+	// Learned-manifest bases have no inactive duplicate in Pool. Refs==0
+	// means the registry owns the base exclusively; parent-owned LODs have
+	// already been detached by ExtractUnreferencedBaseForChild().
+	for (;;)
+	{
+		u32 index = 0;
+		while (index < Models.size() && (Models[index].refs != 0 ||
+			(manifest_only && !Models[index].unused_manifest_base)))
+			++index;
+		if (index == Models.size())
+			break;
+		dxRender_Visual* base = Models[index].model;
+		EraseModelIndex(index);
+		const BOOL previous_discard = bForceDiscard;
+		bForceDiscard = TRUE;
+		base->Release();
+		xr_delete(base);
+		bForceDiscard = previous_discard;
+		// Release() can delete registered children and change Models. Resolve
+		// the next entry anew rather than retaining an invalidated iterator.
+	}
+	g_pMotionsContainer->clean(false);
+	if (g_pSharedMemoryContainer)
+		g_pSharedMemoryContainer->clean();
+	{
+		xrCriticalSectionGuard guard(asyncStorage->guard);
+		// Evicted OMFs must no longer be reported as resident to a later worker.
+		asyncStorage->resident_motions.clear();
+		asyncStorage->resident_motions.rehash(0);
+	}
+}
+
 
 void CModelPool::dump()
 {

@@ -21,7 +21,11 @@
 
 void resptrcode_texture::create(LPCSTR _name)
 {
-	_set(DEV->_CreateTexture(_name));
+	// Adopt the reference acquired under the registry lock without an extra
+	// temporary ref_texture increment/decrement on every shader texture.
+	CTexture* const texture = DEV->_CreateTexture(_name, false, true);
+	_dec();
+	p_ = texture;
 }
 
 
@@ -52,6 +56,20 @@ CTexture::~CTexture()
 
 	// release external reference
 	DEV->_DeleteTexture(this);
+}
+
+void CTexture::ReleaseReference()
+{
+	// Most releases are shared shader/list owners. Keep their fast path free of
+	// registry locks, but serialize the transition to zero with lookup/retirement.
+	u32 references = dwReference.load(std::memory_order_relaxed);
+	while (references > 1)
+	{
+		if (dwReference.compare_exchange_weak(references, references - 1,
+			std::memory_order_acq_rel, std::memory_order_relaxed))
+			return;
+	}
+	DEV->ReleaseTextureReference(this);
 }
 
 void CTexture::surface_set(ID3DBaseTexture* surf)
@@ -138,7 +156,9 @@ void CTexture::PostLoad()
 
 void CTexture::apply_load(u32 dwStage)
 {
-	if (!flags.bLoaded) Load();
+	// First use already requires a shader resource. Avoid a temporary staging
+	// allocation followed by ProcessStaging in this same draw submission.
+	if (!flags.bLoaded) Load(false);
 	else PostLoad();
 	bind(dwStage);
 };
@@ -228,6 +248,7 @@ void CTexture::ProcessStaging()
 
 void CTexture::Apply(u32 dwStage)
 {
+	last_used_time = Device.dwTimeGlobal;
 	if (flags.bLoadedAsStaging)
 		ProcessStaging();
 
@@ -576,7 +597,25 @@ void CTexture::Load(bool use_staging)
 		}
 		
 		if (pSurface && bCreateView)
-			CHK_DX(HW.pDevice->CreateShaderResourceView(pSurface, NULL, &m_pSRView));
+		{
+			// A directly loaded typeless depth DDS needs the same explicit typed
+			// SRV as the former ProcessStaging -> surface_set path.
+			D3D_RESOURCE_DIMENSION dimension;
+			pSurface->GetType(&dimension);
+			D3D_TEXTURE2D_DESC loaded_desc = {};
+			if (dimension == D3D_RESOURCE_DIMENSION_TEXTURE2D)
+				static_cast<ID3DTexture2D*>(pSurface)->GetDesc(&loaded_desc);
+			if (loaded_desc.Format == DXGI_FORMAT_R24G8_TYPELESS ||
+				loaded_desc.Format == DXGI_FORMAT_R32_TYPELESS)
+			{
+				ID3DBaseTexture* loaded = pSurface;
+				pSurface = nullptr;
+				surface_set(loaded);
+				_RELEASE(loaded);
+			}
+			else
+				CHK_DX(HW.pDevice->CreateShaderResourceView(pSurface, NULL, &m_pSRView));
+		}
 	}
 	PostLoad();
 }
@@ -592,6 +631,7 @@ void CTexture::Unload()
 
 	flags.bLoaded = FALSE;
 	flags.bLoadedAsStaging = FALSE;
+	flags.MemoryUsage = 0;
 	if (!seqDATA.empty())
 	{
 		for (u32 I = 0; I < seqDATA.size(); I++)

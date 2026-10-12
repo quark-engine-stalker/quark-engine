@@ -377,6 +377,15 @@ void CDetailManager::UpdateVisibleM()
 	float r_ssaCHEAP = 16 * r_ssaDISCARD;
 	const bool no_scale = psDeviceFlags2.test(rsNoScale);
 	const float alpha_step = RDEVICE.fTimeDelta;
+	const u32 fp_control = _mm_getcsr() & ~0x3fu;
+	if (memcmp(&m_grass_visibility_ssa_discard, &r_ssaDISCARD, sizeof(float)) != 0 ||
+		m_grass_visibility_no_scale != no_scale || m_grass_visibility_fp_control != fp_control)
+	{
+		++m_grass_visibility_parameters_generation;
+		m_grass_visibility_ssa_discard = r_ssaDISCARD;
+		m_grass_visibility_no_scale = no_scale;
+		m_grass_visibility_fp_control = fp_control;
+	}
 
 	// Initialize 'vis' and 'cache'
 	// Collect objects for rendering
@@ -428,6 +437,7 @@ void CDetailManager::UpdateVisibleM()
 				}
 #endif
 				// Add to visibility structures
+				bool upload_changed = false;
 				if (RDEVICE.dwFrame > S.frame)
 				{
 					// Calc fade factor	(per slot)
@@ -440,48 +450,66 @@ void CDetailManager::UpdateVisibleM()
 					float alpha = (dist_sq < fade_start) ? 0.f : (dist_sq - fade_start) / fade_range;
 					float alpha_i = 1.f - alpha;
 					float dist_sq_rcp = 1.f / dist_sq;
+					const float visibility_scale = no_scale ? 1.f : alpha_i;
+					// Decompressed item data/model bounds are immutable until cache_Task,
+					// which resets frame to zero. Identical classification inputs preserve
+					// the exact item order without rebuilding lists or repacking rows.
+					const bool reuse_visible_lists =
+#ifndef _EDITOR
+						S.frame != 0 && !S.hidden &&
+						S.grass_visibility_parameters_generation == m_grass_visibility_parameters_generation &&
+						memcmp(&S.distance, &dist_sq, sizeof(float)) == 0 &&
+						memcmp(&S.visibility_scale, &visibility_scale, sizeof(float)) == 0;
+#else
+						false; // Editor tools may mutate model bounds without cache_Task.
+#endif
 					S.distance = dist_sq;
-					S.visibility_scale = no_scale ? 1.f : alpha_i;
+					S.visibility_scale = visibility_scale;
 
 					S.frame = RDEVICE.dwFrame + detail_slot_jitter(&S, RDEVICE.dwFrame, 15, 30);
-					for (int sp_id = 0; sp_id < dm_obj_in_slot; sp_id++)
+					if (!reuse_visible_lists)
 					{
-						SlotPart& sp = S.G[sp_id];
-						if (sp.id == DetailSlot::ID_Empty) continue;
-
-						sp.r_items[0].clear_not_free();
-						sp.r_items[1].clear_not_free();
-						sp.r_items[2].clear_not_free();
-						sp.alpha_fading_mask = 0;
-
-						float R = objects[sp.id]->bv_sphere.R;
-						float Rq_drcp = R * R * dist_sq_rcp; // reordered expression for 'ssa' calc
-
-						for (u32 item_index = 0; item_index < sp.items.size(); ++item_index)
+						upload_changed = true;
+						for (int sp_id = 0; sp_id < dm_obj_in_slot; sp_id++)
 						{
-							SlotItem& Item = sp.items[item_index];
-							float scale = Item.scale * S.visibility_scale;
-							float ssa = no_scale ? scale : scale * scale * Rq_drcp;
-							if (ssa < r_ssaDISCARD)
-							{
-								Item.alpha_target = 0;
-								continue;
-							}
-							u32 vis_id = 0;
-							if (ssa > r_ssaCHEAP) vis_id = Item.vis_ID;
+							SlotPart& sp = S.G[sp_id];
+							if (sp.id == DetailSlot::ID_Empty) continue;
 
-							sp.r_items[vis_id].push_back(&Item);
+							sp.r_items[0].clear_not_free();
+							sp.r_items[1].clear_not_free();
+							sp.r_items[2].clear_not_free();
+							sp.alpha_fading_mask = 0;
 
-							if (S.hidden)
+							float R = objects[sp.id]->bv_sphere.R;
+							float Rq_drcp = R * R * dist_sq_rcp; // reordered expression for 'ssa' calc
+
+							for (u32 item_index = 0; item_index < sp.items.size(); ++item_index)
 							{
-								Item.alpha = 0;
-								S.hidden = false;
+								SlotItem& Item = sp.items[item_index];
+								float scale = Item.scale * S.visibility_scale;
+								float ssa = no_scale ? scale : scale * scale * Rq_drcp;
+								if (ssa < r_ssaDISCARD)
+								{
+									Item.alpha_target = 0;
+									continue;
+								}
+								u32 vis_id = 0;
+								if (ssa > r_ssaCHEAP) vis_id = Item.vis_ID;
+
+								sp.r_items[vis_id].push_back(&Item);
+
+								if (S.hidden)
+								{
+									Item.alpha = 0;
+									S.hidden = false;
+								}
+								Item.alpha_target = 1;
+								if (Item.alpha < 1.f)
+									sp.alpha_fading_mask |= static_cast<u8>(1u << vis_id);
+								//2							visible[vis_id][sp.id].push_back(&Item);
 							}
-							Item.alpha_target = 1;
-							if (Item.alpha < 1.f)
-								sp.alpha_fading_mask |= static_cast<u8>(1u << vis_id);
-							//2							visible[vis_id][sp.id].push_back(&Item);
 						}
+						S.grass_visibility_parameters_generation = m_grass_visibility_parameters_generation;
 					}
 				}
 				for (int sp_id = 0; sp_id < dm_obj_in_slot; sp_id++)
@@ -490,26 +518,38 @@ void CDetailManager::UpdateVisibleM()
 					if (sp.id == DetailSlot::ID_Empty) continue;
 					if (!sp.r_items[0].empty())
 					{
-						if ((sp.alpha_fading_mask & 1u) &&
-							!advance_detail_alpha(sp.r_items[0], alpha_step))
-							sp.alpha_fading_mask &= static_cast<u8>(~1u);
+						if (sp.alpha_fading_mask & 1u)
+						{
+							upload_changed = true;
+							if (!advance_detail_alpha(sp.r_items[0], alpha_step))
+								sp.alpha_fading_mask &= static_cast<u8>(~1u);
+						}
 						m_visibles[0][sp.id].push_back({&sp.r_items[0], &S});
 					}
 					if (!sp.r_items[1].empty())
 					{
-						if ((sp.alpha_fading_mask & 2u) &&
-							!advance_detail_alpha(sp.r_items[1], alpha_step))
-							sp.alpha_fading_mask &= static_cast<u8>(~2u);
+						if (sp.alpha_fading_mask & 2u)
+						{
+							upload_changed = true;
+							if (!advance_detail_alpha(sp.r_items[1], alpha_step))
+								sp.alpha_fading_mask &= static_cast<u8>(~2u);
+						}
 						m_visibles[1][sp.id].push_back({&sp.r_items[1], &S});
 					}
 					if (!sp.r_items[2].empty())
 					{
-						if ((sp.alpha_fading_mask & 4u) &&
-							!advance_detail_alpha(sp.r_items[2], alpha_step))
-							sp.alpha_fading_mask &= static_cast<u8>(~4u);
+						if (sp.alpha_fading_mask & 4u)
+						{
+							upload_changed = true;
+							if (!advance_detail_alpha(sp.r_items[2], alpha_step))
+								sp.alpha_fading_mask &= static_cast<u8>(~4u);
+						}
 						m_visibles[2][sp.id].push_back({&sp.r_items[2], &S});
 					}
 				}
+				// Includes the final alpha step before the packed path becomes eligible.
+				if (upload_changed)
+					++S.grass_upload_source_generation;
 			}
 		}
 	}
@@ -742,6 +782,22 @@ void CDetailManager::Render()
 void CDetailManager::ResetFrameState()
 {
 	m_frame_state.frame = u32(-1);
+	m_detail_upload_frame = u32(-1);
+	++m_detail_upload_generation;
+	m_detail_upload_count = 0;
+	m_detail_upload_build_count = 0;
+	m_detail_upload_slots.clear_and_free();
+	m_detail_upload_sources.clear();
+	m_detail_upload_sources.rehash(0);
+	m_detail_upload_last_reset_frame = RDEVICE.dwFrame;
+	m_detail_upload_fp_control = 0;
+	m_detail_upload_reset_pending = false;
+	m_detail_upload_key_count = 0;
+	m_detail_upload_keys.clear_and_free();
+	for (auto& groups : m_detail_upload_groups)
+		groups.clear_and_free();
+	m_detail_upload_xforms.clear_and_free();
+	m_detail_upload_extra.clear_and_free();
 	m_grass_spot_candidate_generation = 0;
 	ClearSunShadowCascades();
 	// A level is allowed to have no level.details. In that case Load() returns

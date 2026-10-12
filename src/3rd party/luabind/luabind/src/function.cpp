@@ -138,6 +138,17 @@ namespace luabind { namespace detail { namespace free_functions {
             lua_error(L);
         }
 #endif
+        // This safety boundary must remain active when release error checking is disabled.
+        if (match_index < 0)
+        {
+            {
+                string_class msg = "no matching overload for '";
+                msg += rep->name();
+                msg += "'";
+                lua_pushstring(L, msg.c_str());
+            }
+            lua_error(L);
+        }
         overload_rep const& ov_rep = rep->overloads()[match_index];
 
 #ifndef LUABIND_NO_EXCEPTIONS

@@ -929,6 +929,7 @@
     <ClInclude Include="holder_custom.h" />
     <ClInclude Include="HUDCrosshair.h" />
     <ClInclude Include="HudItem.h" />
+    <ClInclude Include="HudMaterialState.h" />
     <ClInclude Include="HUDManager.h" />
     <ClInclude Include="HUDRecon.h" />
     <ClInclude Include="HudSound.h" />

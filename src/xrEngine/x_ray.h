@@ -125,6 +125,9 @@ struct rpc_strings
 
 extern ENGINE_API void updateDiscordPresence();
 extern ENGINE_API void Init_Discord();
+extern ENGINE_API bool DiscordPresenceReady();
+extern ENGINE_API void PumpDiscordPresence();
+extern ENGINE_API void ShutdownDiscordPresence();
 extern ENGINE_API rpc_info discord_gameinfo;
 extern ENGINE_API rpc_strings discord_strings;
 extern ENGINE_API float discord_update_rate;

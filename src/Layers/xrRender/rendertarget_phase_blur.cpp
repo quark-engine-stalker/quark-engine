@@ -231,8 +231,8 @@ void CRenderTarget::phase_ssfx_ssr()
 	ssrCopyBox.right = (UINT)clampr(iCeil(scale_X), 1, (int)Device.dwWidth);
 	ssrCopyBox.bottom = (UINT)clampr(iCeil(scale_Y), 1, (int)Device.dwHeight);
 	ssrCopyBox.back = 1;
-	HW.pContext->CopySubresourceRegion(rt_ssfx_ssr->pTexture->surface_get(), 0, 0, 0, 0,
-		rt_ssfx->pTexture->surface_get(), 0, &ssrCopyBox);
+	HW.pContext->CopySubresourceRegion(rt_ssfx_ssr->pSurface, 0, 0, 0, 0,
+		rt_ssfx->pSurface, 0, &ssrCopyBox);
 
 	// Disable/Enable Blur if the value is <= 0
 	//if (ps_ssfx_ssr.y > 0 || ps_ssfx_ssr.x > 1.0)
@@ -388,7 +388,7 @@ void CRenderTarget::phase_ssfx_volumetric_blur()
 	RCache.set_Geometry(g_combine);
 	RCache.Render(D3DPT_TRIANGLELIST, Offset, 0, 4, 0, 2);
 
-	HW.pContext->CopyResource(rt_Generic_2->pTexture->surface_get(), rt_ssfx_accum->pTexture->surface_get());
+	HW.pContext->CopyResource(rt_Generic_2->pSurface, rt_ssfx_accum->pSurface);
 };
 
 void CRenderTarget::phase_ssfx_water_blur()
@@ -455,8 +455,8 @@ void CRenderTarget::phase_ssfx_water_blur()
 		waterCopyBox.right = (UINT)std::max(1, iCeil(w * 0.5f));
 		waterCopyBox.bottom = (UINT)std::max(1, iCeil(h * 0.5f));
 		waterCopyBox.back = 1;
-		HW.pContext->CopySubresourceRegion(rt_ssfx_temp2->pTexture->surface_get(), 0, 0, 0, 0,
-			rt_ssfx_temp->pTexture->surface_get(), 0, &waterCopyBox);
+		HW.pContext->CopySubresourceRegion(rt_ssfx_temp2->pSurface, 0, 0, 0, 0,
+			rt_ssfx_temp->pSurface, 0, &waterCopyBox);
 
 		u_setrt(rt_ssfx_temp, 0, 0, NULL);
 		RCache.set_CullMode(CULL_NONE);
@@ -821,7 +821,7 @@ void CRenderTarget::phase_ssfx_sss_ext(light_Package& LP)
 	RCache.set_Geometry(g_combine);
 	RCache.Render(D3DPT_TRIANGLELIST, Offset, 0, 4, 0, 2);
 
-	HW.pContext->CopyResource(rt_ssfx_sss_ext->pTexture->surface_get(), rt_ssfx_sss_tmp->pTexture->surface_get());
+	HW.pContext->CopyResource(rt_ssfx_sss_ext->pSurface, rt_ssfx_sss_tmp->pSurface);
 
 	// SSS Ext 2 -------------------------------------------------------
 
@@ -849,7 +849,7 @@ void CRenderTarget::phase_ssfx_sss_ext(light_Package& LP)
 	RCache.set_Geometry(g_combine);
 	RCache.Render(D3DPT_TRIANGLELIST, Offset, 0, 4, 0, 2);
 
-	HW.pContext->CopyResource(rt_ssfx_sss_ext2->pTexture->surface_get(), rt_ssfx_sss_tmp->pTexture->surface_get());
+	HW.pContext->CopyResource(rt_ssfx_sss_ext2->pSurface, rt_ssfx_sss_tmp->pSurface);
 
 	// Combine ---------------------------------------------------------
 

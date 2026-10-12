@@ -1,5 +1,7 @@
 #include "stdafx.h"
 #include "HudItem.h"
+#include "../xrEngine/fmesh.h"
+#include "HudMaterialState.h"
 #include "physic_item.h"
 #include "actor.h"
 #include "actoreffector.h"
@@ -90,6 +92,7 @@ void CHudItem::DeleteHudItemData()
 {
 	xr_delete(m_attachable);
 	m_attachable = nullptr;
+	xr_delete(m_hud_materials);
 }
 
 void CHudItem::Load(LPCSTR section)
@@ -628,7 +631,17 @@ void CHudItem::OnMotionMark(u32 state, const motion_marks& M)
 }
 
 void CHudItem::OnH_A_Chield()
-{}
+{
+	PrepareHudResources();
+}
+
+void CHudItem::PrepareHudResources(bool imminent)
+{
+	// NPC material queries only need metadata. Keep expensive HUD preparation
+	// for actor-owned items, where the model can actually become visible.
+	if (ParentIsActor() && ::Render && hud_sect.size() && pSettings->line_exist(hud_sect, "item_visual"))
+		::Render->models_PrepareHud(pSettings->r_string(hud_sect, "item_visual"), imminent);
+}
 
 void CHudItem::OnH_B_Chield()
 {
@@ -967,6 +980,61 @@ void CHudItem::OnMovementChanged(ACTOR_DEFS::EMoveCommand cmd)
 
 extern shared_str current_player_hud_sect;
 
+const HudMaterialState* CHudItem::DeferredHudMaterials()
+{
+	if (m_attachable || !g_player_hud)
+		return nullptr;
+	CEntityAlive* parent = smart_cast<CEntityAlive*>(object().H_Parent());
+	if (!parent || parent->cast_actor())
+		return nullptr;
+	if (m_hud_materials)
+		return m_hud_materials;
+	if (!hud_sect.size() || !pSettings->line_exist(hud_sect, "item_visual"))
+		return nullptr;
+
+	// Match CModelPool::Create's normalization and Instance_Load's lookup
+	// priority. Reading only OGF metadata does not wait for OMF/texture jobs.
+	LPCSTR requested = pSettings->r_string(hud_sect, "item_visual");
+	if (!requested || !requested[0] || xr_strlen(requested) >= sizeof(string_path))
+		return nullptr;
+	string_path normalized, filename;
+	xr_strcpy(normalized, requested);
+	xr_strlwr(normalized);
+	if (char* extension = strext(normalized))
+		*extension = 0;
+	if (xr_strlen(normalized) + sizeof(".ogf") > sizeof(filename))
+		return nullptr;
+	strconcat(sizeof(filename), filename, normalized, ".ogf");
+	IReader* reader = FS.r_open(normalized);
+	if (!reader)
+		reader = FS.r_open("$level$", filename);
+	if (!reader)
+		reader = FS.r_open("$game_meshes$", filename);
+	if (!reader)
+		return nullptr;
+	HudMaterialState* state = xr_new<HudMaterialState>();
+	const int length = reader->length();
+	const bool supported = length > 0 && length <= 64 * 1024 * 1024 &&
+		hud_material_detail::read_ogf(static_cast<const u8*>(reader->pointer()),
+			static_cast<u32>(length), *state);
+	FS.r_close(reader);
+	if (!supported)
+	{
+		xr_delete(state);
+		return nullptr;
+	}
+	m_hud_materials = state;
+	return state;
+}
+
+bool CHudItem::DeferHudMaterialChange(int id, LPCSTR shader, LPCSTR texture, bool reset)
+{
+	if (!DeferredHudMaterials())
+		return false;
+	m_hud_materials->change(id, shader, texture, reset);
+	return true;
+}
+
 attachable_hud_item* CHudItem::HudItemData()
 {
 	if (!g_player_hud)
@@ -978,6 +1046,25 @@ attachable_hud_item* CHudItem::HudItemData()
 		m_attachable = xr_new<attachable_hud_item>(g_player_hud);
 		m_attachable->m_parent_hud_item = this;
 		m_attachable->load(hud_sect);
+		if (m_hud_materials)
+		{
+			IRenderVisual* visual = m_attachable->m_model->dcast_RenderVisual();
+			for (const HudMaterialEntry& entry : m_hud_materials->entries)
+			{
+				if (!entry.changed)
+					continue;
+				for (xr_vector<IRenderVisual*>* children :
+					{visual->get_children(), visual->get_children_invisible()})
+				{
+					if (!children)
+						continue;
+					for (IRenderVisual* child : *children)
+						if (child->getID() == entry.id)
+							child->SetShaderTexture(entry.shader_request.c_str(), entry.texture.c_str());
+				}
+			}
+			xr_delete(m_hud_materials);
+		}
 	}
 
 	return m_attachable;

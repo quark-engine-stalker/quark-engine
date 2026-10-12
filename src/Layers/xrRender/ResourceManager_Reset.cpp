@@ -115,6 +115,7 @@ CResourceManager::~CResourceManager()
 {
 	// Release session-retained warm textures before dumping the registry.
 	m_warm_textures.clear();
+	m_warm_texture_bytes = m_warm_texture_resident_bytes = m_warm_texture_reclaimable_bytes = 0;
 	DestroyNecessaryTextures();
 	Dump(false);
 }

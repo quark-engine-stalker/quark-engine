@@ -353,4 +353,5 @@ void CRender::TakeScreenshot(LPCSTR path, Fvector2 dimensions, DxEncoding encodi
 
 	// cleanup
 	_RELEASE(pSrcSmallTexture);
+	_RELEASE(pSrcTexture);
 }
