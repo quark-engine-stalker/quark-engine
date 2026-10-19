@@ -85,7 +85,7 @@ public: //	Public class members (must be encapsulated furthur)
 		u32 bLoaded : 1;
 		u32 bUser : 1;
 		u32 seqCycles : 1;
-		u32 MemoryUsage : 28;
+		std::atomic<u64> MemoryUsage{0};
 		u32					bLoadedAsStaging: 1;
 	} flags;
 

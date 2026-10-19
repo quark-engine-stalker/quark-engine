@@ -45,7 +45,7 @@ private:
 	BOOL _RayPick(const Fvector& start, const Fvector& dir, float range, collide::rq_target tgt, collide::rq_result& R,
 	              CObject* ignore_object);
 	BOOL _RayPick(const Fvector& start, const Fvector& dir, float range, collide::rq_target tgt, collide::rq_result& R,
-				  xr_vector<CObject*>& ignore_objects);
+				  xr_vector<CObject*>& ignore_objects, CObject* ignore_object = nullptr);
 	BOOL _RayQuery(collide::rq_results& dest, const collide::ray_defs& rq, collide::rq_callback* cb, LPVOID user_data,
 	               collide::test_callback* tb, CObject* ignore_object);
 	BOOL _RayQuery2(collide::rq_results& dest, const collide::ray_defs& rq, collide::rq_callback* cb, LPVOID user_data,

@@ -138,7 +138,12 @@
     <ClCompile Include="xrXRC.cpp" />
     <ClCompile Include="xr_area.cpp" />
     <ClCompile Include="xr_area_query.cpp" />
-    <ClCompile Include="xr_area_raypick.cpp" />
+    <ClCompile Include="xr_area_raypick.cpp">
+      <!-- RayPick RAII cleanup requires C++ stack unwinding. Keep this local
+           and avoid consuming the module PCH compiled without /EHsc. -->
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Frustum.h" />

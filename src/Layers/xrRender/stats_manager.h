@@ -19,8 +19,8 @@ class stats_manager
 {
 public:
 	~stats_manager();
-	void increment_stats(u32 size, enum_stats_buffer_type type, _D3DPOOL location);
-	void decrement_stats(u32 size, enum_stats_buffer_type type, _D3DPOOL location);
+	void increment_stats(u64 size, enum_stats_buffer_type type, _D3DPOOL location);
+	void decrement_stats(u64 size, enum_stats_buffer_type type, _D3DPOOL location);
 
 	void increment_stats_rtarget(ID3DTexture2D* buff);
 	void increment_stats_vb(ID3DVertexBuffer* buff);
@@ -30,18 +30,18 @@ public:
 	void decrement_stats_vb(ID3DVertexBuffer* buff);
 	void decrement_stats_ib(ID3DIndexBuffer* buff);
 
-	u32 memory_usage_summary[enum_stats_buffer_type_COUNT][4];
+	std::atomic<u64> memory_usage_summary[enum_stats_buffer_type_COUNT][4]{};
 
 private:
 
-	void increment_stats(u32 size, enum_stats_buffer_type type, _D3DPOOL location, void* buff_ptr);
-	void decrement_stats(u32 size, enum_stats_buffer_type type, _D3DPOOL location, void* buff_ptr);
+	void increment_stats(u64 size, enum_stats_buffer_type type, _D3DPOOL location, void* buff_ptr);
+	void decrement_stats(u64 size, enum_stats_buffer_type type, _D3DPOOL location, void* buff_ptr);
 
 #ifdef DEBUG
 	struct stats_item
 	{
 		void*					buff_ptr;
-		u32						size; 
+		u64						size; 
 		enum_stats_buffer_type	type;
 		_D3DPOOL				location;
 	}; // stats_item

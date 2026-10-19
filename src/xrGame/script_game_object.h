@@ -8,6 +8,7 @@
 
 #pragma once
 #include <cstdlib>
+#include <memory>
 
 #include "script_space_forward.h"
 #include "script_bind_macroses.h"
@@ -184,6 +185,20 @@ class CScriptGameObject
 	bool m_invalid_bone_warning_reported[2];
 	CScriptGameObject(CScriptGameObject const& game_object);
 	CInventoryOwner* cached_inventory_owner() const;
+
+public:
+	// CScriptGameObject is owned by its CGameObject and freed in CGameObject::net_Destroy(),
+	// but value structs copied into Lua (e.g. script_rq_result) can outlive it. Such structs
+	// must not keep a raw CScriptGameObject*: they keep a weak_ptr to this token instead and
+	// re-validate it on every access. The token is cleared in ~CScriptGameObject().
+	struct lifetime_token
+	{
+		CScriptGameObject* object;
+	};
+	std::weak_ptr<lifetime_token> lifetime() const;
+
+private:
+	mutable std::shared_ptr<lifetime_token> m_lifetime_token;
 
 public:
 

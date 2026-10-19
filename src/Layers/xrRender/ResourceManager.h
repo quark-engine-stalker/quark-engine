@@ -99,6 +99,7 @@ private:
 	xrCriticalSection shaderGraphGuard;
 	xrCriticalSection shaderProgramGuard;
 	xrCriticalSection textureGuard;
+	xrCriticalSection textureLoadGuards[64];
 	xrCriticalSection texturePrefetchGuard;
 	xr_unordered_flat_set<shared_str> m_texturePrefetchInFlight;
 	xrCriticalSection parameterGuard;
@@ -120,7 +121,7 @@ public:
 	void _ParseList(sh_list& dest, LPCSTR names);
 	IBlender* _GetBlender(LPCSTR Name);
 	IBlender* _FindBlender(LPCSTR Name);
-	void _GetMemoryUsage(u32& m_base, u32& c_base, u32& m_lmaps, u32& c_lmaps);
+	void _GetMemoryUsage(u64& m_base, u32& c_base, u64& m_lmaps, u32& c_lmaps);
 	void _DumpMemoryUsage();
 	//.	BOOL							_GetDetailTexture	(LPCSTR Name, LPCSTR& T, R_constant_setup* &M);
 
@@ -139,10 +140,14 @@ public:
 #endif
 
 	// Low level resource creation
-	CTexture* _CreateTexture(LPCSTR Name, bool prefer_gpu_resident = false, bool acquire_reference = false);
+private:
+	friend struct resptrcode_texture;
+	CTexture* _CreateTexture(LPCSTR Name); // returns one acquired reference
+public:
 	ref_texture CreateTextureRef(LPCSTR Name);
 	void ReleaseTextureReference(CTexture* texture);
 	void PrefetchTextureGpuResident(LPCSTR Name);
+	void PrefetchTexture(LPCSTR Name);
 	void _DeleteTexture(const CTexture* T);
 
 	CMatrix* _CreateMatrix(LPCSTR Name);

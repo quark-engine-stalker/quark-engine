@@ -149,7 +149,20 @@ struct SLuaRecordState
 
 namespace
 {
+// Diagnostic maps must not grow with every transient Lua closure or name.
+constexpr u32 lua_profile_max_keys = 8192;
 constexpr u32 lua_profile_max_nested_calls = 128;
+
+template <typename T>
+T& lua_profile_bounded_entry(xr_map<shared_str, T>& entries, const shared_str& key)
+{
+	auto found = entries.find(key);
+	if (found != entries.end())
+		return found->second;
+	// Keep totals in one explicitly named overflow row instead of losing samples.
+	return entries[entries.size() < lua_profile_max_keys ? key :
+		shared_str("<additional functions: profile capacity reached>")];
+}
 constexpr u32 lua_record_max_function_depth = 4096;
 constexpr u32 lua_record_max_slow_events = 8192;
 constexpr u32 lua_record_max_native_events = 8192;
@@ -466,7 +479,8 @@ SLuaResolvedHookFunction lua_record_resolve_hook_function(
 				xr_sprintf(resolved_name, "<anonymous> [%s:%d]", source, definition_line);
 
 			result.name = resolved_name;
-			if (result.identity)
+			if (result.identity && (record_state->function_names.size() < lua_profile_max_keys ||
+				record_state->function_names.find(result.identity) != record_state->function_names.end()))
 			{
 				SLuaRecordFunctionIdentity& identity = record_state->function_names[result.identity];
 				identity.name = result.name;
@@ -505,7 +519,7 @@ bool lua_record_close_top_frame(SLuaRecordState* record_state, SLuaProfileCallCo
 
 	if (frame.function_name.size())
 	{
-		SLuaRecordFunctionEntry& entry = record_state->functions[frame.function_name];
+		SLuaRecordFunctionEntry& entry = lua_profile_bounded_entry(record_state->functions, frame.function_name);
 		++entry.calls;
 		entry.total_ticks += elapsed_ticks;
 		entry.self_ticks += self_ticks;
@@ -871,7 +885,9 @@ void CScriptEngine::register_profiled_function(LPCSTR function_name, const void*
 {
 	if (!lua_hotspot_profiler_enabled() || !function_name || !function_name[0] || !function_identity)
 		return;
-	m_lua_hotspot_profiler->function_names[function_identity] = function_name;
+	if (m_lua_hotspot_profiler->function_names.size() < lua_profile_max_keys ||
+		m_lua_hotspot_profiler->function_names.find(function_identity) != m_lua_hotspot_profiler->function_names.end())
+		m_lua_hotspot_profiler->function_names[function_identity] = function_name;
 }
 
 void CScriptEngine::lua_record_hook(lua_State* state, lua_Debug* debug_info)
@@ -1100,7 +1116,7 @@ void* CScriptEngine::begin_lua_profile_call(
 			}
 
 			context.function_name = resolved_name;
-			if (function_identity)
+			if (function_identity && m_lua_hotspot_profiler->function_names.size() < lua_profile_max_keys)
 				m_lua_hotspot_profiler->function_names[function_identity] = context.function_name;
 		}
 	}
@@ -1199,7 +1215,7 @@ void CScriptEngine::end_lua_profile_call(void* opaque_context, const int result)
 
 		if (hotspot_event)
 		{
-			SLuaHotspotProfileEntry& entry = m_lua_hotspot_profiler->hotspots[context->function_name];
+			SLuaHotspotProfileEntry& entry = lua_profile_bounded_entry(m_lua_hotspot_profiler->hotspots, context->function_name);
 			++entry.calls;
 			entry.total_ticks += elapsed_ticks;
 			entry.max_ticks = _max(entry.max_ticks, elapsed_ticks);
@@ -1332,11 +1348,16 @@ void CScriptEngine::end_lua_to_cpp_profile_call(void* raw_context)
 	const u64 elapsed_ticks = ended_ticks >= context->started_ticks ? ended_ticks - context->started_ticks : 0;
 	if (m_lua_record_state)
 	{
-		SLuaRecordDirectCEntry& entry = m_lua_record_state->direct_c_functions[context->profile_key];
+		SLuaRecordDirectCEntry& entry = lua_profile_bounded_entry(m_lua_record_state->direct_c_functions, context->profile_key);
 		if (!entry.calls)
 		{
 			entry.callback = context->callback_context ? context->callback_context->function_name : "<Lua callback>";
 			entry.function = context->function_name;
+			if (m_lua_record_state->direct_c_functions.size() > lua_profile_max_keys)
+			{
+				entry.callback = "<additional callbacks>";
+				entry.function = "<profile capacity reached>";
+			}
 		}
 		++entry.calls;
 		entry.total_ticks += elapsed_ticks;
@@ -1552,11 +1573,16 @@ void CScriptEngine::record_native_profile(LPCSTR domain, LPCSTR phase, LPCSTR ob
 
 	string1024 key;
 	xr_sprintf(key, "%s|%s", domain, phase);
-	SLuaRecordNativeEntry& entry = m_lua_record_state->native_profiles[key];
+	SLuaRecordNativeEntry& entry = lua_profile_bounded_entry(m_lua_record_state->native_profiles, shared_str(key));
 	if (!entry.calls)
 	{
 		entry.domain = domain;
 		entry.phase = phase;
+		if (m_lua_record_state->native_profiles.size() > lua_profile_max_keys)
+		{
+			entry.domain = "<additional native profiles>";
+			entry.phase = "<profile capacity reached>";
+		}
 	}
 	++entry.calls;
 	entry.total_ticks += elapsed_ticks;

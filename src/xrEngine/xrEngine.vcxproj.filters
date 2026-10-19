@@ -411,6 +411,9 @@
     <ClInclude Include="device.h">
       <Filter>RenderRef\Execution &amp; 3D\Device</Filter>
     </ClInclude>
+	<ClInclude Include="DeferredDeviceReset.h">
+	  <Filter>RenderRef\Execution &amp; 3D\Device</Filter>
+	</ClInclude>
     <ClInclude Include="AIAsyncPrepare.h">
       <Filter>Header Files</Filter>
     </ClInclude>

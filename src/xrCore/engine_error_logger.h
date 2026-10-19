@@ -94,6 +94,7 @@ namespace EngineErrorLogger
     XRCORE_API bool WriteSelfTest();
     XRCORE_API void ReportUnhandledException(void* exceptionPointers);
     XRCORE_API void __cdecl ReportExplicit(LPCSTR file, int line, LPCSTR function, LPCSTR format, ...);
+
 }
 
 #define QUARK_ENGINE_ERROR(...) \

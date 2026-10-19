@@ -11,17 +11,17 @@
     const bool g_dedicated_server = false;
 #endif
 
-void stats_manager::increment_stats(u32 size, enum_stats_buffer_type type, _D3DPOOL location)
+void stats_manager::increment_stats(u64 size, enum_stats_buffer_type type, _D3DPOOL location)
 {
 	if (g_dedicated_server)
 		return;
 
 	R_ASSERT(type >= 0 && type < enum_stats_buffer_type_COUNT);
 	R_ASSERT(location >= 0 && location <= D3DPOOL_SCRATCH);
-	memory_usage_summary[type][location] += size;
+	memory_usage_summary[type][location].fetch_add(size, std::memory_order_relaxed);
 }
 
-void stats_manager::increment_stats(u32 size, enum_stats_buffer_type type, _D3DPOOL location, void* buff_ptr)
+void stats_manager::increment_stats(u64 size, enum_stats_buffer_type type, _D3DPOOL location, void* buff_ptr)
 {
 	if (g_dedicated_server)
 		return;
@@ -29,7 +29,7 @@ void stats_manager::increment_stats(u32 size, enum_stats_buffer_type type, _D3DP
 	R_ASSERT(buff_ptr != NULL);
 	R_ASSERT(type >= 0 && type < enum_stats_buffer_type_COUNT);
 	R_ASSERT(location >= 0 && location <= D3DPOOL_SCRATCH);
-	memory_usage_summary[type][location] += size;
+	memory_usage_summary[type][location].fetch_add(size, std::memory_order_relaxed);
 
 #ifdef DEBUG
 	stats_item new_item;
@@ -42,6 +42,19 @@ void stats_manager::increment_stats(u32 size, enum_stats_buffer_type type, _D3DP
 #endif
 }
 
+static u64 render_target_bytes(const D3D_TEXTURE2D_DESC& desc)
+{
+	u64 bytes = 0;
+	u32 w = desc.Width, h = desc.Height;
+	for (u32 mip = 0; mip < desc.MipLevels; ++mip)
+	{
+		bytes += u64(w) * h * get_format_pixel_size(desc.Format) * desc.ArraySize * desc.SampleDesc.Count;
+		w = _max(1u, w >> 1u);
+		h = _max(1u, h >> 1u);
+	}
+	return bytes; // Payload estimate; driver allocation granularity is not included.
+}
+
 void stats_manager::increment_stats_rtarget(ID3DTexture2D* buff)
 {
 	if (g_dedicated_server)
@@ -51,7 +64,7 @@ void stats_manager::increment_stats_rtarget(ID3DTexture2D* buff)
 	D3D_TEXTURE2D_DESC desc;
 	buff->GetDesc(&desc);
 
-	u32 size = desc.Height * desc.Width * get_format_pixel_size(desc.Format);
+	u64 size = render_target_bytes(desc);
 	increment_stats(size, enum_stats_buffer_type_rtarget, pool, buff);
 }
 
@@ -80,16 +93,13 @@ void stats_manager::decrement_stats_rtarget(ID3DTexture2D* buff)
 	if (buff == NULL || g_dedicated_server)
 		return;
 
-	buff->AddRef();
-	int refcnt = 0;
-	if ((refcnt = buff->Release()) > 1)
-		return;
-
+	// CRT accounts its allocation exactly once. Its RTV/DSV/UAV and texture
+	// alias can still hold COM references here; that is not another CRT owner.
 	_D3DPOOL pool = D3DPOOL_MANAGED;
 	D3D_TEXTURE2D_DESC desc;
 	buff->GetDesc(&desc);
 
-	u32 size = desc.Height * desc.Width * get_format_pixel_size(desc.Format);
+	u64 size = render_target_bytes(desc);
 	decrement_stats(size, enum_stats_buffer_type_rtarget, pool, buff);
 }
 
@@ -123,17 +133,17 @@ void stats_manager::decrement_stats_ib(ID3DIndexBuffer* buff)
 	decrement_stats(desc.ByteWidth, enum_stats_buffer_type_index, D3DPOOL_MANAGED, buff);
 }
 
-void stats_manager::decrement_stats(u32 size, enum_stats_buffer_type type, _D3DPOOL location)
+void stats_manager::decrement_stats(u64 size, enum_stats_buffer_type type, _D3DPOOL location)
 {
 	if (g_dedicated_server)
 		return;
 
 	R_ASSERT(type >= 0 && type < enum_stats_buffer_type_COUNT);
 	R_ASSERT(location >= 0 && location <= D3DPOOL_SCRATCH);
-	memory_usage_summary[type][location] -= size;
+	memory_usage_summary[type][location].fetch_sub(size, std::memory_order_relaxed);
 }
 
-void stats_manager::decrement_stats(u32 size, enum_stats_buffer_type type, _D3DPOOL location, void* buff_ptr)
+void stats_manager::decrement_stats(u64 size, enum_stats_buffer_type type, _D3DPOOL location, void* buff_ptr)
 {
 	if (buff_ptr == 0 || g_dedicated_server)
 		return;
@@ -157,7 +167,7 @@ void stats_manager::decrement_stats(u32 size, enum_stats_buffer_type type, _D3DP
 	//	The buffer may not incremented to stats or it already was removed"
 #endif //DEBUG
 
-	memory_usage_summary[type][location] -= size;
+	memory_usage_summary[type][location].fetch_sub(size, std::memory_order_relaxed);
 }
 
 stats_manager::~stats_manager()

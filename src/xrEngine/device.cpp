@@ -1516,6 +1516,11 @@ void CRenderDevice::on_idle()
 		return;
 	}
 
+	// Apply an unpaired vid_mode request at a safe main-thread frame boundary.
+	// GAMMA's settings UI follows the mode change with vid_restart, that explicit reset
+	// consumes the queued request first and only one device reset is performed.
+	ProcessPendingVideoModeReset();
+
 	PROF_FRAME("X-RAY Primary thread");
 	PROF_EVENT();
 

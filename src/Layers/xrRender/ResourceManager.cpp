@@ -485,16 +485,17 @@ void CResourceManager::ED_UpdateTextures(AStringVec* names)
 }
 #endif
 
-void CResourceManager::_GetMemoryUsage(u32& m_base, u32& c_base, u32& m_lmaps, u32& c_lmaps)
+void CResourceManager::_GetMemoryUsage(u64& m_base, u32& c_base, u64& m_lmaps, u32& c_lmaps)
 {
 	xrCriticalSectionGuard guard(textureGuard);
-	m_base = c_base = m_lmaps = c_lmaps = 0;
+	m_base = m_lmaps = 0;
+	c_base = c_lmaps = 0;
 
 	map_Texture::iterator I = m_textures.begin();
 	map_Texture::iterator E = m_textures.end();
 	for (; I != E; I++)
 	{
-		u32 m = I->second->flags.MemoryUsage;
+		u64 m = I->second->flags.MemoryUsage.load(std::memory_order_relaxed);
 		if (strstr(I->first, "lmap"))
 		{
 			c_lmaps ++;
@@ -510,7 +511,7 @@ void CResourceManager::_GetMemoryUsage(u32& m_base, u32& c_base, u32& m_lmaps, u
 
 void CResourceManager::_DumpMemoryUsage()
 {
-	xr_multimap<u32, std::pair<u32, shared_str>> mtex;
+	xr_multimap<u64, std::pair<u32, shared_str>> mtex;
 
 	// Build a stable snapshot while the registry is protected.
 	{
@@ -519,7 +520,7 @@ void CResourceManager::_DumpMemoryUsage()
 		map_Texture::iterator E = m_textures.end();
 		for (; I != E; I++)
 		{
-			u32 m = I->second->flags.MemoryUsage;
+			u64 m = I->second->flags.MemoryUsage.load(std::memory_order_relaxed);
 			shared_str n = I->second->cName;
 			mtex.insert(mk_pair(m, mk_pair(I->second->dwReference.load(std::memory_order_relaxed), n)));
 		}
@@ -527,8 +528,8 @@ void CResourceManager::_DumpMemoryUsage()
 
 	// dump
 	{
-		xr_multimap<u32, std::pair<u32, shared_str>>::iterator I = mtex.begin();
-		xr_multimap<u32, std::pair<u32, shared_str>>::iterator E = mtex.end();
+		xr_multimap<u64, std::pair<u32, shared_str>>::iterator I = mtex.begin();
+		xr_multimap<u64, std::pair<u32, shared_str>>::iterator E = mtex.end();
 		for (; I != E; I++)
 			Msg("* %4.1f : [%4d] %s", float(I->first) / 1024.f, I->second.first, I->second.second.c_str());
 	}
@@ -536,7 +537,10 @@ void CResourceManager::_DumpMemoryUsage()
 
 void CResourceManager::Evict()
 {
-	//	TODO: DX10: check if we really need this method
+	// Drop only aged optional ownership. Never unload a texture owned by a
+	// shader/UI object, and never flush or clear the immediate context here:
+	// this method is also called from buffer/RT creation during rendering.
+	TrimWarmTextures(Device.dwTimeGlobal, true, true);
 }
 
 /*

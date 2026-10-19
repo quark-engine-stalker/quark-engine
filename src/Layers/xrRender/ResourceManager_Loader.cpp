@@ -187,6 +187,33 @@ void CResourceManager::StoreNecessaryTextures()
 	}
 }
 
+void CResourceManager::PrefetchTexture(LPCSTR name)
+{
+	if (!name || !name[0] || !m_allow_speculative_texture_upload.load(std::memory_order_acquire))
+		return;
+	string_path normalized;
+	xr_strcpy(normalized, name);
+	fix_texture_name(normalized);
+	string_path resolved;
+	const CLocatorAPI::file* file = FS.exist(resolved, "$level$", normalized, ".dds");
+	if (!file) file = FS.exist(resolved, "$game_saves$", normalized, ".dds");
+	if (!file) file = FS.exist(resolved, "$game_textures$", normalized, ".dds");
+	if (!file) return; // Non-DDS/video/user resources remain demand-owned.
+	{
+		xrCriticalSectionGuard guard(textureGuard);
+		const u64 configured = static_cast<u64>(_max(0, psTextureWarmupMemoryMb)) * 1024u * 1024u;
+		const u64 limit = video_memory_policy::optional_texture_budget(configured,
+			m_video_memory_budget, m_video_memory_usage, m_warm_texture_reclaimable_bytes);
+		// Do not read/create a speculative resource that cannot even fit its
+		// source-byte price. PinTexture checks the actual resident price again
+		// after loading; concurrent workers cannot exceed the retained budget.
+		if (m_warm_texture_bytes > limit || file->size_real > limit - m_warm_texture_bytes)
+			return;
+	}
+	ref_texture texture = CreateTextureRef(normalized);
+	PinTexture(normalized);
+}
+
 void CResourceManager::PinTexture(LPCSTR name)
 {
 	if (!name || !name[0])
@@ -199,7 +226,9 @@ void CResourceManager::PinTexture(LPCSTR name)
 	// Price only existing DDS files. Video/user textures stay on their normal
 	// ownership path rather than becoming unpriced session-long cache entries.
 	string_path resolved;
-	const CLocatorAPI::file* file = FS.exist(resolved, "$game_textures$", normalized, ".dds");
+	const CLocatorAPI::file* file = FS.exist(resolved, "$level$", normalized, ".dds");
+	if (!file) file = FS.exist(resolved, "$game_saves$", normalized, ".dds");
+	if (!file) file = FS.exist(resolved, "$game_textures$", normalized, ".dds");
 	if (!file)
 		return;
 	const u64 bytes = file->size_real;

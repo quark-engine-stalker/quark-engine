@@ -97,13 +97,18 @@ namespace luabind {
             : count(0)
             , state(s)
             , ref(0)
+
             , vm_token(nullptr)
             , registry_identity(nullptr)
         {
             lua_pushvalue(s, index);
             get_weak_table(s);
             vm_token = detail::acquire_lua_vm_token(s);
+            // Weak wrapper references use a VM-lifetime state, without rooting
+            // a coroutine which may itself contain this Lua-owned wrapper.
+            state = vm_token->main_state;
             registry_identity = lua_topointer(s, -1);
+
 
             lua_rawgeti(s, -1, freelist_ref);
             ref = (int)lua_tonumber(s, -1);
@@ -144,6 +149,7 @@ namespace luabind {
                     lua_rawseti(state, -2, freelist_ref);
                 }
                 lua_pop(state, 1);
+
             }
 
             detail::release_lua_vm_token(vm_token);
@@ -152,6 +158,7 @@ namespace luabind {
         int count;
         lua_State* state;
         int ref;
+
         detail::lua_vm_token* vm_token;
         const void* registry_identity;
     };

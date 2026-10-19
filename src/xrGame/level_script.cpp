@@ -639,8 +639,8 @@ void add_call(const ::luabind::object& lua_object, LPCSTR condition, LPCSTR acti
 	//		CPHScriptObjectAction		*a=xr_new<CPHScriptObjectAction>(lua_object,action);
 	::luabind::functor<bool> _condition = object_cast<::luabind::functor<bool>>(lua_object[condition]);
 	::luabind::functor<void> _action = object_cast<::luabind::functor<void>>(lua_object[action]);
-	CPHScriptObjectConditionN* c = xr_new<CPHScriptObjectConditionN>(lua_object, _condition);
-	CPHScriptObjectActionN* a = xr_new<CPHScriptObjectActionN>(lua_object, _action);
+	CPHScriptObjectConditionN* c = xr_new<CPHScriptObjectConditionN>(lua_object, _condition, condition);
+	CPHScriptObjectActionN* a = xr_new<CPHScriptObjectActionN>(lua_object, _action, action);
 	Level().ph_commander_scripts().add_call_unique(c, c, a, a);
 	//	}
 	//	catch(...)
@@ -2082,6 +2082,8 @@ void prefetch_model(LPCSTR name)
 bool ray_pick(const Fvector& start, const Fvector& dir, float range, collide::rq_target tgt, script_rq_result& script_R,
               CScriptGameObject* ignore_object)
 {
+	// ray_pick reuses a Lua-visible out-result; clear data from the previous query on a miss.
+	script_R.reset();
 	collide::rq_result R;
 	CObject* ignore = NULL;
 	if (ignore_object)
@@ -2658,7 +2660,7 @@ void CLevel::script_register(lua_State* L)
 		.def("get_element", &CRayPick::get_element)
 		.def("get_normal", &CRayPick::get_normal),
 		class_<script_rq_result>("rq_result")
-		.def_readonly("object", &script_rq_result::O)
+		.property("object", &script_rq_result::get_object)
 		.def_readonly("range", &script_rq_result::range)
 		.def_readonly("element", &script_rq_result::element)
 		.def_readonly("material_name", &script_rq_result::pMaterialName)

@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <b>English</b> · <a href="README.ru.md">Русский</a>
+  <b>English</b> & <a href="README.ru.md">Русский</a>
 </p>
 
 <p align="center">
@@ -18,14 +18,14 @@
 </p>
 
 <p align="center">
-  <b>The engine's goal is to optimize the use of modern hardware to improve performance and address numerous technical issues, while maintaining compatibility with mods and modpacks.</b>
+  <b>The project's goal is to optimize the use of modern hardware to improve performance and resolve numerous technical issues while maintaining compatibility with mods and modpacks.</b>
 </p>
 
 <p align="center">
-  <a href="https://github.com/quark-engine-stalker/quark-engine/releases">Download / Releases</a> ·
-  <a href="#engine-installation-and-requirements">Installation</a> ·
-  <a href="CHANGELOG.md">Changelog</a> ·
-  <a href="#documentation">Documentation</a> ·
+  <a href="https://github.com/quark-engine-stalker/quark-engine/releases">Download / Releases</a> &
+  <a href="#engine-installation-and-requirements">Installation</a> &
+  <a href="CHANGELOG.md">Changelog</a> &
+  <a href="#documentation">Documentation</a> &
   <a href="https://discord.com/invite/X7GRYsNNEc">Discord</a>
 </p>
 
@@ -36,21 +36,21 @@
 The engine is tested with **STALKER: Anomaly 1.5.3** and **STALKER: GAMMA 0.9.5**.  
 Update history: [CHANGELOG.md](CHANGELOG.md).
 
-## Engine Installation and Requirements
+## Installation and Requirements
 
-**Technical requirements:** your CPU must support **AVX2**. Also install or update the [Microsoft Visual C++ Redistributable x64](https://aka.ms/vs/17/release/vc_redist.x64.exe).
+Your CPU must support **AVX2**. You must also install or update the [Microsoft Visual C++ Redistributable x64](https://aka.ms/vs/17/release/vc_redist.x64.exe).
 
-1. Make sure **STALKER: Anomaly 1.5.3** and **STALKER: GAMMA 0.9.5** are installed correctly. Refer to their official installation instructions.
-2. Back up the engine files that will be replaced in **`Anomaly\bin`**.
-3. Download **`AnomalyDX11AVX.rar`** from the **Assets** section of the chosen [release](https://github.com/quark-engine-stalker/quark-engine/releases).
-4. Extract the archive, then copy `AnomalyDX11AVX.exe` and its matching `AnomalyDX11AVX.pdb` into **`Anomaly\bin`** and confirm file replacement when prompted.
-5. Launch the game through **MO2 (Mod Organizer)**. Installation and launch examples are shown below.
-6. Compatibility with existing save files is not guaranteed. Starting a new game is recommended.
-7. If you encounter errors or crashes, send us the logs from **`AppData\\Roaming\\QUARK ENGINE\\ERROR\\`** via Discord. These files help identify the cause of the issue and further improve the engine.
+1. Make sure STALKER: Anomaly 1.5.3 and STALKER: GAMMA 0.9.5 are installed correctly. Refer to their respective authors' instructions for installation guidance.
+2. Download the latest `AnomalyDX11AVX.rar` from our GitHub repository. Extract the `.exe` and `.pdb` files into `Anomaly\bin`, replacing the existing files when prompted. **Make a backup first, just in case.**
+3. Launch the game through MO2 (Mod Organizer). Select and launch **Anomaly Launcher**, enable the **Support for AVX CPU** and **Delete Shader Cache** options, then start the game. This is required to recompile the shaders.
+4. If the game crashes while loading a save, copy the `gamedata` folder from the latest GitHub archive into the Anomaly root directory, replacing existing files. Then start a new game. **Make a backup first, just in case.**
+5. It is recommended to keep the graphics settings at their default values.
+6. If you encounter any errors, send us the logs from `AppData\Roaming\QUARK ENGINE\ERROR` via Discord. These files help us identify the cause of crashes and further improve the engine.
 
 <p align="center">
-  <img src="docs/assets/install-replace.png" alt="Installation: replacing AnomalyDX11AVX.exe in the Anomaly\\bin folder" width="655">
-  <img src="docs/assets/install-mo2.png" alt="Launch: through the MO2 (Mod Organizer) launcher" width="655">
+  <img src="docs/assets/install-replace.png" alt="Replacing files" width="655">
+  <img src="docs/assets/Launcher.png" alt="Launching through the launcher" width="655">
+  <img src="docs/assets/gamedata.png" alt="Replacing gamedata" width="655">
 </p>
 
 ## Source Code and Building

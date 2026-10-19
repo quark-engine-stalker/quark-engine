@@ -115,6 +115,7 @@
     <ClInclude Include="dedicated_server_only.h" />
     <ClInclude Include="defines.h" />
     <ClInclude Include="device.h" />
+	<ClInclude Include="DeferredDeviceReset.h" />
     <ClInclude Include="AIAsyncPrepare.h" />
     <ClInclude Include="GIFResource.h" />
     <ClInclude Include="MonitorList.h" />

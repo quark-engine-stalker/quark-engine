@@ -16,6 +16,8 @@ CRT::CRT()
 	dwWidth = 0;
 	dwHeight = 0;
 	fmt = D3DFMT_UNKNOWN;
+	m_sample_count = 1;
+	m_use_uav = false;
 }
 
 CRT::~CRT()
@@ -38,6 +40,8 @@ void CRT::create(LPCSTR Name, u32 w, u32 h, D3DFORMAT f, u32 SampleCount, bool u
 	dwWidth = w;
 	dwHeight = h;
 	fmt = f;
+	m_sample_count = SampleCount;
+	m_use_uav = useUAV;
 
 	// Get caps
 	//D3DCAPS9	caps;
@@ -175,7 +179,7 @@ void CRT::create(LPCSTR Name, u32 w, u32 h, D3DFORMAT f, u32 SampleCount, bool u
 		CHK_DX(HW.pDevice->CreateUnorderedAccessView( pSurface, &UAVDesc, &pUAView ));
 	}
 
-	pTexture = DEV->_CreateTexture(Name);
+	pTexture = DEV->CreateTextureRef(Name);
 	pTexture->surface_set(pSurface);
 }
 
@@ -202,7 +206,7 @@ void CRT::reset_begin()
 
 void CRT::reset_end()
 {
-	create(*cName, dwWidth, dwHeight, fmt);
+	create(*cName, dwWidth, dwHeight, fmt, m_sample_count, m_use_uav);
 }
 
 void resptrcode_crt::create(LPCSTR Name, u32 w, u32 h, D3DFORMAT f, u32 SampleCount, bool useUAV)
@@ -274,7 +278,7 @@ void CRTC::create	(LPCSTR Name, u32 size,	D3DFORMAT f)
 	Msg			("* created RTc(%s), 6(%d)",Name,size);
 	for (u32 face=0; face<6; face++)
 		R_CHK	(pSurface->GetCubeMapSurface	((D3DCUBEMAP_FACES)face, 0, pRT+face));
-	pTexture	= DEV->_CreateTexture	(Name);
+	pTexture	= DEV->CreateTextureRef	(Name);
 	pTexture->surface_set						(pSurface);
 }
 

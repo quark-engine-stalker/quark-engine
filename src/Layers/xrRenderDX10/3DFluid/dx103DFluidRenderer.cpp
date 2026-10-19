@@ -53,7 +53,10 @@ LPCSTR dx103DFluidRenderer::m_pResourceRTNames[ RRT_NumRT ] =
 };
 
 dx103DFluidRenderer::dx103DFluidRenderer():
-	m_bInited(false)
+	m_bInited(false),
+	m_iRenderTextureWidth(0), m_iRenderTextureHeight(0),
+	m_pGridBoxVertexBuffer(nullptr), m_pGridBoxIndexBuffer(nullptr),
+	m_pQuadVertexBuffer(nullptr)
 {
 	strZNear = "ZNear";
 	strZFar = "ZFar";
@@ -126,9 +129,14 @@ void dx103DFluidRenderer::Destroy()
 	//createGridBox();
 	m_GeomGridBox = nullptr;
 	_RELEASE(m_pGridBoxVertexBuffer);
+	HW.stats_manager.decrement_stats_ib(m_pGridBoxIndexBuffer);
 	_RELEASE(m_pGridBoxIndexBuffer);
 
 	DestroyShaders();
+	for (int i = 0; i < RRT_NumRT; ++i) RT[i] = nullptr;
+	m_lstRenderables.clear_and_free();
+	m_iRenderTextureWidth = m_iRenderTextureHeight = 0;
+	m_bInited = false;
 }
 
 void dx103DFluidRenderer::InitShaders()
@@ -192,7 +200,7 @@ void dx103DFluidRenderer::CreateGridBox()
 
 
 	CHK_DX(dx10BufferUtils::CreateIndexBuffer (&m_pGridBoxIndexBuffer, indices, sizeof(indices)));
-	HW.stats_manager.increment_stats(sizeof(indices), enum_stats_buffer_type_index, D3DPOOL_MANAGED);
+	HW.stats_manager.increment_stats_ib(m_pGridBoxIndexBuffer);
 
 	static D3DVERTEXELEMENT9 layout[] =
 	{
@@ -257,7 +265,7 @@ void dx103DFluidRenderer::CreateJitterTexture()
 
 	CHK_DX(HW.pDevice->CreateTexture2D(&desc, &dataDesc, &NoiseTexture));
 
-	m_JitterTexture = dxRenderDeviceRender::Instance().Resources->_CreateTexture("$user$NVjitterTex");
+	m_JitterTexture = dxRenderDeviceRender::Instance().Resources->CreateTextureRef("$user$NVjitterTex");
 	m_JitterTexture->surface_set(NoiseTexture);
 
 
@@ -353,7 +361,7 @@ void dx103DFluidRenderer::CreateHHGGTexture()
 
 	CHK_DX(HW.pDevice->CreateTexture1D(&desc, &dataDesc, &HHGGTexture));
 
-	m_HHGGTexture = dxRenderDeviceRender::Instance().Resources->_CreateTexture("$user$NVHHGGTex");
+	m_HHGGTexture = dxRenderDeviceRender::Instance().Resources->CreateTextureRef("$user$NVHHGGTex");
 	m_HHGGTexture->surface_set(HHGGTexture);
 
 	_RELEASE(HHGGTexture);

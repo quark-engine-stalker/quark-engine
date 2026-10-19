@@ -71,8 +71,25 @@ CScriptGameObject::CScriptGameObject(CGameObject* game_object) :
 	R_ASSERT2(m_game_object, "Null actual object passed!");
 }
 
+std::weak_ptr<CScriptGameObject::lifetime_token> CScriptGameObject::lifetime() const
+{
+	if (!m_lifetime_token)
+	{
+		m_lifetime_token = std::make_shared<lifetime_token>();
+		m_lifetime_token->object = const_cast<CScriptGameObject*>(this);
+	}
+	return m_lifetime_token;
+}
+
 CScriptGameObject::~CScriptGameObject()
 {
+	// Invalidate every weak handle (script_rq_result etc.) before the memory is freed.
+	if (m_lifetime_token)
+	{
+		m_lifetime_token->object = nullptr;
+		m_lifetime_token.reset();
+	}
+
     // Lua closures may retain this non-owning userdata after net_Destroy().
     // Invalidate its native pointer before freeing the wrapper, so an old
     // handle can neither dereference freed memory nor alias a recycled wrapper.

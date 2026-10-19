@@ -139,10 +139,32 @@ bool CPHScriptObjectCondition::obsolete() const
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-CPHScriptObjectActionN::CPHScriptObjectActionN(const ::luabind::object& object, const ::luabind::functor<void>& functor)
+CPHScriptObjectActionN::CPHScriptObjectActionN(const ::luabind::object& object,
+    const ::luabind::functor<void>& functor, LPCSTR method) : m_method_name(method)
 {
 	b_obsolete = false;
 	m_callback.set(functor, object);
+}
+
+bool CPHScriptObjectAction::compare(const CPHScriptObjectActionN* v) const
+{
+	return v->compare_named(*m_lua_object, *m_method_name);
+}
+
+bool CPHScriptObjectActionN::compare_named(const ::luabind::object& object, LPCSTR method) const
+{
+	if (!(m_callback == object))
+		return false;
+	if (m_method_name.size() && !xr_strcmp(*m_method_name, method))
+		return true;
+
+	// Also support the object + functor registration overload.
+	::luabind::object function = object[method];
+	if (!function.is_valid() || function.type() != LUA_TFUNCTION)
+		return false;
+	CScriptCallbackEx<void> callback;
+	callback.set(::luabind::object_cast<::luabind::functor<void>>(function), object);
+	return m_callback == callback;
 }
 
 CPHScriptObjectActionN::~CPHScriptObjectActionN()
@@ -162,9 +184,30 @@ bool CPHScriptObjectActionN::obsolete() const
 }
 
 CPHScriptObjectConditionN::CPHScriptObjectConditionN(const ::luabind::object& object,
-                                                     const ::luabind::functor<bool>& functor)
+    const ::luabind::functor<bool>& functor, LPCSTR method) : m_method_name(method)
 {
 	m_callback.set(functor, object);
+}
+
+bool CPHScriptObjectCondition::compare(const CPHScriptObjectConditionN* v) const
+{
+	return v->compare_named(*m_lua_object, *m_method_name);
+}
+
+bool CPHScriptObjectConditionN::compare_named(const ::luabind::object& object, LPCSTR method) const
+{
+	if (!(m_callback == object))
+		return false;
+	if (m_method_name.size() && !xr_strcmp(*m_method_name, method))
+		return true;
+
+	// Also support the object + functor registration overload.
+	::luabind::object function = object[method];
+	if (!function.is_valid() || function.type() != LUA_TFUNCTION)
+		return false;
+	CScriptCallbackEx<bool> callback;
+	callback.set(::luabind::object_cast<::luabind::functor<bool>>(function), object);
+	return m_callback == callback;
 }
 
 CPHScriptObjectConditionN::~CPHScriptObjectConditionN()

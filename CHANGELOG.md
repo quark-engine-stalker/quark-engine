@@ -2,6 +2,30 @@
 
 **English** · [Русский](CHANGELOG.ru.md)
 
+# VER 0.0.6 [BUG FIXES]
+
+## FIXES
+
+- Fixed ray query lock release when exceptions occur.
+- Fixed COM reference leaks in HDAO that kept render targets and the depth buffer alive after their owners were released.
+- Fixed a sound object leak when resetting and destroying the trader animation manager.
+- Fixed an artifact status string leak in the item information window. Added safe cleanup when XML initialization is incomplete.
+- Fixed preloaded textures being retained without an owner.
+- Fixed GPU resource leaks during shutdown in the legacy DXGI mode.
+- Fixed MSAA and UAV render target restoration after reset.
+- Fixed resource release before swap chain recreation.
+- Improved repeated cleanup of the 3D Fluid renderer.
+- Fixed memory counter overflows and render target size accounting.
+- Fixed memory leaks caused by re-registering script callbacks.
+- Fixed callback removal by method name and across Lua coroutines.
+- Fixed C++ object cleanup when a Lua finalizer fails.
+- Fixed the lifetime management of strings and script attachment windows.
+- Fixed callback removal while callbacks are being executed.
+- Fixed an engine crash when saving during a level transition.
+- Fixed a crash during game shutdown in the `CRender` renderer destructor.
+- Fixed several crashes occurring during save loading.
+- Various other minor fixes.
+
 VER 0.0.5 [AKA MAJOR UPDATE]
 
 OPTIMIZATIONS:

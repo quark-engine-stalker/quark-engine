@@ -60,6 +60,7 @@ script_attachment::script_attachment(LPCSTR name, LPCSTR model_name): ISpatial(g
 	m_parent_object = nullptr;
 	m_parent_level = false;
 	m_script_ui = nullptr;
+	m_script_ui_owner = nullptr;
 	m_script_ui_func = 0;
 	m_script_ui_mat = Fidentity;
 	m_script_ui_offset[0].set(0, 0, 0);
@@ -216,7 +217,7 @@ void script_attachment::Update()
 	if (m_last_upd_frame == Device.dwFrame) return;
 	m_last_upd_frame = Device.dwFrame;
 
-	if (m_script_ui)
+	if (m_script_ui && m_script_ui_owner && m_script_ui_owner->is_valid())
 		m_script_ui->Update();
 
 	if (m_bStopAtEndAnimIsRunning && Device.dwTimeGlobal >= m_anim_end)
@@ -302,7 +303,7 @@ void script_attachment::Update()
 
 void script_attachment::RenderUI()
 {
-	if (m_script_ui)
+	if (m_script_ui && m_script_ui_owner && m_script_ui_owner->is_valid())
 	{
 		IUIRender::ePointType bk;
 
@@ -859,17 +860,26 @@ void script_attachment::SetUserdata(::luabind::object obj)
 
 void script_attachment::SetScriptUI(LPCSTR ui_func)
 {
-	if (m_script_ui_func != nullptr && 0 == xr_strcmp(m_script_ui_func, ui_func)) return;
+	if (!ui_func || !ui_func[0])
+		return;
+	const shared_str requested_function = ui_func;
+	if (m_script_ui_owner && m_script_ui_owner->is_valid() &&
+		m_script_ui_func.size() && !xr_strcmp(*m_script_ui_func, *requested_function))
+		return;
 
-	::luabind::functor<CUIDialogWndEx*> funct;
+	::luabind::functor<::luabind::object> funct;
 
 	if (ai().script_engine().functor(ui_func, funct))
 	{
-		CUIDialogWndEx* ret = funct();
+		::luabind::object result = funct();
+		CUIDialogWndEx* ret = ::luabind::object_cast<CUIDialogWndEx*>(result);
 		CUIWindow* pScriptWnd = ret ? smart_cast<CUIWindow*>(ret) : (0);
 		if (pScriptWnd)
 		{
-			m_script_ui_func = ui_func;
+			::luabind::object* owner = xr_new<::luabind::object>(result);
+			xr_delete(m_script_ui_owner);
+			m_script_ui_owner = owner;
+			m_script_ui_func = requested_function;
 			m_script_ui = pScriptWnd;
 		}
 		else

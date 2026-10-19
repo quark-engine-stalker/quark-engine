@@ -90,6 +90,10 @@ extern ENGINE_API u32 psCurrentVidMode[];
 
 void CRenderDevice::Reset(bool precache)
 {
+	// A direct or explicit reset also applies any mode change already queued by
+	// vid_mode. This lets GAMMA's following vid_restart coalesce both requests.
+	m_pendingVideoModeReset.Clear();
+
 	// Begin() can request a reset after the frame worker has been submitted.
 	// Join it before replacing resources or the occlusion-query pool it can cancel.
 	WaitFrameParallelWork();
@@ -150,6 +154,17 @@ void CRenderDevice::Reset(bool precache)
 
 	m_imgui.OnDeviceResetEnd();
 	use_reshade = init_reshade();
+}
+
+void CRenderDevice::RequestVideoModeReset()
+{
+	m_pendingVideoModeReset.Request();
+}
+
+void CRenderDevice::ProcessPendingVideoModeReset()
+{
+	if (b_is_Ready && m_pendingVideoModeReset.Take())
+		Reset();
 }
 
 bool CRenderDevice::ChangeOutputMonitor(HMONITOR hTargetMon)

@@ -114,36 +114,49 @@ BOOL CObjectSpace::_RayTest(const Fvector& start, const Fvector& dir, float rang
 //--------------------------------------------------------------------------------
 // RayPick
 //--------------------------------------------------------------------------------
+namespace
+{
+// Preserve the original single-owner scratch lifetime, including exceptional
+// exits from collision forms. Clear raw spatial identities before unlocking.
+struct RayPickScope
+{
+	xrCriticalSectionGuard guard;
+	xr_vector<ISpatial*>& spatial;
+
+	RayPickScope(xrCriticalSection& lock, xr_vector<ISpatial*>& scratch)
+		: guard(lock), spatial(scratch)
+	{
+	}
+
+	~RayPickScope() { spatial.clear(); }
+};
+}
+
 BOOL CObjectSpace::RayPick(const Fvector& start, const Fvector& dir, float range, rq_target tgt, rq_result& R,
                            CObject* ignore_object)
 {
-	xr_vector<CObject*> ignore_objects;
-	if (ignore_object && (tgt & rqtDyn))
-		ignore_objects.push_back(ignore_object);
-	return RayPick(start, dir, range, tgt, R, ignore_objects);
+	RayPickScope query(Lock, r_spatial);
+	return _RayPick(start, dir, range, tgt, R, ignore_object);
 }
 
 BOOL CObjectSpace::RayPick(const Fvector& start, const Fvector& dir, float range, rq_target tgt, rq_result& R,
 	xr_vector<CObject*>& ignore_objects)
 {
-	Lock.Enter();
-	BOOL _res = _RayPick(start, dir, range, tgt, R, ignore_objects);
-	r_spatial.clear();
-	Lock.Leave();
-	return _res;
+	RayPickScope query(Lock, r_spatial);
+	return _RayPick(start, dir, range, tgt, R, ignore_objects);
 }
 
 BOOL CObjectSpace::_RayPick(const Fvector& start, const Fvector& dir, float range, rq_target tgt, rq_result& R,
                             CObject* ignore_object)
 {
 	xr_vector<CObject*> ignore_objects;
-	if (ignore_object && (tgt & rqtDyn))
-		ignore_objects.push_back(ignore_object);
-	return _RayPick(start, dir, range, tgt, R, ignore_objects);
+	// The common one-object case needs no temporary heap allocation. Dynamic
+	// iteration uses the same pointer comparison as the vector overload.
+	return _RayPick(start, dir, range, tgt, R, ignore_objects, ignore_object);
 }
 
 BOOL CObjectSpace::_RayPick(const Fvector& start, const Fvector& dir, float range, rq_target tgt, rq_result& R,
-	xr_vector<CObject*>& ignore_objects)
+	xr_vector<CObject*>& ignore_objects, CObject* ignore_object)
 {
 	r_temp.r_clear();
 	R.O = 0;
@@ -170,6 +183,7 @@ BOOL CObjectSpace::_RayPick(const Fvector& start, const Fvector& dir, float rang
 			ISpatial* spatial = r_spatial[o_it];
 			CObject* collidable = spatial->dcast_CObject();
 			if (0 == collidable) continue;
+			if (collidable == ignore_object) continue;
 
 			// demonized: support for multiple objects
 			bool ignore = false;

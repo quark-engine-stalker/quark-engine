@@ -25,9 +25,9 @@ bool CPHCall::obsolete()
 	return !m_action || m_action->obsolete() || !m_condition || m_condition->obsolete();
 }
 
-void CPHCall::check()
+void CPHCall::check(const bool* cancelled)
 {
-	if (m_condition && m_condition->is_true() && m_action) m_action->run();
+	if (m_condition && m_condition->is_true() && (!cancelled || !*cancelled) && m_action) m_action->run();
 }
 
 bool CPHCall::equal(CPHReqComparerV* cmp_condition, CPHReqComparerV* cmp_action)
@@ -60,9 +60,15 @@ CPHCommander::~CPHCommander()
 
 void CPHCommander::clear()
 {
-	while (m_calls.size())
+	if (m_updating)
 	{
-		remove_call(m_calls.end() - 1);
+		for (CPHCall*& call : m_calls)
+			release_call(call);
+	}
+	else
+	{
+		while (!m_calls.empty())
+			remove_call(m_calls.end() - 1);
 	}
 	while (m_calls_as_add_buffer.size())
 	{
@@ -87,23 +93,29 @@ void CPHCommander::update()
 			continue;
 
 		bool remove = false;
+		m_current_call = call;
+		m_current_call_removed = false;
 		try
 		{
-			call->check();
+			call->check(&m_current_call_removed);
 
 			// A script action may remove itself or another call. Such removals are
 			// tombstoned while this pass is active, so never dereference a call that
 			// disappeared during check().
-			if (i >= m_calls.size() || m_calls[i] != call)
-				continue;
-
-			remove = call->obsolete();
+			if (!m_current_call_removed)
+				remove = call->obsolete();
 		}
 		catch (...)
 		{
 			remove = true;
 		}
 
+		m_current_call = nullptr;
+		if (m_current_call_removed)
+		{
+			delete_call(call);
+			continue;
+		}
 		if (!remove || i >= m_calls.size() || m_calls[i] != call)
 			continue;
 
@@ -144,6 +156,19 @@ void CPHCommander::add_call(CPHCondition* condition, CPHAction* action)
 	add_call(condition, action, m_calls);
 }
 
+void CPHCommander::release_call(CPHCall*& call)
+{
+	if (call && call == m_current_call)
+	{
+		// Revoke the queue entry immediately, but keep the executing condition
+		// and action alive until check() returns. No callback runs after cancel.
+		m_current_call_removed = true;
+		call = nullptr;
+		return;
+	}
+	delete_call(call);
+}
+
 void CPHCommander::remove_call(PHCALL_I i, PHCALL_STORAGE& cs)
 {
 #ifdef DEBUG
@@ -158,7 +183,7 @@ void CPHCommander::remove_call(PHCALL_I i, PHCALL_STORAGE& cs)
 		//Msg(" const force removed: force: %f,  remove step: %d  world step: %d ,dir(%f,%f,%f) ", m, esc->step(), (u32)physics_world()->StepsNum(), f.x, f.y , f.z ); 
 	}
 #endif
-	delete_call(*i);
+	release_call(*i);
 	if (m_updating && &cs == &m_calls)
 		return;
 	cs.erase(i);
@@ -230,7 +255,7 @@ void CPHCommander::remove_call(CPHReqComparerV* cmp_condition, CPHReqComparerV* 
 		for (CPHCall*& call : cs)
 		{
 			if (call && call->equal(cmp_condition, cmp_action))
-				delete_call(call);
+				release_call(call);
 		}
 		return;
 	}
@@ -261,6 +286,8 @@ bool CPHCommander::add_call_unique(CPHCondition* condition, CPHReqComparerV* cmp
 		add_call(condition, action, cs);
 		return true;
 	}
+	xr_delete(action);
+	xr_delete(condition);
 	return false;
 }
 
@@ -300,7 +327,7 @@ void CPHCommander::remove_calls(CPHReqComparerV* cmp_object, PHCALL_STORAGE& cs)
 		for (CPHCall*& call : cs)
 		{
 			if (call && call->is_any(cmp_object))
-				delete_call(call);
+				release_call(call);
 		}
 		return;
 	}

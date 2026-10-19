@@ -553,7 +553,7 @@ public:
 			psCurrentVidMode[0] = _w;
 			psCurrentVidMode[1] = _h;
 			if (changed && Device.b_is_Ready)
-				Device.Reset();
+				Device.RequestVideoModeReset();
 		}
 		else
 		{

@@ -382,8 +382,8 @@ namespace
 {
 struct full_memory_stats_snapshot
 {
-	u32 d3d_base = 0;
-	u32 d3d_lmaps = 0;
+	u64 d3d_base = 0;
+	u64 d3d_lmaps = 0;
 	u32 lua_memory_kb = 0;
 	bool d3d_valid = false;
 	bool lua_valid = false;
@@ -435,7 +435,7 @@ void log_full_memory_stats(const full_memory_stats_snapshot& snapshot, bool comp
 	log_vminfo();
 
 	if (snapshot.d3d_valid)
-		Msg("* [ D3D ]: textures[%d K]", (snapshot.d3d_base + snapshot.d3d_lmaps) / 1024);
+		Msg("* [ D3D ]: textures[%llu K]", (snapshot.d3d_base + snapshot.d3d_lmaps) / 1024);
 	else
 		Msg("* [ D3D ]: renderer memory snapshot unavailable");
 

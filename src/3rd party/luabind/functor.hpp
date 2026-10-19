@@ -361,7 +361,7 @@ namespace luabind
 		{
 			lua_pushstring(L, name);
 			lua_gettable(L, LUA_GLOBALSINDEX);
-			ref_.set(L_);
+			ref_.set(L_, true);
 		}
 
 		functor()
@@ -392,9 +392,9 @@ namespace luabind
 
 		bool operator==(const functor<Ret>& rhs) const
 		{
-			if (!ref_.is_valid() || !rhs.ref_.is_valid()) return false;
+			if (!ref_.same_vm(rhs.ref_)) return false;
 			pushvalue();
-			rhs.pushvalue();
+			rhs.ref_.get(L_);
 			const bool result = lua_equal(L_, -1, -2) != 0;
 			lua_pop(L_, 2);
 			return result;
@@ -402,12 +402,7 @@ namespace luabind
 
 		bool operator!=(const functor<Ret>& rhs) const
 		{
-			if (!ref_.is_valid() || !rhs.ref_.is_valid()) return true;
-			pushvalue();
-			rhs.pushvalue();
-			const bool result = lua_equal(L_, -1, -2) == 0;
-			lua_pop(L_, 2);
-			return result;
+			return !(*this == rhs);
 		}
 
 		bool is_valid() const { return ref_.is_valid(); }
@@ -437,6 +432,7 @@ namespace luabind
 			: L_(L)
 			, ref_(ref)
 		{
+			ref_.retain_state(L);
 		}
 
 	private:

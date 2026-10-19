@@ -6,7 +6,20 @@
 
 struct script_rq_result
 {
-	CScriptGameObject* O;
+	// NOTE: this struct is copied by value into Lua and can be kept there for an arbitrary time,
+	// while CScriptGameObject is freed in CGameObject::net_Destroy(). A raw CScriptGameObject* here
+	// became dangling and crashed luabind (pointer_converter::apply) on `rq_result.object`.
+	// Keep a weak handle instead and resolve it on access via get_object().
+	std::weak_ptr<CScriptGameObject::lifetime_token> O_lifetime;
+	bool has_object; // an object (not static geometry) was hit when the query was made
+	bool has_static_geometry; // a static hit is distinct from triangle index 0 / no hit
+
+	CScriptGameObject* get_object() const
+	{
+		const std::shared_ptr<CScriptGameObject::lifetime_token> token = O_lifetime.lock();
+		return token ? token->object : nullptr;
+	}
+
 	float range;
 	int element;
 
@@ -32,13 +45,15 @@ struct script_rq_result
 
 	script_rq_result()
 	{
-		O = nullptr;
-		range = 0;
-		element = 0;
+		// Initialise every field: previously only O/range/element were set, so material_name
+		// (a const char*) and the material_* values were garbage for results without a hit.
+		reset();
 	};
 
 	void reset() {
-		O = nullptr;
+		O_lifetime.reset();
+		has_object = false;
+		has_static_geometry = false;
 		range = 0;
 		element = 0;
 
@@ -62,11 +77,23 @@ struct script_rq_result
 
 	void set(collide::rq_result& R)
 	{
+		// The same rq_result may be reused as an out-parameter (ray_pick): never keep the
+		// object of a previous query when the new hit is static geometry.
+		O_lifetime.reset();
+		has_object = false;
+		has_static_geometry = (R.O == nullptr);
 		if (R.O)
 		{
 			CGameObject* go = smart_cast<CGameObject *>(R.O);
 			if (go)
-				O = go->lua_game_object();
+			{
+				CScriptGameObject* lua_object = go->lua_game_object();
+				if (lua_object)
+				{
+					O_lifetime = lua_object->lifetime();
+					has_object = true;
+				}
+			}
 		}
 		range = R.range;
 		element = R.element;
@@ -127,7 +154,7 @@ struct CRayPick
 	Fvector get_normal();
 
 	IC script_rq_result get_result() { return result; };
-	IC CScriptGameObject* get_object() { return result.O; };
+	IC CScriptGameObject* get_object() { return result.get_object(); };
 	IC float get_distance() { return result.range; };
 	IC int get_element() { return result.element; };
 };

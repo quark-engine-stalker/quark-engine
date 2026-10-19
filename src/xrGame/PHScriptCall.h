@@ -59,9 +59,10 @@ public:
 	virtual ~CPHScriptObjectCondition();
 	virtual bool is_true();
 	virtual bool obsolete() const;
-	virtual bool compare(const ::luabind::object* v) const { return *m_lua_object == *v; }
+	virtual bool compare(const ::luabind::object* v) const { return compare_safe(*m_lua_object, *v); }
 	virtual bool compare(const CPHReqComparerV* v) const { return v->compare(this); }
 	virtual bool compare(const CPHScriptObjectCondition* v) const;
+	virtual bool compare(const CPHScriptObjectConditionN* v) const;
 };
 
 class CPHScriptObjectAction :
@@ -77,9 +78,10 @@ public:
 	virtual ~CPHScriptObjectAction();
 	virtual void run();
 	virtual bool obsolete() const;
-	virtual bool compare(const ::luabind::object* v) const { return *m_lua_object == *v; }
+	virtual bool compare(const ::luabind::object* v) const { return compare_safe(*m_lua_object, *v); }
 	virtual bool compare(const CPHReqComparerV* v) const { return v->compare(this); }
 	virtual bool compare(const CPHScriptObjectAction* v) const;
+	virtual bool compare(const CPHScriptObjectActionN* v) const;
 };
 
 //////////////////////////////////////////////////////////////////////////////////////////
@@ -89,8 +91,10 @@ class CPHScriptObjectConditionN :
 	public CPHReqComparerV
 {
 	CScriptCallbackEx<bool> m_callback;
+	shared_str m_method_name;
 public:
-	CPHScriptObjectConditionN(const ::luabind::object& object, const ::luabind::functor<bool>& functor);
+	CPHScriptObjectConditionN(const ::luabind::object& object, const ::luabind::functor<bool>& functor, LPCSTR method = nullptr);
+	bool compare_named(const ::luabind::object& object, LPCSTR method) const;
 	virtual ~CPHScriptObjectConditionN();
 	virtual bool is_true();
 	virtual bool obsolete() const;
@@ -105,8 +109,10 @@ class CPHScriptObjectActionN :
 {
 	bool b_obsolete;
 	CScriptCallbackEx<void> m_callback;
+	shared_str m_method_name;
 public:
-	CPHScriptObjectActionN(const ::luabind::object& object, const ::luabind::functor<void>& functor);
+	CPHScriptObjectActionN(const ::luabind::object& object, const ::luabind::functor<void>& functor, LPCSTR method = nullptr);
+	bool compare_named(const ::luabind::object& object, LPCSTR method) const;
 	virtual ~CPHScriptObjectActionN();
 	virtual void run();
 	virtual bool obsolete() const;

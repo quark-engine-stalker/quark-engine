@@ -13,6 +13,7 @@
 #endif
 
 struct lua_State;
+namespace luabind { namespace detail { struct lua_vm_token; } }
 
 #ifdef DEBUG
 	class CScriptThread : public CScriptStackTracker
@@ -23,6 +24,7 @@ class CScriptThread
 private:
 	shared_str m_script_name;
 	int m_thread_reference;
+	::luabind::detail::lua_vm_token* m_thread_vm_token;
 	bool m_active;
 	lua_State* m_virtual_machine;
 

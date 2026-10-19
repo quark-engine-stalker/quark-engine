@@ -3,8 +3,7 @@
 #pragma once
 
 //	Reduces amount of work if the texture was not changed.
-//	Stores used textures in a separate map to avoid removal of
-//	of color map textures from memory.
+// Retains a bounded history of LUTs; both active maps are always protected.
 
 class ColorMapManager
 {
@@ -16,6 +15,7 @@ public:
 private:
 
 	void UpdateTexture(const shared_str& strTexName, int iTex);
+	void TrimCache();
 
 private:
 
@@ -27,7 +27,12 @@ private:
 		}
 	};
 
-	DEFINE_MAP_PRED(shared_str, ref_texture, map_Tex, map_TexIt, str_pred);
+	struct cached_texture
+	{
+		ref_texture texture;
+		u64 last_used;
+	};
+	DEFINE_MAP_PRED(shared_str, cached_texture, map_Tex, map_TexIt, str_pred);
 
 private:
 
@@ -35,6 +40,7 @@ private:
 	shared_str m_strCMap[2];
 
 	map_Tex m_TexCache;
+	u64 m_CacheClock = 0;
 };
 
 #endif	//	ColorMapManager_included

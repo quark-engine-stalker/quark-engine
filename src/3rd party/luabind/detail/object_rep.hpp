@@ -66,6 +66,7 @@ namespace luabind { namespace detail
 
 		void add_dependency(lua_State* L, int self_index, int dependency_index);
 
+		static void register_finalizer(lua_State* L);
 		static int garbage_collector(lua_State* L);
 
 	private:

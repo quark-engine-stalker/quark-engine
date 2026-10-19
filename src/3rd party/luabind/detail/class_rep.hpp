@@ -171,6 +171,7 @@ namespace luabind { namespace detail
 		// the lua reference to the metatable for this class' instances
 		int metatable_ref() const throw() { return m_instance_metatable; }
 
+		bool has_live_lua_table() const { return m_table_ref.is_valid(); }
 		void get_table(lua_State* L) const { m_table_ref.get(L); }
 		void get_default_table(lua_State* L) const { m_default_table_ref.get(L); }
 

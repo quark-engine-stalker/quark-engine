@@ -24,9 +24,10 @@ class CTraderAnimation
 	bool m_external_sound;
 
 public:
-	CTraderAnimation(CAI_Trader* trader) : m_trader(trader)
+	CTraderAnimation(CAI_Trader* trader) : m_trader(trader), m_sound(nullptr)
 	{
 	}
+	~CTraderAnimation();
 
 	void reinit();
 

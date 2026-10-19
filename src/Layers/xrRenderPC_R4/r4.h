@@ -319,7 +319,9 @@ private:
 
 
 	void initialize_resource_policy();
-	void destroy_resource_policy();
+	// notify_resource_manager must be false when called from ~CRender(): the destructor
+	// runs from the CRT atexit table, when Device.m_pRender is already null/destroyed.
+	void destroy_resource_policy(bool notify_resource_manager = true);
 	void update_video_memory_budget();
 	void trim_video_memory_caches(bool hard_pressure);
 

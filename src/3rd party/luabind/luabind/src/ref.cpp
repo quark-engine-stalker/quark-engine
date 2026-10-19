@@ -27,7 +27,12 @@ namespace luabind { namespace detail
 		lua_vm_token* token = find_lua_vm_token(L);
 		if (!token)
 		{
-			token = luabind_new<lua_vm_token>();
+			// open() establishes this token on the main VM before any coroutine
+			// can create a binding handle.
+			const bool main_state = lua_pushthread(L) != 0;
+			lua_pop(L, 1);
+			assert(main_state && "call luabind::open on the main Lua state first");
+			token = luabind_new<lua_vm_token>(L);
 			lua_pushlightuserdata(L, &lua_vm_token_registry_key);
 			lua_pushlightuserdata(L, token);
 			lua_rawset(L, LUA_REGISTRYINDEX);

@@ -10,6 +10,7 @@
 //class ENGINE_API CGammaControl;
 
 #include "pure.h"
+#include "DeferredDeviceReset.h"
 //#include "hw.h"
 #include "../xrcore/ftimer.h"
 #include "../xrCore/job_system.h"
@@ -187,6 +188,7 @@ public:
 private:
 	// Main objects used for creating and rendering the 3D scene
 	u32 m_dwWindowStyle;
+	CDeferredDeviceReset m_pendingVideoModeReset;
 	RECT m_rcWindowBounds;
 	RECT m_rcWindowClient;
 
@@ -492,6 +494,8 @@ public:
 	void Run(void);
 	void Destroy(void);
 	void Reset(bool precache = true);
+	void RequestVideoModeReset();
+	void ProcessPendingVideoModeReset();
 
 	bool ChangeOutputMonitor(HMONITOR hTargetMon);
 

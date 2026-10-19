@@ -155,7 +155,7 @@ void dxRenderDeviceRender::ResourcesDeferredUnload()
 
 void dxRenderDeviceRender::ResourcesPrefetchCreateTexture(LPCSTR name)
 {
-	Resources->_CreateTexture(name);
+	Resources->PrefetchTexture(name);
 }
 
 void dxRenderDeviceRender::ResourcesPrefetchCreateModelTexture(LPCSTR name)
@@ -213,7 +213,7 @@ void dxRenderDeviceRender::ResourcesPinTexture(LPCSTR name)
 	Resources->PinTexture(name);
 }
 
-void dxRenderDeviceRender::ResourcesGetMemoryUsage(u32& m_base, u32& c_base, u32& m_lmaps, u32& c_lmaps)
+void dxRenderDeviceRender::ResourcesGetMemoryUsage(u64& m_base, u32& c_base, u64& m_lmaps, u32& c_lmaps)
 {
 	if (Resources)
 		Resources->_GetMemoryUsage(m_base, c_base, m_lmaps, c_lmaps);

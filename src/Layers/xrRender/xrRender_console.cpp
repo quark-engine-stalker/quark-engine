@@ -851,40 +851,40 @@ public :
 
 	virtual void Execute(LPCSTR args)
 	{
-		u32 m_base = 0;
+		u64 m_base = 0;
 		u32 c_base = 0;
-		u32 m_lmaps = 0;
+		u64 m_lmaps = 0;
 		u32 c_lmaps = 0;
 
 		dxRenderDeviceRender::Instance().ResourcesGetMemoryUsage(m_base, c_base, m_lmaps, c_lmaps);
 
 		Msg("memory usage  mb \t \t video    \t managed      \t system \n");
 
-		float vb_video = (float)HW.stats_manager.memory_usage_summary[enum_stats_buffer_type_vertex][D3DPOOL_DEFAULT] /
+		float vb_video = (float)HW.stats_manager.memory_usage_summary[enum_stats_buffer_type_vertex][D3DPOOL_DEFAULT].load(std::memory_order_relaxed) /
 			1024 / 1024;
-		float vb_managed = (float)HW.stats_manager.memory_usage_summary[enum_stats_buffer_type_vertex][D3DPOOL_MANAGED]
+		float vb_managed = (float)HW.stats_manager.memory_usage_summary[enum_stats_buffer_type_vertex][D3DPOOL_MANAGED].load(std::memory_order_relaxed)
 			/ 1024 / 1024;
-		float vb_system = (float)HW.stats_manager.memory_usage_summary[enum_stats_buffer_type_vertex][D3DPOOL_SYSTEMMEM]
+		float vb_system = (float)HW.stats_manager.memory_usage_summary[enum_stats_buffer_type_vertex][D3DPOOL_SYSTEMMEM].load(std::memory_order_relaxed)
 			/ 1024 / 1024;
 		Msg("vertex buffer      \t \t %f \t %f \t %f ", vb_video, vb_managed, vb_system);
 
-		float ib_video = (float)HW.stats_manager.memory_usage_summary[enum_stats_buffer_type_index][D3DPOOL_DEFAULT] /
+		float ib_video = (float)HW.stats_manager.memory_usage_summary[enum_stats_buffer_type_index][D3DPOOL_DEFAULT].load(std::memory_order_relaxed) /
 			1024 / 1024;
-		float ib_managed = (float)HW.stats_manager.memory_usage_summary[enum_stats_buffer_type_index][D3DPOOL_MANAGED] /
+		float ib_managed = (float)HW.stats_manager.memory_usage_summary[enum_stats_buffer_type_index][D3DPOOL_MANAGED].load(std::memory_order_relaxed) /
 			1024 / 1024;
-		float ib_system = (float)HW.stats_manager.memory_usage_summary[enum_stats_buffer_type_index][D3DPOOL_SYSTEMMEM]
+		float ib_system = (float)HW.stats_manager.memory_usage_summary[enum_stats_buffer_type_index][D3DPOOL_SYSTEMMEM].load(std::memory_order_relaxed)
 			/ 1024 / 1024;
 		Msg("index buffer      \t \t %f \t %f \t %f ", ib_video, ib_managed, ib_system);
 
 		float textures_managed = (float)(m_base + m_lmaps) / 1024 / 1024;
 		Msg("textures          \t \t %f \t %f \t %f ", 0.f, textures_managed, 0.f);
 
-		float rt_video = (float)HW.stats_manager.memory_usage_summary[enum_stats_buffer_type_rtarget][D3DPOOL_DEFAULT] /
+		float rt_video = (float)HW.stats_manager.memory_usage_summary[enum_stats_buffer_type_rtarget][D3DPOOL_DEFAULT].load(std::memory_order_relaxed) /
 			1024 / 1024;
-		float rt_managed = (float)HW.stats_manager.memory_usage_summary[enum_stats_buffer_type_rtarget][D3DPOOL_MANAGED]
+		float rt_managed = (float)HW.stats_manager.memory_usage_summary[enum_stats_buffer_type_rtarget][D3DPOOL_MANAGED].load(std::memory_order_relaxed)
 			/ 1024 / 1024;
 		float rt_system = (float)HW.stats_manager.memory_usage_summary[enum_stats_buffer_type_rtarget][D3DPOOL_SYSTEMMEM
-		] / 1024 / 1024;
+		].load(std::memory_order_relaxed) / 1024 / 1024;
 		Msg("R-Targets         \t \t %f \t %f \t %f ", rt_video, rt_managed, rt_system);
 
 		Msg("\nTotal             \t \t %f \t %f \t %f ", vb_video + ib_video + rt_video,

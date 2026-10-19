@@ -4,12 +4,13 @@
 
 void IGame_Level::LL_CheckTextures()
 {
-	u32 m_base, c_base, m_lmaps, c_lmaps;
+	u64 m_base = 0, m_lmaps = 0;
+	u32 c_base = 0, c_lmaps = 0;
 	//Device.Resources->_GetMemoryUsage (m_base,c_base,m_lmaps,c_lmaps);
 	Device.m_pRender->ResourcesGetMemoryUsage(m_base, c_base, m_lmaps, c_lmaps);
 
-	Msg("* t-report - base: %d, %d K", c_base, m_base / 1024);
-	Msg("* t-report - lmap: %d, %d K", c_lmaps, m_lmaps / 1024);
+	Msg("* t-report - base: %d, %llu K", c_base, m_base / 1024);
+	Msg("* t-report - lmap: %d, %llu K", c_lmaps, m_lmaps / 1024);
 	BOOL bError = FALSE;
 	if (m_base > 64 * 1024 * 1024 || c_base > 400)
 	{

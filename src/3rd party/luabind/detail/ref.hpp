@@ -38,12 +38,14 @@ namespace luabind { namespace detail
 
 	struct lua_vm_token
 	{
-		lua_vm_token()
-			: count(1)
+		lua_vm_token(lua_State* main_state_)
+			: main_state(main_state_)
+			, count(1)
 			, alive(true)
 		{
 		}
 
+		lua_State* main_state;
 		int count;
 		bool alive;
 	};
@@ -63,11 +65,13 @@ namespace luabind { namespace detail
 		lua_reference(lua_State* L_ = 0)
 			: L(L_)
 			, m_ref(LUA_NOREF)
+			, m_thread_ref(LUA_NOREF)
 			, m_vm_token(nullptr)
 		{}
 		lua_reference(lua_reference const& r)
 			: L(r.L)
 			, m_ref(LUA_NOREF)
+			, m_thread_ref(LUA_NOREF)
 			, m_vm_token(nullptr)
 		{
 			if (!r.is_valid()) return;
@@ -75,6 +79,7 @@ namespace luabind { namespace detail
 			retain_lua_vm_token(m_vm_token);
 			r.get(L);
 			m_ref = ref(L);
+			if (r.m_thread_ref != LUA_NOREF) retain_state(r.L);
 		}
 		~lua_reference() { reset(); }
 
@@ -90,17 +95,23 @@ namespace luabind { namespace detail
 			retain_lua_vm_token(m_vm_token);
 			r.get(L);
 			m_ref = ref(L);
+			if (r.m_thread_ref != LUA_NOREF) retain_state(r.L);
 		}
+
+		bool same_vm(const lua_reference& other) const
+		{ return is_valid() && other.is_valid() && m_vm_token == other.m_vm_token; }
 
 		bool is_valid() const
 		{ return m_ref != LUA_NOREF && m_vm_token && m_vm_token->alive; }
 
-		void set(lua_State* L_)
+		void set(lua_State* L_, bool keep_thread = false)
 		{
 			reset();
 			L = L_;
 			m_vm_token = acquire_lua_vm_token(L);
 			m_ref = ref(L);
+			L = m_vm_token->main_state;
+			if (keep_thread) retain_state(L_);
 		}
 
 		void replace(lua_State* L_)
@@ -128,22 +139,39 @@ namespace luabind { namespace detail
 			{
 				if (m_vm_token->alive && L && m_ref != LUA_NOREF)
 					unref(L, m_ref);
+				if (m_vm_token->alive && L && m_thread_ref != LUA_NOREF)
+					unref(L, m_thread_ref);
 				release_lua_vm_token(m_vm_token);
 				m_vm_token = nullptr;
 			}
 			m_ref = LUA_NOREF;
+			m_thread_ref = LUA_NOREF;
 		}
 
 		void swap(lua_reference& r)
 		{
 			assert(r.L == L);
 			std::swap(r.m_ref, m_ref);
+			std::swap(r.m_thread_ref, m_thread_ref);
 			std::swap(r.m_vm_token, m_vm_token);
+		}
+
+		void retain_state(lua_State* state)
+		{
+			// Main states live until lua_close; only coroutine-backed handles need
+			// an extra root. This preserves the callback's original execution state.
+			L = state;
+			if (!m_vm_token || !m_vm_token->alive || m_thread_ref != LUA_NOREF ||
+				state == m_vm_token->main_state)
+				return;
+			lua_pushthread(L);
+			m_thread_ref = ref(L);
 		}
 
 	private:
 		lua_State* L;
 		int m_ref;
+		int m_thread_ref;
 		lua_vm_token* m_vm_token;
 	};
 

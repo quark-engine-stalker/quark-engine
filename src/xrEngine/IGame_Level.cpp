@@ -77,11 +77,12 @@ IGame_Level::~IGame_Level()
 	Sound->set_handler(NULL);
 	Device.DumpResourcesMemoryUsage();
 
-	u32 m_base = 0, c_base = 0, m_lmaps = 0, c_lmaps = 0;
+	u64 m_base = 0, m_lmaps = 0;
+	u32 c_base = 0, c_lmaps = 0;
 	if (Device.m_pRender)
 		Device.m_pRender->ResourcesGetMemoryUsage(m_base, c_base, m_lmaps, c_lmaps);
 
-	Msg("* [ D3D ]: textures[%d K]", (m_base + m_lmaps) / 1024);
+	Msg("* [ D3D ]: textures[%llu K]", (m_base + m_lmaps) / 1024);
 }
 
 void IGame_Level::net_Stop()

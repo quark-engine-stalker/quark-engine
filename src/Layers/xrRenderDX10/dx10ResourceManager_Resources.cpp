@@ -513,6 +513,11 @@ CRT* CResourceManager::_CreateRT(LPCSTR Name, u32 w, u32 h, D3DFORMAT f, u32 Sam
 		CRT* RT = xr_new<CRT>();
 		RT->dwFlags |= xr_resource_flagged::RF_REGISTERED;
 		m_rtargets.insert(mk_pair(RT->set_name(Name), RT));
+		RT->dwWidth = w;
+		RT->dwHeight = h;
+		RT->fmt = f;
+		RT->m_sample_count = SampleCount;
+		RT->m_use_uav = useUAV;
 		if (Device.b_is_Ready) RT->create(Name, w, h, f, SampleCount, useUAV);
 		return RT;
 	}
@@ -624,7 +629,7 @@ void CResourceManager::DeleteGeom(const SGeometry* Geom)
 }
 
 //--------------------------------------------------------------------------------------------------------------
-CTexture* CResourceManager::_CreateTexture(LPCSTR _Name, bool /*prefer_gpu_resident*/, bool acquire_reference)
+CTexture* CResourceManager::_CreateTexture(LPCSTR _Name)
 {
 	if (0 == xr_strcmp(_Name, "null")) return nullptr;
 	R_ASSERT(_Name && _Name[0]);
@@ -641,8 +646,24 @@ CTexture* CResourceManager::_CreateTexture(LPCSTR _Name, bool /*prefer_gpu_resid
 		map_TextureIt found = m_textures.find(LPSTR(Name));
 		if (found != m_textures.end())
 		{
-			if (acquire_reference)
-				found->second->dwReference.fetch_add(1, std::memory_order_relaxed);
+			found->second->dwReference.fetch_add(1, std::memory_order_relaxed);
+			return found->second;
+		}
+	}
+
+	// A demand load and a speculative worker may request the same DDS. Serialize
+	// only its creation, outside the registry lock; unrelated stripes still load
+	// concurrently. The second lookup also acquires the caller's strong owner.
+	u32 hash = 2166136261u;
+	for (const unsigned char* c = reinterpret_cast<const unsigned char*>(Name); *c; ++c)
+		hash = (hash ^ *c) * 16777619u;
+	xrCriticalSectionGuard load_guard(textureLoadGuards[hash % 64u]);
+	{
+		xrCriticalSectionGuard guard(textureGuard);
+		map_TextureIt found = m_textures.find(LPSTR(Name));
+		if (found != m_textures.end())
+		{
+			found->second->dwReference.fetch_add(1, std::memory_order_relaxed);
 			return found->second;
 		}
 	}
@@ -655,23 +676,21 @@ CTexture* CResourceManager::_CreateTexture(LPCSTR _Name, bool /*prefer_gpu_resid
 		// merely defers a second allocation and CopyResource to its first draw.
 		candidate->Load(false);
 
-	// Another thread may have completed the same texture while this one was
-	// loading. Publish only one registered object and discard the duplicate.
+	// Publication happens before releasing the creation stripe. Registry readers
+	// acquire their reference atomically with lookup, including cache retirement.
 	{
 		xrCriticalSectionGuard guard(textureGuard);
 		map_TextureIt found = m_textures.find(LPSTR(Name));
 		if (found != m_textures.end())
 		{
 			xr_delete(candidate);
-			if (acquire_reference)
-				found->second->dwReference.fetch_add(1, std::memory_order_relaxed);
+			found->second->dwReference.fetch_add(1, std::memory_order_relaxed);
 			return found->second;
 		}
 
 		candidate->dwFlags |= xr_resource_flagged::RF_REGISTERED;
 		m_textures.insert(mk_pair(*candidate->cName, candidate));
-		if (acquire_reference)
-			candidate->dwReference.fetch_add(1, std::memory_order_relaxed);
+		candidate->dwReference.fetch_add(1, std::memory_order_relaxed);
 	}
 
 	return candidate;
@@ -681,7 +700,7 @@ ref_texture CResourceManager::CreateTextureRef(LPCSTR name)
 {
 	// Acquire under the same registry lock as lookup/publication. A speculative
 	// cache may retire its final owner before the caller installs a shader ref.
-	return ref_texture(_CreateTexture(name, false, true), false);
+	return ref_texture(_CreateTexture(name), false);
 }
 
 void CResourceManager::ReleaseTextureReference(CTexture* texture)
@@ -714,9 +733,8 @@ void CResourceManager::PrefetchTextureGpuResident(LPCSTR _Name)
 	const shared_str key = Name;
 
 	// Speculative model workers should never duplicate the same expensive file
-	// read + D3D resource creation. Normal render-thread lookup intentionally
-	// remains non-blocking: it may race and publish first rather than wait behind
-	// speculative work needed only by a future spawn.
+	// read + D3D resource creation. Demand loads share the creation stripe, so
+	// they adopt the same object instead of allocating a temporary GPU duplicate.
 	{
 		xrCriticalSectionGuard guard(texturePrefetchGuard);
 		if (m_texturePrefetchInFlight.find(key) != m_texturePrefetchInFlight.end())
@@ -724,7 +742,7 @@ void CResourceManager::PrefetchTextureGpuResident(LPCSTR _Name)
 		m_texturePrefetchInFlight.insert(key);
 	}
 
-	_CreateTexture(Name, true);
+	PrefetchTexture(Name);
 
 	{
 		xrCriticalSectionGuard guard(texturePrefetchGuard);

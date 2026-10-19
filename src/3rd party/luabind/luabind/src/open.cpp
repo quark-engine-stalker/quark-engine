@@ -29,6 +29,9 @@ namespace luabind {
 
     void open(lua_State* L)
     {
+        detail::lua_vm_token* token = detail::acquire_lua_vm_token(L);
+        detail::release_lua_vm_token(token);
+        detail::object_rep::register_finalizer(L);
         // get the global class registry, or create one if it doesn't exist
         // (it's global within a lua state)
         detail::class_registry* r = nullptr;

@@ -200,8 +200,9 @@ __declspec(noinline) bool CDetailManager::cached_slot_upload(const VisibleSlotIt
 	PackedDetailKey& frame_key, u32 variant, float slot_scale,
 	const Fvector4*& transforms, const Fvector4*& extra, u32& count)
 {
-	if ((_mm_getcsr() & ~0x3fu) != m_detail_upload_fp_control)
-		return false;
+	// prepare_upload_keys validates FP control once after shader setup, before
+	// this pass's native packing/draw loop. Do not read FP control for every slot with
+	// another STMXCSR; no FP-control-changing callbacks run in that loop.
 	const Slot& slot = *visible.slot;
 	const SlotPart* part = nullptr;
 	for (const SlotPart& candidate : slot.G)
@@ -545,6 +546,10 @@ void CDetailManager::hw_Render_dump_impl(const Fvector4& consts, const Fvector4&
 					u32 upload_key_count = 0;
 					PackedDetailKey* upload_keys = use_packed_upload ? prepare_upload_keys(
 						var_id, O, static_cast<u32>(vis.size()), upload_key_count) : nullptr;
+					// Capture after all shader setup. Native x64 draws preserve MXCSR
+					// control bits; exception status flags (0..5) are not cache inputs.
+					const bool upload_fp_matches = upload_keys &&
+						((_mm_getcsr() & ~0x3fu) == m_detail_upload_fp_control);
 
 					xr_vector<VisibleSlotItems>::iterator _vI = vis.begin();
 					xr_vector<VisibleSlotItems>::iterator _vE = vis.end();
@@ -585,7 +590,10 @@ void CDetailManager::hw_Render_dump_impl(const Fvector4& consts, const Fvector4&
 						continue;
 
 
-					if (upload_keys && static_cast<u32>(_vI - vis.begin()) < upload_key_count)
+					// Short lists are deliberately not cached. Keep their rejection
+					// here instead of entering the cache and searching the slot parts.
+					if (item_count >= 8 && upload_fp_matches &&
+						static_cast<u32>(_vI - vis.begin()) < upload_key_count)
 					{
 						const Fvector4* cached_transforms;
 						const Fvector4* cached_extra;

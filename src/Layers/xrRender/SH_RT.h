@@ -26,6 +26,8 @@ public:
 	u32 dwWidth;
 	u32 dwHeight;
 	D3DFORMAT fmt;
+	u32 m_sample_count;
+	bool m_use_uav;
 
 	u64 _order;
 };

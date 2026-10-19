@@ -369,7 +369,7 @@ namespace luabind
 			: m_state(o.m_state)
 		{
 			o.m_ref.get(m_state);
-			m_ref.set(m_state);
+			m_ref.set(m_state, true);
 		}
 
 		~object()
@@ -449,6 +449,7 @@ namespace luabind
 			m_ref.replace(m_state);
 		}
 		lua_State* lua_state() const { return m_state; }
+		void pushvalue(lua_State* state) const { m_ref.get(state); }
 		void pushvalue() const
 		{
 			// you are trying to dereference an invalid object
@@ -559,6 +560,7 @@ namespace luabind
 			: m_ref(ref)
 			, m_state(L)
 		{
+			m_ref.retain_state(L);
 		}
 
 		inline detail::lua_reference get_index() const
@@ -575,7 +577,7 @@ private:
 			if (!m_ref.is_valid())
 			{
 				lua_pushboolean(m_state, 0);
-				m_ref.set(m_state);
+				m_ref.set(m_state, true);
 			}
 		}
 

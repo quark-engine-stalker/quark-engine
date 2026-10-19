@@ -62,7 +62,7 @@ class CPHCall
 public:
 	CPHCall(CPHCondition* condition, CPHAction* action);
 	~CPHCall();
-	void check();
+	void check(const bool* cancelled = nullptr);
 	bool obsolete();
 	bool equal(CPHReqComparerV* cmp_condition, CPHReqComparerV* cmp_action);
 	bool is_any(CPHReqComparerV* v);
@@ -85,10 +85,13 @@ class CPHCommander :
 	// pass. This avoids repeated vector shifts in destruction bursts while also
 	// keeping script callback removal re-entrant.
 	bool m_updating = false;
+	CPHCall* m_current_call = nullptr;
+	bool m_current_call_removed = false;
 public:
 	~CPHCommander();
 
 	/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	// Takes ownership of condition and action, including rejected duplicates.
 	bool add_call_unique(CPHCondition* condition, CPHReqComparerV* cmp_condition, CPHAction* action,
 	                     CPHReqComparerV* cmp_action);
 	void add_call(CPHCondition* condition, CPHAction* action);
@@ -122,6 +125,7 @@ private:
 	                        CPHReqComparerV* cmp_action, PHCALL_STORAGE& cs);
 	IC void add_call(CPHCondition* condition, CPHAction* action, PHCALL_STORAGE& cs);
 
+	void release_call(CPHCall*& call);
 	IC void remove_call(PHCALL_I i, PHCALL_STORAGE& cs);
 	IC PHCALL_I find_call(CPHReqComparerV* cmp_condition, CPHReqComparerV* cmp_action, PHCALL_STORAGE& cs);
 	IC void remove_call(CPHReqComparerV* cmp_condition, CPHReqComparerV* cmp_action, PHCALL_STORAGE& cs);

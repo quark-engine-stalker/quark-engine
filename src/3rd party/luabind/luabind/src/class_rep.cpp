@@ -1534,7 +1534,10 @@ bool luabind::detail::is_class_rep(lua_State* L, int index)
 
 void luabind::detail::finalize(lua_State* L, class_rep* crep)
 {
-	if (crep->get_class_type() != class_rep::lua_class) return;
+	if (crep->get_class_type() != class_rep::lua_class || !crep->has_live_lua_table())
+		return;
+	// After VM invalidation only native cleanup is safe. The GC entry point
+	// still destroys object_rep and the owned C++ instance in that case.
 
 //	lua_pushvalue(L, -1); // copy the object ref
 	crep->get_table(L);

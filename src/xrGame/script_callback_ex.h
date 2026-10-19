@@ -13,10 +13,21 @@
 
 IC bool compare_safe(const luabind::object& o1, const luabind::object& o2)
 {
-    if (o1.type() == LUA_TNIL && o2.type() == LUA_TNIL)
-        return						(true);
-
-    return							(o1 == o2);
+    if (!o1.is_valid() || !o2.is_valid())
+        return !o1.is_valid() && !o2.is_valid();
+    lua_State* state = o1.lua_state();
+    if (state == o2.lua_state())
+        return o1 == o2;
+    if (lua_topointer(state, LUA_REGISTRYINDEX) !=
+        lua_topointer(o2.lua_state(), LUA_REGISTRYINDEX))
+        return false;
+    // Coroutines share the registry, not their stacks. Compare both values on
+    // one stack so callbacks added from a coroutine can be removed on the main VM.
+    o1.pushvalue();
+    o2.pushvalue(state);
+    const bool equal = lua_equal(state, -1, -2) != 0;
+    lua_pop(state, 2);
+    return equal;
 }
 
 #if XRAY_EXCEPTIONS

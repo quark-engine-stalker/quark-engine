@@ -289,10 +289,18 @@ void CRender::initialize_resource_policy()
     m_vramNextPollTime = Device.dwTimeGlobal + kVideoMemoryPollIntervalMs;
 }
 
-void CRender::destroy_resource_policy()
+void CRender::destroy_resource_policy(bool notify_resource_manager)
 {
-	if (dxRenderDeviceRender::Instance().Resources)
-		dxRenderDeviceRender::Instance().Resources->SetVideoMemoryBudget(0, 0);
+	// dxRenderDeviceRender::Instance() is a blind cast of Device.m_pRender, which is set to 0
+	// in CRenderDevice::Destroy() (and is never created if the process exits during startup).
+	// Dereferencing it then reads Resources at address 0x8 -> access violation, which is what
+	// happened in ~CRender() at process exit. Only touch the resource manager when the render
+	// device wrapper really exists.
+	if (notify_resource_manager && Device.m_pRender)
+	{
+		if (CResourceManager* resources = dxRenderDeviceRender::Instance().Resources)
+			resources->SetVideoMemoryBudget(0, 0);
+	}
     _RELEASE(m_vramAdapter);
     if (m_resourceCreationSemaphore)
     {
@@ -1213,7 +1221,8 @@ CRender::CRender()
 
 CRender::~CRender()
 {
-	destroy_resource_policy();
+	// Static destructor: Device/Resources may already be gone, so do not touch them here.
+	destroy_resource_policy(false);
 	for (FSlideWindowItem it : SWIs)
 	{
 		xr_free(it.sw);

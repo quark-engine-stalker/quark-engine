@@ -552,6 +552,8 @@ void CHW::DestroyDevice()
 	m_fullscreen_restore_pending = false;
 	m_fullscreen_transition_result = S_OK;
 
+    // Release context-held references before destroying swap-chain resources.
+    if (pContext) pContext->ClearState();
     //	Destroy state managers
     StateManager.Reset();
     RSManager.ClearStateArray();
@@ -575,20 +577,13 @@ void CHW::DestroyDevice()
     if (!is_windowed) {
         m_pSwapChain->SetFullscreenState(FALSE, NULL);
 
-        if (strstr(Core.Params, dxgiOld)) {
-            const auto& cd = m_ChainDesc;
-            CHK_DX(m_pSwapChain->ResizeBuffers(
-                cd.BufferCount,
-                cd.Width,
-                cd.Height,
-                cd.Format,
-                DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH));
-
-            UpdateViews();
-		}
+        // No ResizeBuffers/UpdateViews on shutdown: newly created views would
+        // survive the releases above and retain the device/back buffers.
     }
     _SHOW_REF("refCount:m_pSwapChain", m_pSwapChain);
     _RELEASE(m_pSwapChain);
+    // Force deferred swap-chain destruction only at teardown, not per frame.
+    if (pContext) pContext->Flush();
 
     _RELEASE(pContext);
 
@@ -652,6 +647,8 @@ void CHW::Reset(HWND hwnd)
     _SHOW_REF("refCount:pBaseZB", pBaseZB);
     _SHOW_REF("refCount:pBaseRT", pBaseRT);
 
+    // Reset can also be reached outside the ordinary end-of-frame ClearState.
+    RCache.OnFrameEnd();
     _RELEASE(pBaseZB);
     _RELEASE(pBaseRT);
 
@@ -876,7 +873,10 @@ extern void unregister_reshade();
 
 bool CHW::ResizeSwapChainAfterModeChange()
 {
-    if (!strstr(Core.Params, dxgiOld)) {
+    // Both flip and legacy mode changes resize the buffers. Discard context
+    // bindings and backend cache pointers before releasing the old views.
+    RCache.OnFrameEnd();
+    {
         _SHOW_REF("refCount:pBaseZB", pBaseZB);
         _RELEASE(pBaseZB);
 

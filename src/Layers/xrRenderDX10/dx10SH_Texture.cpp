@@ -23,7 +23,7 @@ void resptrcode_texture::create(LPCSTR _name)
 {
 	// Adopt the reference acquired under the registry lock without an extra
 	// temporary ref_texture increment/decrement on every shader texture.
-	CTexture* const texture = DEV->_CreateTexture(_name, false, true);
+	CTexture* const texture = DEV->_CreateTexture(_name);
 	_dec();
 	p_ = texture;
 }

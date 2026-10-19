@@ -9,8 +9,17 @@
 // Startup
 /////////////////////////////////////////////////////////////////////////////////////////
 
+CTraderAnimation::~CTraderAnimation()
+{
+	if (m_sound)
+		remove_sound();
+}
+
 void CTraderAnimation::reinit()
 {
+	if (m_sound)
+		remove_sound();
+
 	m_motion_head.invalidate();
 	m_motion_global.invalidate();
 	m_sound = 0;

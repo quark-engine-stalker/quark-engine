@@ -42,7 +42,7 @@ bool CRayPick::query()
 
 Fvector CRayPick::get_normal()
 {
-    if (result.O == nullptr && result.element != 0)
+    if (result.has_static_geometry)
     {
         Fvector* V = Level().ObjectSpace.GetStaticVerts();
         CDB::TRI* T = Level().ObjectSpace.GetStaticTris() + result.element;

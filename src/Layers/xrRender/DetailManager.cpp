@@ -68,6 +68,24 @@ IC bool advance_detail_alpha(CDetailManager::SlotItemVec& items, float alpha_ste
 	return still_fading;
 }
 
+// Number of complete sub-chunks (4b id, 4b size, data) inside a chunk container.
+// Only walks the headers: nothing is opened or decompressed. Used for diagnostics.
+IC u32 count_sub_chunks(IReader& container)
+{
+	u32 count = 0;
+	container.seek(0);
+	while (container.elapsed() >= 8)
+	{
+		container.r_u32();
+		const u32 size = container.r_u32();
+		if (size > static_cast<u32>(container.elapsed()))
+			break;
+		container.advance(static_cast<int>(size));
+		++count;
+	}
+	return count;
+}
+
 constexpr u32 detail_expand_block_size = 4096;
 
 struct detail_expand_context
@@ -266,20 +284,33 @@ void CDetailManager::Load()
 	u32 m_count = dtH.object_count;
 	R_ASSERT(m_count <= (u32)dm_max_objects);
 
-	// Models. Iterate the subchunks once instead of repeatedly searching from
-	// the parent reader, and reserve the final pointer array up front.
+	// Models. Sub-chunk <i> of chunk 1 is model <i>, and exactly header.object_count
+	// models are used: slot ids index straight into 'objects'. Address the sub-chunks
+	// by ID, as the original loader did, instead of walking every sub-chunk that
+	// happens to be present. A level.details may carry more sub-chunks than
+	// object_count (spare/trailing/legacy models); that is harmless for rendering,
+	// but a plain walk loaded all of them and then failed the strict size check,
+	// which made such levels impossible to load (assertion at this line).
+	// find_chunk() keeps a "next chunk" hint, so sequential ID lookups stay O(1).
 	objects.reserve(m_count);
 	IReader* m_fs = dtFS->open_chunk(1);
 	R_ASSERT(m_fs);
-	u32 model_chunk_id = 0;
-	for (IReader* model_reader = m_fs->open_chunk_iterator(model_chunk_id); model_reader;
-		model_reader = m_fs->open_chunk_iterator(model_chunk_id, model_reader))
+	for (u32 m_id = 0; m_id < m_count; ++m_id)
 	{
+		IReader* model_reader = m_fs->open_chunk(m_id);
+		if (!model_reader)
+			Msg("! CDetailManager::Load: level.details has no model chunk %u (header object_count = %u)", m_id, m_count);
+		R_ASSERT2(model_reader, "level.details: model chunk is missing (header object_count is larger than the number of model chunks)");
+
 		CDetail* detail = xr_new<CDetail>();
 		detail->Load(model_reader);
 		objects.push_back(detail);
+		model_reader->close();
 	}
-	R_ASSERT(objects.size() == m_count);
+	const u32 model_chunk_count = count_sub_chunks(*m_fs);
+	if (model_chunk_count != m_count)
+		Msg("! CDetailManager::Load: level.details has %u model chunks, header object_count = %u (only chunk ids 0..%u are used)",
+			model_chunk_count, m_count, m_count ? m_count - 1 : 0);
 	m_fs->close();
 
 	// Slots: copy into a heap-owned wide (v4) array, expanding v3 slots on the fly.
