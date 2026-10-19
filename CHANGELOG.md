@@ -2,9 +2,9 @@
 
 **English** · [Русский](CHANGELOG.ru.md)
 
-# VER 0.0.6 [BUG FIXES]
+VER 0.0.6 [BUG FIXES]
 
-## FIXES
+FIXES:
 
 - Fixed ray query lock release when exceptions occur.
 - Fixed COM reference leaks in HDAO that kept render targets and the depth buffer alive after their owners were released.
