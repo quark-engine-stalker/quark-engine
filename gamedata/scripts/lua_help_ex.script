@@ -1,0 +1,1299 @@
+-- Additional exports from Modded Exes: https://github.com/themrdemonized/xray-monolith
+--[[
+    
+    console commands: {
+        bus_list // Print every shader bus lane with its owner, value, state, counters and the frame a shader last bound it
+        bus_get <id> // Print one shader bus lane
+        bus_force <id> x y z w // Hold a lane at finite values until bus_release, a console debug path, the lua write path still needs the token
+        bus_release <id> // Drop the hold, the owner value returns on the next frame
+
+        snd_doppler_power [0; 5] // Adjust power of doppler effect
+        snd_doppler_smoothing [1; 100] // Adjust smoothness of pitch shifting in doppler effect
+
+        crash_save [0; 1] // Enable saving game on game crash
+        crash_save_count [0; 20] // Crash saves max number
+
+        pseudogiant_can_damage_objects_on_stomp [0; 1] // Enable the ability for pseudogiants to damage objects on stomp
+
+        pseudogiant_dodge_stomp_while_falling [0; 1] // Prevent pseudogiants stomp attack from damaging actor if they are falling
+
+        allow_accel_during_lookout [0; 1] // flag to allow 'running' speed during left or right lookouts
+
+        scale_hud_motion_marks_by_speed [1; 0] // flag to scale motion marks by speed, default is on
+
+        telekinetic_objects_include_corpses [0; 1] // Enable the ability for poltergeists and burers to throw corpses
+        
+        sds_enable [0; 1] // Enable shader based scopes
+        sds_speed_enable [0; 1] // Enable mouse sensitivity change on zooming
+        sds_zoom_enable [0; 1] // Enable correction of max. zoom with scope_factor, if this option is enabled then max. zoom will be such as prescribed in settings regardless of scope_factor value, if this option is disabled then max. zoom will be sum of value prescribed in settings and the increase that gives scope_factor.
+        new_zoom_enable [0; 1] // Enable alternative zoom control. Minimal zoom is equal to either mechanical zoom or the one prescribed in section min_scope_zoom_factor. The step of zoom adjustment is more precise. 
+        zoom_step_count [1.0, 10.0] // Adjust the step of zoom if new_zoom_enable is on
+        new_zoom_delta_algorithm [0; 1] // New zoom delta algorithm
+
+        demo_record_return_ctrl_inputs // Launch (from console or scripts) `demo_record` but propagate ESC and TAB keypresses back to launcher entity (game or scripts) 
+        demo_record_blocked_input 1 // Start demo_record without move or stop. The console and Esc key are available
+        demo_record_stop // Stop all launched `demo_record` commands 
+        demo_set_cam_direction [head, pitch, roll] // Set the direction the camera is facing and its roll. The parameters are in RADIANS, beware
+        
+        first_person_death // Enable First Person Death Camera
+        first_person_death_direction_offset // FPD Camera Direction Offset (in DEGREES)
+        first_person_death_position_offset // FPD Camera Position Offset (x, y, z)
+        first_person_death_position_smoothing // FPD Camera Position Change Smoothing
+        first_person_death_direction_smoothing // FPD Camera Direction Change Smoothing
+
+        use_english_text_for_missing_translations // Enables using english text if translation is missing
+
+        pda_map_zoom_in_to_mouse // Enable map zoom in relative to cursor
+        pda_map_zoom_out_to_mouse // Enable map zoom out relative to cursor
+        pda_show_map_labels // Show level name labels on the global PDA map if configured in game_maps_single.ltx
+
+        mouse_wheel_change_weapon // Enable changing weapons with mouse wheel
+        mouse_wheel_invert_zoom // Invert mouse wheel
+        mouse_sens_vertical [0.1; 3] // Vertical mouse sensitivity factor. The number is a multiplicative factor to overall mouse sensitivity, default 1
+
+        string_table_error_msg // Print xml translation errors
+        monster_stuck_fix // Enables fix of stuck monsters at the fps cost
+        freeze_time [0,1] // Freezes the alife but leaves the sounds playing at the time of the freeze, e.g. soundtrack, looped_fx. No new sounds will be played by the ailife, since it is frozen. You can however, after this point, play new sounds from scripts. 
+
+        allow_outfit_control_inertion_factor 
+        allow_weapon_control_inertion_factor // Weapon and outfit control_inertion_factor can affect mouse sens
+        render_short_tracers // Tracers will be capped to their minimum length instead of not rendering
+        fix_avelocity_spread // Fixes moving the camera around not worsening accuracy
+        apply_pdm_to_ads // Enables PDM (handling) values to be applied properly during ADS
+        smooth_ads_transition // Smoothly applies the ADS accuracy bonus instead of only being applied when fully ADS
+        allow_silencer_hide_tracer // Controls wether or not silencers can hide tracers at all
+        use_separate_ubgl_keybind // Use separate keybind for switching to UBGL, or use vanilla system
+        aimmode_remember // When switching to UBGL the weapon will remember what mode you switched from and will put you back in that mode
+        freelook_while_reloading // // Allows freelook during reload animations
+        
+        viewport_near [0.0, 1.0] // Adjust the camera near value
+
+        print_bone_warnings // Print warnings when using bone_position and bone_direction functions and encounter invalid bones
+
+        poltergeist_spawn_corpse_on_death // Poltergeists spawn corpses on death
+        g_firepos_zoom // Make firepos work while aiming
+
+        g_decouple_horz_recoil // calculate horz recoil independently of vert recoil
+        g_use_non_linear_inertia // enable non linear weapon inertia movement
+
+        // Combat AI - fire/suppression logic
+        ai_fire_make_sense_interval [0; 20000] // How long (ms) NPCs fire at last known position after losing sight. 0 = fire only while visible. Default 10000
+        ai_fire_range_extension [0; 10] // Extra metres past pick_distance where suppression fire still makes sense. Default 2.5
+        ai_fire_max_height_diff [0; 8] // Max vertical gap (m) between NPC and enemy for fire to make sense. Default 2.0
+        ai_fire_min_dist [0; 20] // Minimum pick_distance (m) required for fire to make sense. Default 2.5
+
+        // Combat AI - cover danger zones
+        ai_cover_danger_radius [0; 15] // Danger zone radius (m) when NPC is shot while in cover. Default 3.0
+        ai_cover_danger_time [0; 300000] // Duration (ms) of that danger flag. Default 120000
+        ai_cover_detour_radius [0; 15] // Danger zone radius (m) when NPC flanks. Default 5.0
+        ai_cover_detour_time [0; 300000] // Duration (ms) of that danger flag. Default 120000
+        ai_cover_unknown_radius [0; 15] // Danger zone radius (m) on unknown threats. Default 5.0
+        ai_cover_unknown_time [0; 300000] // Duration (ms) of that danger flag. Default 120000
+
+        // Combat AI - cover selection distances
+        ai_cover_search_near_radius [1; 30] // First-pass cover search radius (m). Default 10.0
+        ai_cover_search_far_radius [1; 80] // Fallback cover search radius (m). Default 30.0
+        ai_cover_pistol_max_dist [3; 50] // Max cover distance (m) for pistol wielders. Default 10.0
+        ai_cover_shotgun_max_dist [3; 20] // Max cover distance (m) for shotgun wielders. Default 5.0
+        ai_cover_sniper_min_dist [0; 80] // Min cover distance (m) for sniper wielders. 0 = no minimum. Default 20.0
+        ai_cover_default_max_dist [3; 50] // Max cover distance (m) for all other weapons. Default 20.0
+
+        // Combat AI - timing and movement
+        ai_close_move_distance [0; 6] // Distance (m) at which TakeCover switches from running to in-place movement. Default 1.5
+        ai_crouch_look_out_delta [0; 12000] // LookOut crouch/stand randomization interval (ms). Default 5000
+        ai_wait_in_smart_cover_time [0; 120000] // How long (ms) NPC waits at smart cover before giving up. Default 30000
+
+        // Combat AI - danger perception multipliers (1.0 = original, 0.0 = disabled, 5.0 = 5x urgency)
+        ai_danger_ricochet_mult [0.0; 5.0] // Bullet ricochet danger urgency multiplier. Default 1.0 (base score 3000)
+        ai_danger_attack_sound_mult [0.0; 5.0] // Gunshot sound danger urgency multiplier. Default 1.0 (base score 2500)
+        ai_danger_entity_attacked_mult [0.0; 5.0] // Ally hit danger urgency multiplier. Default 1.0 (base score 2000)
+        ai_danger_entity_death_mult [0.0; 5.0] // Entity death danger urgency multiplier. Default 1.0 (base score 3000)
+        ai_danger_corpse_mult [0.0; 5.0] // Fresh corpse danger urgency multiplier. Default 1.0 (base score 2250)
+        ai_danger_attacked_mult [0.0; 5.0] // Being attacked danger urgency multiplier. Default 1.0 (base score 2000)
+        ai_danger_grenade_mult [0.0; 5.0] // Grenade danger urgency multiplier. Default 1.0 (base score 1000)
+        ai_danger_enemy_sound_mult [0.0; 5.0] // Enemy sound danger urgency multiplier. Default 1.0 (base score 1000)
+
+    }
+
+    lua extensions {
+        bit.tobit(int)
+        bit.tohex(int)
+        bit.bnot(int)
+        bit.band(int, int)
+        bit.bor(int, int)
+        bit.bxor(int, int)
+        bit.lshift(int, int)
+        bit.rshift(int, int)
+        bit.rol(int, int)
+        bit.ror(int, int)
+
+        string.trim(s)
+        string.trim_l(s)
+        string.trim_r(s)
+        string.trim_w(s)
+
+        table.keys(t)
+        table.values(t)
+        table.size(t)
+        table.random(t)
+    }
+
+    jit.profile { // profiler-enabled build only; backported LuaJIT 2.1 timer sampler, GC64-free so saves stay compatible
+        jit.profile.start(string mode, function(thread, int samples, string vmstate)) // mode "iN" = sample every N ms; vmstate one of N/I/C/G/J; errors if jit.allocprof is running
+        jit.profile.stop()
+        string jit.profile.dumpstack(thread, string fmt, int depth) // "name@src:line;..." leaf-first; fmt accepted but ignored (fixed format)
+    }
+
+    jit.allocprof { // profiler-enabled build only; per-function allocation attribution, jit.off() recommended for exact attribution
+        jit.allocprof.start(int depth = 1) // byte-sampled (Poisson interval); depth>1 also captures full stacks for a flamegraph; errors if jit.profile is running
+        jit.allocprof.stop()
+        table jit.allocprof.dump(bool stacks, bool reset) // {{key=,bytes=},...} + dropped/pending/drains/seen; reset clears tables but keeps capturing
+        int jit.allocprof.usage() // 0..100 fill of the fullest aggregation table, snapshot before it reaches 100
+        jit.allocprof.pause() // disarm the hook to build a snapshot report at full speed
+        jit.allocprof.resume() // re-arm and continue capturing
+    }
+
+    globals {
+        string dik_to_keyname(number dik, boolean localize)
+        int get_modded_exes_version() // Returns modded exes version in integer format
+        table get_string_table() // Returns all translated strings in [string id] = string text format 
+        player_hud* get_player_hud()
+
+        // MT only
+        string active_tutorial_name()
+        class class_info(object) // Returns luabind class with information about object's class: name, methods, attributes
+        string r_file_as_string(string path)
+
+        -- color getters / setters
+        ClrGetA(number argb)
+        ClrGetR(number argb)
+        ClrGetG(number argb)
+        ClrGetB(number argb)
+        ClrSetA(number argb, number a)
+        ClrSetR(number argb, number r)
+        ClrSetG(number argb, number g)
+        ClrSetB(number argb, number b)
+    }
+
+    get_console() {
+        table get_variable_bounds(cmd)   
+    }
+
+    alife() {
+        number object_count()
+        void iterate_objects(function(se_obj))
+        void iterate_level_objects_of_clsid(number script_clsid, function(se_obj)) -- walks actor's current-level CSE registry filtered by m_script_clsid; functor returns true to stop early; must not release the currently iterated entity
+        void force_update() -- forces an immediate alife scheduled update cycle
+    }
+
+    game {
+        Fvector2 world2ui(Fvector pos, bool hud = false, bool allow_offscreen = false)
+        Fvector2 world2ui_with_depth(Fvector pos, bool hud = false, bool allow_offscreen = false)
+        function ui2world(Fvector2 pos) -> Fvector result, u16 object_id
+        function ui2world_offscreen(Fvector2 pos) -> Fvector result, u16 object_id
+        change_game_news_show_time(CUIWindow* UIWindow, float show_time)
+        update_pda_news_from_uiwindow(CUIWindow* UIWindow)
+
+        bool motion_exists(string model_path, string motion_name) -- Loads a HUD model temporarily and checks whether it contains a named cycle motion. Caller must ensure the file exists first — game crashes on a missing path.
+    }
+
+    ini_file() {
+        string get_filename()
+        void dltx_print(string sec = nil, string line = nil)
+        string dltx_get_filename_of_line(string sec, string line)
+        table dltx_get_section(string sec)
+        bool dltx_is_override(string sec, string line)
+    }
+
+    // Player hud
+    // get_player_hud():set_hands("actor_hud_cs_exo")
+    get_player_hud() {
+        void set_hands(string section)
+        void reset_hands()
+    }
+
+    namespace ActorMenu {
+        CUIMessagesWindow get_messages_menu()
+    }
+
+    // MT only
+    class cse_alife_item_weapon {
+        function clone_upgrades(cse_alife_item_weapon*)
+    }
+
+    class cse_alife_level_changer : cse_alife_space_restrictor {
+        property dest_game_vertex_id    // u16
+        property dest_level_vertex_id   // u32
+        property dest_position          // Fvector
+    }
+
+    class CUIWindow {
+        CUIWindow FindChild()
+
+		CUI3tButton cast_3tButton()
+		CUIActorMenu cast_ActorMenu()
+		CUIButton cast_Button()
+		CUICheckButton cast_CheckButton()
+		CUIComboBox cast_ComboBox()
+		CUICustomEdit cast_CustomEdit()
+		CUICustomSpin cast_CustomSpin()
+		CUIDialogWnd cast_DialogWnd()
+		CUIEditBox cast_EditBox()
+		CUIFrameLineWnd cast_FrameLineWnd()
+		CUIFrameWindow cast_FrameWindow()
+		UIHint cast_Hint()
+		CUIHudStatesWnd cast_HudStatesWnd()
+		CUIListBox cast_ListBox()
+		CUIListBoxItem cast_ListBoxItem()
+		CUIListBoxItemMsgChain cast_ListBoxItemMsgChain()
+		CUIMMShniaga cast_MMShniaga()
+		CUIMainIngameWnd cast_MainIngameWnd()
+		CUIMapInfo cast_MapInfo()
+		CUIMapList cast_MapList()
+		CUIMessageBox cast_MessageBox()
+		CUIMessageBoxEx cast_MessageBoxEx()
+		CUIMessagesWindow cast_MessagesWindow()
+		CUIMotionIcon cast_MotionIcon()
+		CUIPdaWnd cast_PdaWnd()
+		CUIProgressBar cast_ProgressBar()
+		CUIPropertiesBox cast_PropertiesBox()
+		CUIDialogWndEx cast_ScriptWnd()
+		CUIScrollView cast_ScrollView()
+		CServerList cast_ServerList()
+		CUISleepStatic cast_SleepStatic()
+		CUISpinFlt cast_SpinFlt()
+		CUISpinNum cast_SpinNum()
+		CUISpinText cast_SpinText()
+		CUIStatic cast_Static()
+		CUITabButton cast_TabButton()
+		CUITabControl cast_TabControl()
+		CUITextWnd cast_TextWnd()
+		CUITrackBar cast_TrackBar()
+    }
+    
+    class CUIGameCustom {
+        CUIWindow GetWindow() // get_hud():GetWindow()
+    }
+
+    class CUIProgressBar {
+        CUIStatic GetProgressStatic()
+		bool GetSnapNoDelay() Get the status of "SnapNoDelay"
+		void SetSnapNoDelay() Enable: progress visual displays progress position instantly. No longer progressively increase/descrease until meeting the new position.
+		void SnapProgressPos() Snap progress visual to current progress position.
+    }
+
+    class CUIStatic {
+    	void SetColorAnimation(string name, number flags, float delay)
+		void ResetColorAnimation()
+		void RemoveColorAnimation()
+    }
+
+    class CUIDialogWnd : CUIWindow {
+        void AllowWorkInPause(bool state)
+    }
+
+	 class CUIPdaWnd : CUIDialogWnd {
+        // Ncenka - allow to change PDA UI XML file
+		function SetPdaXml(string)
+		function GetPdaXml()
+
+        // Sync the PDA tab strip with the pda_dynamic_tabs.script registry. Not for mod code:
+        // register/unregister call it themselves.
+        void RebuildTabs()
+    }
+
+    // Dynamic tabs + tab-strip overflow scrolling. For internal use only, use the pda_dynamic_tabs.script registry
+    // to manage dynamic tabs
+    class CUITabControl : CUIWindow {
+        // Insert a tab after the tab `after_id` ("" or unknown = append); size/art/font copy the
+        // strip's own tabs. Tab width is fixed, so a too-long caption may clip. False on a control
+        // with no tabs. Call RecalcScroll after.
+        bool AddTab(string id, string caption, string after_id)
+        // Give a tab an icon drawn over its background art, fitted into the slot the strip's XML
+        // declares (<icon_layout> on the <tab> node). `art` is a base name: art_e/_d/_h/_t are used
+        // when present, a missing state falls back to _e, and a bare `art` alone is tinted with the
+        // caption colour instead. False if the tab or the art is unknown. Must be re-applied after
+        // AddTab, which builds the tab fresh.
+        bool SetTabIcon(string id, string art)
+        void RecalcScroll() // recompute strip geometry; scrolling engages only on overflow
+    }
+
+    class CUIMessagesWindow : CUIWindow {
+        // no extra exports yet
+    }
+
+    class CUIPropertiesBox : CUIFrameWindow {
+        void AddHeader(string str) // Adds a non-selectable, colored title row (used to group items in a merged context menu)
+        CUIPropertiesBox AddSubmenu(string label) // Adds a "label >" row whose submenu expands on hover; returns the child box to populate (AddItem/AddHeader/nested AddSubmenu)
+        bool AddItem(string str, u32 id) // Adds a selectable item row carrying a u32 id (read back via GetSelectedItem():GetTAG() / map_spot_menu_property_clicked prop_id); lets a menu carry duplicate labels
+        void ShowAt(Frect parent_rect, vector2 point) // Opens the box at `point`, kept inside `parent_rect`; both in the box's PARENT space. AttachChild and AutoUpdateSize() first (submenus too)
+    }
+
+    class CUIListBoxItem : CUIFrameLineWnd {
+        u32 GetTAG() // Per-item u32 id set via CUIPropertiesBox:AddItem(str, id)
+        void SetTAG(u32 value)
+    }
+
+    class CUIMainIngameWnd : CUIWindow {
+        property m_QuickSlotText1
+        property m_QuickSlotText2
+        property m_QuickSlotText3
+        property m_QuickSlotText4
+
+        table GetQuickSlotIcons()
+    }
+
+    // MT only
+    class CMapManager {
+        void RemoveMapLocationByObjectID(u16 id)
+        void RemoveMapLocation(CMapLocation* ml)
+        void DisableAllPointers()
+    }
+    
+    // MT only
+    class CMapLocation {
+        bool HintEnabled()
+        string GetHint()
+        void SetHint(string hint)
+        bool PointerEnabled()
+        void EnablePointer()
+        void DisablePointer()
+        bool Collidable()
+        bool SpotEnabled()
+        void EnableSpot()
+        void DisableSpot()
+        string GetLevelName()
+        Fvector2 GetPosition()
+        u16 ObjectID()
+        Fvector3 GetLastPosition()
+    }
+
+    class render_device {
+        // Switch the pause, with sound emitters and without hint on screen
+        void pause_ex(bool state)
+    }
+
+    class particles_object {
+        void set_hud_mode(bool hud_mode)
+    }
+
+    // Debug shapes
+    enum DebugRenderType {
+        line,
+        sphere,
+        box,
+    }
+
+    debug_render {
+        DBG_ScriptObject* add_object(u32 id, DebugRenderType type)
+        DBG_ScriptObject* add_object(LPCSTR id, DebugRenderType type)
+        void remove_object(u32 id)
+        void remove_object(LPCSTR id)
+        DBG_ScriptObject* get_object(u32 id)
+        DBG_ScriptObject* get_object(LPCSTR id)
+        u32 get_flags()
+        void set_flags(u32 flags)
+        DBG_ScriptSphere* cast_dbg_sphere()
+        DBG_ScriptBox* cast_dbg_box()
+        DBG_ScriptLine* cast_dbg_line()
+
+        // Common properties
+        fcolor color
+        bool hud
+        bool visible
+    }
+    class DBG_ScriptSphere {
+        Fmatrix matrix
+    }
+    class DBG_ScriptBox {
+        Fmatrix matrix
+        Fvector size
+    }
+    class DBG_ScriptLine {
+        Fvector point_a
+        Fvector point_b
+    }
+    // examples
+        local sphere = debug_render.add_object(1337, DBG_ScriptObject.sphere):cast_dbg_sphere()
+        sphere.visible = true
+        sphere.color = fcolor():set(1,0,0,1)
+        local scale_mat = matrix():identity():scale(0.1,0.1,0.1)
+        local pos_mat = matrix():translate(db.actor:position())
+        local mat = matrix():mul(pos_mat, scale_mat)
+        sphere.matrix = mat
+
+        local line = debug_render.add_object(9, DBG_ScriptObject.line):cast_dbg_line()
+        line.point_a = db.actor:position()
+        line.point_b = vector():set(0, 0, 0)
+        
+        local box = debug_render.add_object(12, DBG_ScriptObject.box):cast_dbg_box()
+        box.size = vector():set(0.5,1,0.5)
+
+
+    // Query data from actor ray queries
+    // Actor = Pick active ray from Weapon / Device / Camera
+	enum ETraceTarget {
+		Camera      = 0,
+		Weapon      = 1,
+		Device      = 2,
+		Actor       = 3,
+	}
+
+    // Encodings used for dds formats, DX10/11 Compatible
+	enum DxEncoding {
+		eDXE_A8R8G8B8 = 0,
+		eDXE_DXT1 = 1,
+		eDXE_DXT5 = 2,
+		eDXE_BC7 = 3,
+		eDXE_undefined = 4,
+    }
+
+    shader_bus { -- named float4 lanes bound to hlsl constants called bus_<id>, see SHADER_BUS.md
+        number version() -- 2
+        number register(string id, string owner, string description) -- the write token, fatal when another owner already holds the id
+        number try_register(string id, string owner, string description) -- nil instead of the fatal
+        bool set(number token, number x, number y, number z, number w)
+        function get(string id) -> bool ok, number x, number y, number z, number w -- the bound value, one frame behind set
+        function get_pending(string id) -> bool ok, number x, number y, number z, number w -- the value the owner last wrote
+        bool has(string id)
+        string describe(string id) -- nil for an unknown or unregistered id
+        string owner_of(string id) -- nil for an unknown or unregistered id
+        table list(bool include_declared = false) -- rows {id, owner, description, state, source, writer}, registered lanes then the twelve legacy console lanes, state is registered, declared or legacy
+        function stats(string id) -> bool ok, number changes, number last_change_frame, number bound_frame, number writes
+    }
+
+    level {
+        float get_music_volume()
+        void set_music_volume(float)
+
+        float get_weather_weight()
+        void set_weather_weight(float)
+        void set_weather_smooth(string)
+
+        // Camera, position is x,y,z vector, direction is head,pitch,roll vector in RADIANS
+        void set_cam_custom_position_direction(Fvector position, Fvector direction, int smoothing, bool hudDraw, bool hudAffect)
+        void set_cam_custom_position_direction(Fvector position, Fvector direction, int smoothing, bool hudDraw)
+        void set_cam_custom_position_direction(Fvector position, Fvector direction, int smoothing)
+        void set_cam_custom_position_direction(Fvector position, Fvector direction)
+        void remove_cam_custom_position_direction()
+
+        // Removes all engine-spawned per-animation HUD camera effectors
+        // Scripted effectors added via add_cam_effector are not touched.
+        void remove_hud_motion_cam_effectors()
+
+        // level.add_cam_effector, but contains one more variable that dictates the speed of the cam effector, returns anim length
+        float add_cam_effector(LPCSTR fn, int id, bool cyclic, LPCSTR cb_func, float cam_fov, bool b_hud, float power, float speed)
+
+        game_object get_target_obj(ETraceTarget)
+        game_object get_target_obj()
+        number get_target_dist(ETraceTarget)
+        number get_target_dist()
+        number get_target_element(ETraceTarget)
+        number get_target_element()
+        Fvector get_target_pos(ETraceTarget)
+        Fvector get_target_pos()
+        script_rq_result get_target_result(ETraceTarget)
+        script_rq_result get_target_result()
+
+        table get_nearby_vertices(pos, radius) // can be used to collect nearby vertices. ([lvid] = true)
+        number vertex_link(lvid, index) // can be used to get the vertices that is connected to the current vertex.
+        table get_nearby_covers(pos, radius) // can be used to collect nearby vertices that are covers. ([lvid] = true)
+
+        // antglobes
+        Fvector get_sun_pos() // Get the sun's position in the sky
+        Fcolor get_sun_color() // Get the float represenation of the sun's color in rgb format
+        float get_sun_intensity() // Get the sun's brightness
+        bool is_sun_visible() // Check if the weather is clear
+
+        //Take Screenshot (written to textures folder), each 'dimensions' field must be to power of 2
+        void take_screenshot(LPCSTR path, Fvector2 dimensions, DxEncoding dx_encoding)
+
+        void map_remove_all_object_spots(id)
+
+        CUIStatic* map_get_object_spot_static(u16 id, LPCSTR spot_type)
+        CUIStatic* map_get_object_minimap_spot_static(u16 id, LPCSTR spot_type)
+        table map_get_object_spots_by_id(u16 id) // Returns array of tables
+        // {
+            spot_type: string, icon ID from map_spots XML
+            text: string, text when spot is hovered
+        // }
+
+        void map_pan_to(LPCSTR level_name, float x, float z, bool zoom_in)
+        void map_pan_to_level(LPCSTR level_name, bool zoom_in)
+
+        // MT only
+        CMapManager* get_map_manager()
+        void patrol_path_add(string patrol_path, CPatrolPath* path)
+        void patrol_path_remove(string patrol_path)
+
+        add_bullet(Fvector pos, Fvector dir, float speed, float power, float impulse, u16 sender, ALife::EHitType hit_type, float max_dist, LPCSTR ammo_sect, float air_resistance)
+
+        add_bullet(table t)
+        // Supported parameters and example:
+        //    local t = {
+        //        pos = device().cam_pos,
+        //        dir = device().cam_dir,
+        //        speed = 10,
+        //        power = 1,
+        //        impulse = 1,
+        //        sender = AC_ID,
+        //        senderweapon = db.actor:active_item():id(),   // Defaults to what's set for sender if not specified
+        //        hit_type = 1,
+        //        max_dist = 100,
+        //        ammo_sect = "ammo_5.56x45_fmj",
+        //        air_resistance = 0.2,
+        //    }
+        //    level.add_bullet(t)
+
+        // Script Attachments
+        function add_attachment(string, string)
+        function get_attachment(string)
+        function remove_attachment(string)
+        function remove_attachment(script_attachment)
+        function iterate_attachments(function)
+
+        // Post-Process Effectors
+        float get_pp_effector_factor(int id)
+        float get_pp_effector_length(int id)
+        bool check_pp_effector(int id)
+
+        // MT only
+        function scheduler_flush(bool)
+    }
+
+    // obj:get_physics_shell()
+    class PHShell {
+        void apply_torque(float roll, float yaw, float pitch)
+		void set_linear_vel(vector)
+		void set_angular_vel(vector)
+        void set_force_exact_integration() // step this object's physics island with the exact solver
+                                           // (dWorldStep) bypassing the 30-joint budget that gates the
+                                           // vehicles' default preference (capped at 96 island joints).
+                                           // Needed by >4-wheel vehicles: wheel+contact joints exceed
+                                           // 30, silently demoting them to quickstep, which cannot
+                                           // transmit wheel motor torque into a heavy hull.
+    }
+
+    // obj:get_car()
+    class CCar {
+        function GetSpeed() -> float // signed forward m/s, negative = reversing
+        function SetTargetSpeed(float mps) // speed governor, negative = reverse
+        function ClearTargetSpeed()
+        function SetThrottle(float k) // 0..1 drive torque scale
+        function SetSteer(float k) // -1..1, + = right
+        function GetWheelFriction() -> float // wheel-ground friction multiplier (mu_factor)
+        function SetWheelFriction(float k)
+        function Transmission(number gear) // 0 = reverse, 1..N = forward gears
+        function TransmissionUp()
+        function TransmissionDown()
+        function CurrentTransmission() -> number
+        function RefWheelMaxSpeed() -> float
+        function EnginePower() -> float
+        function EngineCurTorque() -> float
+        function DoorOpen(number bone_id) / DoorClose / DoorUse / DoorSwitch
+        function IsDoor(number bone_id) -> bool
+		
+		function SetUseAction(string)
+		function GetZoomFactor() -> float
+		function GetViewportNear() float
+		function SetViewportNear(float)
+		
+		/* Camera scope with different zooming levels. */
+		function IsScopeEnable() -> bool
+		function GetScopeSize() number
+		function GetScopeActive() number
+		function SetScopeActive(number)
+		
+		/* Drone subclass */
+		function CCarDrone_GetPowerEfficiency() -> float
+		function CCarDrone_SetPowerEfficiency(float)
+		
+		/* Visual 3D camera on model */
+		function VisualCamera_GetDesireAngle() -> float
+		function VisualCamera_GetRotXCur() -> float
+		function VisualCamera_GetRotYCur() -> float
+		
+        callbacks (see callbacks_gameobject.script): car_on_hit, car_on_weapon_fired
+    }
+
+    class Fvector {
+        static functions:
+            vector.generate_orthonormal_basis(Fvector dir, Fvector up, Fvector right)
+            vector.generate_orthonormal_basis_normalized(Fvector dir, Fvector up, Fvector right)
+
+        function add(float x, float y, float z)
+        function sub(float x, float y, float z)
+        function mul(float x, float y, float z)
+        function div(float x, float y, float z)
+        function distance_to_xz_sqr(Fvector)
+        function project(Fvector u, Fvector v)
+        function project(Fvector v)
+
+        function hud_to_world()
+        function world_to_hud()
+
+        function hud_to_world_dir()
+        function world_to_hud_dir()
+    }
+
+    class Fvector2 {
+        function normalize()
+    }
+
+    class Fmatrix {
+        property i
+        property _14_
+        property j
+        property _24_
+        property k
+        property _34_
+        property c
+        property _44_
+
+        matrix()
+
+        function set(Fmatrix)
+        function set(Fvector, Fvector, Fvector, Fvector) 
+        function identity()
+        function mk_xform(quaternion, Fvector)
+        function build_camera_dir(Fvector vFrom, Fvector vView, Fvector vWorldUp)
+        function build_projection(float fov, float aspect, float nearPlane, float farPlane)
+        function mulA_43(Fmatrix A)
+        function mulA_44(Fmatrix A)
+        function mulB_43(Fmatrix B)
+        function mulB_44(Fmatrix B)
+        function mul_43(Fmatrix A, Fmatrix B)
+        function translate(float x, float y, float z)
+        function translate(Fvector)
+        function translate_add(float x, float y, float z)
+        function translate_add(Fvector)
+        function translate_over(float x, float y, float z)
+        function translate_over(Fvector)
+        function mul(Fmatrix, Fmatrix)
+        function mul(Fmatrix, float)
+        function mul(float)
+        function invert()
+        function invert(Fmatrix)
+        function invert_b(Fmatrix)
+        function div(Fmatrix, float)
+        function div(float)
+        function scale(float x, float y, float z)
+        function scale(Fvector)
+        function setHPB(float x, float y, float z)
+        function setHPB(Fvector)
+        function setXYZ(float x, float y, float z)
+        function setXYZ(Fvector)
+        function setXYZi(float x, float y, float z)
+        function setXYZi(Fvector)
+        Fvector getHPB()
+        function transform(Fvector, Fvector)
+        function transform(Fvector)
+        function transform_tiny(Fvector, Fvector)
+        function transform_tiny(Fvector)
+        function transform_dir(Fvector, Fvector)
+        function transform_dir(Fvector)
+
+        function hud_to_world()
+        function world_to_hud()
+    }
+
+    class particle_object {
+        function play(bool bHudMode = false)
+        function play_at_pos(Fvector pos, bool bHudMode = false)
+    }
+
+    class wallmarks_manager {
+        wallmarks_manager()
+        function place (Fvector dir, Fvector start_pos, float trace_dist, float wallmark_size, string section, game_object ignore_obj, float ttl)
+        function place (Fvector dir, Fvector start_pos, float trace_dist, float wallmark_size, string section, game_object ignore_obj, float ttl, bool random_rotation)
+
+        // User defined rotation in DEGREES
+        function place (Fvector dir, Fvector start_pos, float trace_dist, float wallmark_size, string section, game_object ignore_obj, float ttl, float rotation)
+
+        function place_skeleton (game_object obj, string section, Fvector start, Fvector dir, float size, float ttl)
+    }
+
+    class game_object {
+		// Class casting
+		function cast_Knife()
+        function get_projector()
+        function get_stmgun()
+        function cast_Missile()
+        function cast_Explosive()
+
+        // General
+        Fmatrix xform(bool bHud)
+        Fbox bounding_box(bool bHud)
+
+        // Player
+        function get_actor_walk_accel()
+        function set_actor_walk_accel(float)
+        function get_actor_walk_back_coef()
+        function set_actor_walk_back_coef(float)
+        function get_actor_lookout_coef()
+        function set_actor_lookout_coef(float)
+        function set_actor_direction(float yaw, float pitch)
+        function set_actor_direction(float yaw, float pitch, float roll)
+        function set_actor_direction(Fvector HPB)
+        function get_actor_crouch_coef()
+        function set_actor_crouch_coef(float)
+        function get_actor_climb_coef()
+        function set_actor_climb_coef(float)
+        function get_actor_walk_strafe_coef()
+        function set_actor_walk_strafe_coef(float)
+        function get_actor_run_strafe_coef()
+        function set_actor_run_strafe_coef(float)
+        function get_actor_sprint_strafe_coef()
+        function set_actor_sprint_strafe_coef(float)
+        function update_weight()
+        function get_total_weight_force_update()
+        function get_talking_npc()
+        function set_actor_position(vector pos, bool bskip_collision_correct, bool bkeep_speed)
+        function set_movement_speed(vector)
+        function get_actor_ui_luminosity() // Deprecated : Prefer using get_actor_visibility, which better describes what the value represents
+        function get_actor_visibility()
+        function get_actor_object_looking_at()
+        function get_actor_person_looking_at()
+        function get_actor_default_action_for_object()
+		function set_actor_box_y_offset(u32 box_num, float offset) -- box_num: 0 for stand, 1 for crouch, 2 for prone;
+        function g_fireParams()
+        function move_to_slot(game_object* pItem, number slot_id, bool doNotActivate)
+        function get_actor_damage_stagger_time_factor() // returns the damage stagger time factor that scales the slow down from mutant hit
+        function set_actor_damage_stagger_time_factor(float val) // writes to the damage stagger time factor variable that scales the slow down from mutant hit
+
+        // Stalker and Monster
+        function invalidate_restrictions()
+        void set_vision_speed(float factor) // Per-object vision-speed factor multiplied into get_visible_value on top of the ai_vision_speed_boost cvar. 1.0 = vanilla, higher spots faster, negative clamps to 0. Persists while online; re-set on spawn (memory manager is rebuilt when the NPC comes back online).
+        void set_visible_enemy_bias(float actor_bias, float npc_bias) // Per-object override of the enemy-selection bias toward whoever can see the NPC. actor_bias replaces the default 900 subtracted when the actor sees this NPC. npc_bias replaces the default 300 for another NPC that sees it. Each arg is independent, a negative one keeps that side vanilla (900 / 300). 0 removes the pull. Not serialized, re-set on spawn.
+        void set_hit_redirect(float max, float falloff) // Per-object bonus toward the last attacker in enemy selection, replacing the flat CQB step. max < 0 keeps vanilla. max >= 0 subtracts max*(1 - d2/falloff^2) from the attacker cost within falloff metres, so a close attacker is prioritised and a distant one fades to 0. The victim turns toward the shooter without a forced sighting. Not serialized, re-set on spawn.
+        void set_view_distance_factor(float factor) // Per-object view-DISTANCE factor, the range sibling of set_vision_speed: multiplies object_visible_distance's return, composing with the per-state max_view_distance LTX multiplier. 1.0 = vanilla, higher sees farther, negative clamps to 0. Persists while online; re-set on spawn.
+        void set_health_restore_boost(float value) // Per-object additive passive health-restore boost: adds value to the condition's m_fV_HealthRestore velocity applied every UpdateHealth while alive (base ~0.00003/s for stalkers), so the entity regenerates HP over time with no item. 0 = vanilla, higher = faster idle regen, negative clamps to 0. Stalkers and monsters (any CEntityAlive). Persists while online; re-set on spawn (condition rebuilt on re-online).
+        void set_movement_hold(bool value) // Per-object movement hold: while true, parse_velocity_mask routes into its Stand branch, so the stalker stays planted (speed 0, movement type Stand) with the path and destination preserved; movement resumes when cleared. false = vanilla. Stalkers only. Not serialized; the caller owns clearing it - a stale true holds the NPC in place indefinitely.
+
+        // Stalker NPCs
+        function get_enable_anomalies_pathfinding()
+        function set_enable_anomalies_pathfinding(bool)
+        function get_enable_anomalies_damage()
+        function set_enable_anomalies_damage(bool)
+        function inside_anomaly()
+        function angle()
+        function force_set_angle(Fvector angle, bool bActivate)
+        function set_enable_movement_collision(bool)
+        function character_dialogs()
+        function memory_remove_links(game_object)
+        function get_object_visible_distance(game_object)
+        function get_object_luminocity(game_object)
+        void set_aim_params(float max_angle, float min_angle, float min_speed, float predict_time) // Per-NPC sight-manager aim params (swing speed, firing cone, target lead). Unset or negative components follow the live ai_aim_max_angle / ai_aim_min_angle / ai_aim_min_speed / ai_aim_predict_time cvars, so pass negatives to revert to vanilla. Set once per NPC (e.g. on spawn by rank); read per frame in C++, no per-frame Lua.
+        void set_fire_queue_scale(float size_k, float interval_k) // Per-NPC scale on the combat planner's burst roll (select_queue_params): burst size and inter-burst interval multiply after the weapon-type x distance band is picked, so [fire_queue_params] retunes stay respected. Scaled size clamps to >= 1. Negative = unset (vanilla queues). Touches planner fire only - script set_item queues and the death mag dump are not scaled. Not serialized; re-set on spawn.
+        bool can_kill_enemy() // Engine posture-aware shot clearance: fire-point ray (with safety-angle probes) reaches the NPC's current selected enemy. False when no weapon is out. At most one recompute per frame (shared cache with the engine friendly-fire gate).
+        bool can_kill_member() // As can_kill_enemy but true when the ray would hit a squad member (friendly fire). False when no weapon is out.
+        bool fire_make_sense() // Engine fire-discipline gate for the current selected enemy: occlusion before target (pick_distance + ai_fire_range_extension), floor gap (ai_fire_max_height_diff), point-blank (ai_fire_min_dist), unseen enemy only within ai_fire_make_sense_interval and with an automatic weapon.
+        bool is_hit_anim_playing() // True while the engine's additive hit flinch (PlayHitMotion) is still blending on this entity - one clock compare against the end time stamped when the flinch played, no blend walk. Any alive entity with character physics support (stalkers, monsters); false otherwise.
+        bool affect_cover() // Returns true when the NPC considers itself in a tactically covered position (physically arrived at cover). Set by combat actions, reset on action transition. Use in BeforeHitCallback to detect hits in the open.
+        void best_cover_invalidate() // Forces the NPC to re-evaluate its best cover point on the next tick. Call after affect_cover() returns false on a hit to make the NPC seek new cover.
+        void make_enemy_visible(game_object enemy) // Force-plant enemy as a VISIBLE-memory object on this stalker (CMemoryManager::make_object_visible_somewhen - the engine's own squad wounded-target distribution call). Enemy selection scores "currently seen" far above hit/sound memory, so a shooter injected only via hit memory never wins selection; this puts him in the seen class where the engine's nearest-seen logic takes over. Visibility then decays through normal memory rules. Stalker receiver, alive-entity argument, no-op with an error log otherwise.
+        string rank_name() // Returns rank id string from CharacterInfo: "novice", "experienced", "veteran", "master", "expert". More reliable than rank() since raw integer thresholds vary per modpack.
+        string get_current_smart_cover_name() // Returns cName() of the smart cover the NPC is currently occupying, or "" if none.
+        string get_current_loophole_id() // Returns the loophole id within the current smart cover, or "" if none.
+
+        // Space Restrictors
+        function force_set_restrictor_type(number)
+
+        // Anomalies
+        function is_enabled_anomaly()
+
+        // Inventory items (including weapons, outfits, helmets and backpacks)
+        Frect get_inv_grid_rect() // Current inv_grid values, including upgrades; units are inventory grid cells.
+        Frect get_upgr_icon_rect() // Current upgr_icon values, including upgrades; units are pixels.
+        // Both return a copy: x1 = x, y1 = y, x2 = width, y2 = height (not bottom-right coordinates).
+        // Modifying the returned Frect does not change the item. Non-inventory objects log an error and return all zeros.
+        // Example: local grid = item:get_inv_grid_rect(); local width, height = grid.x2, grid.y2
+        // To construct a UI pixel rectangle from the upgrade icon:
+        // local icon = item:get_upgr_icon_rect()
+        // local uv = Frect():set(icon.x1, icon.y1, icon.x1 + icon.x2, icon.y1 + icon.y2)
+
+        // Artefact
+        function get_artefact_additional_inventory_weight()
+        function set_artefact_additional_inventory_weight(float)
+
+		// Devices
+		function set_device_enabled(bool)
+		function is_device_enabled()
+
+        // Bones
+        u16 get_bone_id(string)
+        u16 get_bone_id(string, bool bHud)
+
+        u16 bone_id(string) // Same as get_bone_id
+        u16 bone_id(string, bool bHud)
+
+        string bone_name(u16 id)
+        string bone_name(u16 id, bool bHud)
+
+        Fmatrix bone_transform(u16 id)
+        Fmatrix bone_transform(u16 id, bool bHud)
+        Fmatrix bone_transform(string)
+        Fmatrix bone_transform(string, bool bHud)
+
+        Fvector bone_position(u16 id)
+        Fvector bone_position(u16 id, bool bHud)
+        Fvector bone_position(string)
+        Fvector bone_position(string, bool bHud)
+
+        Fvector bone_direction(u16 id)
+        Fvector bone_direction(u16 id, bool bHud)
+        Fvector bone_direction(string)
+        Fvector bone_direction(string, bool bHud)
+
+        u16 bone_parent(u16 id)
+        u16 bone_parent(u16 id, bool bHud)
+        u16 bone_parent(string)
+        u16 bone_parent(string, bool bHud)
+
+        bool bone_visible(u16 id)
+        bool bone_visible(u16 id, bool bHud)
+        bool bone_visible(string)
+        bool bone_visible(string, bool bHud)
+
+        function set_bone_visible(u16 id, bool bVisibility, bool bRecursive, bool bHud)
+        function set_bone_visible(string bone_name, bool bVisibility, bool bRecursive, bool bHud)
+
+        function list_bones(bool bHud = false)
+		
+		bool GetBulletCheckVisual()
+		void SetBulletCheckVisual(bool)
+
+        // HUD item fire points/bones
+        Fvector hud_fire_point()
+        Fvector hud_fire_point2()
+        Fvector hud_fire_point_silencer()
+        void set_hud_fire_point(Fvector value)
+        void set_hud_fire_point2(Fvector value)
+        void set_hud_fire_point_silencer(Fvector value)
+
+        u16 hud_fire_bone_id()
+        u16 hud_fire_bone2_id()
+        u16 hud_fire_bone_silencer_id()
+        string hud_fire_bone_name()
+        string hud_fire_bone2_name()
+        string hud_fire_bone_silencer_name()
+        void set_hud_fire_bone(u16 id)
+        void set_hud_fire_bone(string bone_name)
+        void set_hud_fire_bone2(u16 id)
+        void set_hud_fire_bone2(string bone_name)
+        void set_hud_fire_bone_silencer(u16 id)
+        void set_hud_fire_bone_silencer(string bone_name)
+        // HUD item inertia
+        bool set_hud_inertion_enabled()
+        void hud_inertion_enabled(bool value)
+
+        // Torch
+        function update_torch()
+        
+        // Script Attachments
+        function add_attachment(string, string)
+        function get_attachment(string)
+        function remove_attachment(string)
+        function remove_attachment(script_attachment)
+        function iterate_attachments(function)
+		
+		// Shader/Textures
+		function get_shaders(bool)
+		function set_shader(number, string, string, bool)
+		function get_default_shaders(bool)
+		function reset_shader(number, bool)
+		
+		get_shaders(hud_mode)
+		hud_mode is optional and will default to false
+		returns a table of submesh IDs with subtables containing the shader and texture names of all submeshes of a model, table looks like this for example:
+		{
+		1 = 
+			{
+			texture = "act\act_face_mask_03",
+			shader = "models\model_pn",
+			},
+		2 = 
+			{
+			texture = "act\act_stalker_cskysun_2",
+			shader = "models\model_pn",
+			},
+		},
+		
+		get_default_shaders(hud_mode)
+		returns similar table as get_shaders but containing the default shader and texture names, even after they were changed by set_shader
+		
+		set_shader(id, shader, texture, hud_mode) can assign a new shader/texture to the submesh ID
+		id can be -1 to apply the shader/texture to all submeshes at once
+		shader/texture can be nil if you only want to apply one of them
+		hud_mode is optional and will default to false
+		
+		reset_shader(id, hud_mode)
+		same as set_shader but resets to the default shader/texture values, so you don't need to store them in a table to reset them later
+    }
+
+    class CArtefact : CGameObject {
+        property m_additional_weight
+    }
+
+    class CMissile : CGameObject {
+        enum EMissileStates
+            eThrowStart
+            eReady
+            eThrow
+            eThrowEnd
+
+        function GetMinForce()
+        function GetMaxForce()
+        function GetThrowForce()
+        function GetConstForce()
+        function IsConstPower()
+        function GetThrowPoint()
+        function GetThrowDir()
+    }
+
+    class CProjector : CGameObject {
+        enum projector_enum
+            eActive
+            eSwitch
+            eDesiredPos
+            eDesiredDir
+            eDesiredAng
+        
+        functiom Action(number id, number flags, string sec)
+        functiom SetParam(number id, Fvector val, string sec)
+    }
+
+    class CWeapon : CGameObject {
+        // Return RPM in actual RPM value like in configs
+        function RealRPM()
+        function ModeRealRPM()
+
+        // Setters
+        function SetFireDispersion(float)
+        function SetMisfireStartCondition(float)
+        function SetMisfireEndCondition(float)
+        function SetRPM(float)
+        function SetRealRPM(float)
+        function SetModeRPM(float)
+        function SetModeRealRPM(float)
+        function Set_PDM_Base(float)
+        function Set_Silencer_PDM_Base(float)
+        function Set_Scope_PDM_Base(float)
+        function Set_Launcher_PDM_Base(float)
+        function Set_PDM_BuckShot(float)
+        function Set_PDM_Vel_F(float)
+        function Set_Silencer_PDM_Vel(float)
+        function Set_Scope_PDM_Vel(float)
+        function Set_Launcher_PDM_Vel(float)
+        function Set_PDM_Accel_F(float)
+        function Set_Silencer_PDM_Accel(float)
+        function Set_Scope_PDM_Accel(float)
+        function Set_Launcher_PDM_Accel(float)
+        function Set_PDM_Crouch(float)
+        function Set_PDM_Crouch_NA(float)
+        function SetCrosshairInertion(float)
+        function Set_Silencer_CrosshairInertion(float)
+        function Set_Scope_CrosshairInertion(float)
+        function Set_Launcher_CrosshairInertion(float)
+        function SetFirstBulletDisp(float)
+        function SetHitPower(float)
+        function SetHitPowerCritical(float)
+        function SetHitImpulse(float)
+        function SetFireDistance(float)
+
+        // World model on stalkers adjustments
+        function Set_mOffset(Fvector position, Fvector orientation)
+        function Set_mStrapOffset(Fvector position, Fvector orientation)
+        function Set_mFirePoint(Fvector position)
+        function Set_mFirePoint2(Fvector position)
+        function Set_mShellPoint(Fvector position)  
+
+        function Get_mOffset()
+        function Get_mStrapOffset()
+        function Get_strap_bone0()
+        function Get_strap_bone1()
+        function Get_strapped_mode()
+        function HandDependence()
+
+        // Cam Recoil
+        // Getters
+        function GetCamRelaxSpeed()
+        function GetCamRelaxSpeed_AI()
+        function GetCamDispersion()
+        function GetCamDispersionInc()
+        function GetCamDispersionFrac()
+        function GetCamMaxAngleVert()
+        function GetCamMaxAngleHorz()
+        function GetCamStepAngleHorz()
+        function GetZoomCamRelaxSpeed()
+        function GetZoomCamRelaxSpeed_AI()
+        function GetZoomCamDispersion()
+        function GetZoomCamDispersionInc()
+        function GetZoomCamDispersionFrac()
+        function GetZoomCamMaxAngleVert()
+        function GetZoomCamMaxAngleHorz()
+        function GetZoomCamStepAngleHorz()
+        function get_CurrentFirePoint()
+        function get_CurrentFirePoint2()
+        function get_CurrentFirePointSilencer()
+
+        // Setters
+        function SetCamRelaxSpeed(float)
+        function SetCamRelaxSpeed_AI(float)
+        function SetCamDispersion(float)
+        function SetCamDispersionInc(float)
+        function SetCamDispersionFrac(float)
+        function SetCamMaxAngleVert(float)
+        function SetCamMaxAngleHorz(float)
+        function SetCamStepAngleHorz(float)
+        function SetZoomCamRelaxSpeed(float)
+        function SetZoomCamRelaxSpeed_AI(float)
+        function SetZoomCamDispersion(float)
+        function SetZoomCamDispersionInc(float)
+        function SetZoomCamDispersionFrac(float)
+        function SetZoomCamMaxAngleVert(float)
+        function SetZoomCamMaxAngleHorz(float)
+        function SetZoomCamStepAngleHorz(float)
+		
+		
+
+        //Scope UI
+        //Returns table containing this data
+        {
+            name - name of scope_texture weapon currently uses
+            uiWindow - CUIWindow instance of scope UI
+            statics - array of CUIStatic that CUIWindow scope UI instance uses
+        }
+        table get_scope_ui() 
+        function set_scope_ui(string)
+        
+        // Get and set the zoom_rotate_time (time in seconds to fully ADS) field for a given weapon
+        function GetZoomRotateTime()
+        function SetZoomRotateTime(float)
+
+		// Forcibly set the zoom type for the weapon
+		function ForceSetZoomType(float)
+
+        callbacks (see callbacks_gameobject.script): npc_on_weapon_reload_start, npc_on_weapon_reload_stop -- (npc, wpn), fired on a stalker's weapon entering/leaving the reload state; actor reloads fire actor_on_weapon_reload instead
+    }
+
+    class CWeaponKnife : CWeapon {
+		function GetHit1Power()
+		function GetHit2Power()
+		function GetHit1PowerCritical()
+		function GetHit2PowerCritical()
+		function GetHit1Impulse()
+		function GetHit2Impulse()
+		function SetHit1Power(float power)
+		function SetHit2Power(float power)
+		function SetHit1PowerCritical(float power)
+		function SetHit2PowerCritical(float power)
+		function SetHit1Impulse(float impulse)
+		function SetHit2Impulse(float impulse)
+    }
+	
+    enum rq_target { (sum them up to target multiple types)
+        rqtNone     = 0,
+        rqtObject   = 1,
+        rqtStatic   = 2,
+        rqtShape    = 4,
+        rqtObstacle = 8,
+    }
+
+    class ray_pick {
+        ray_pick()
+        ray_pick(Fvector position, Fvector direction, float range, rq_target flags, game_object obj)
+        function set_position(Fvector)
+        function set_direction(Fvector)
+        function set_range(float)
+        function set_flags(rq_target)
+        function set_ignore_object(game_object)
+        function query()
+        function get_result() : rq_result
+        function get_object() : game_object
+        function get_distance() : float
+        function get_element() : int (number of triangle)
+        function get_normal() : vector
+    }
+
+    class script_rq_result {
+        const object
+        const range
+        const element
+        const material_name
+        const material_flags
+        const material_phfriction
+        const material_phdamping
+        const material_phspring
+        const material_phbounce_start_velocity
+        const material_phbouncing
+        const material_flotation_factor
+        const material_shoot_factor
+        const material_shoot_factor_mp
+        const material_bounce_damage_factor
+        const material_injurious_speed
+        const material_vis_transparency_factor
+        const material_snd_occlusion_factor
+        const material_density_factor
+    }
+
+    // Available flags, not exported from engine, copy this into your script
+    material_flags = {
+        ["flBreakable"]         = bit.lshift(1, 0),
+        ["flBounceable"]        = bit.lshift(1, 2),
+        ["flSkidmark"]          = bit.lshift(1, 3),
+        ["flBloodmark"]         = bit.lshift(1, 4),
+        ["flClimable"]          = bit.lshift(1, 5),
+        ["flPassable"]          = bit.lshift(1, 7),
+        ["flDynamic"]           = bit.lshift(1, 8),
+        ["flLiquid"]            = bit.lshift(1, 9),
+        ["flSuppressShadows"]   = bit.lshift(1, 10),
+        ["flSuppressWallmarks"] = bit.lshift(1, 11),
+        ["flActorObstacle"]     = bit.lshift(1, 12),
+        ["flNoRicoshet"]        = bit.lshift(1, 13),
+        ["flInjurious"]         = bit.lshift(1, 28),
+        ["flShootable"]         = bit.lshift(1, 29),
+        ["flTransparent"]       = bit.lshift(1, 30),
+        ["flSlowDown"]          = bit.lshift(1, 31),
+    }
+    
+    // Child class of script_light - used specifically to attach it to script_attachments
+    // set_position and set_direction work as an offset to the parent attachment position/direction
+    class attachment_script_light : script_light {
+        property color;
+        property enabled;
+        property hud_mode;
+        property lanim;
+        property lanim_brightness;
+        property range;
+        property shadow;
+        property texture;
+        property type;
+        property volumetric;
+        property volumetric_distance;
+        property volumetric_intensity;
+        property volumetric_quality;
+        
+        attachment_script_light ();
+        
+        function set_direction(vector);
+        function set_direction(vector, vector);
+        function set_direction(number, number, number);
+        function set_position(vector);
+        function set_position(number, number, number);
+    }
+    
+    enum script_attachment_type {
+        Hud         = 0,
+        World       = 1,
+        CamAttached = 2,
+    }
+
+    class ScriptAttachment {
+        -- Parent
+        function set_parent(ScriptAttachment*);
+        function set_parent(game_object*);
+        function set_parent_level();
+        function get_parent();
+
+        -- Child
+        function add_attachment(string, string);
+        function get_attachment(string);
+        function remove_attachment(string);
+        function remove_attachment(script_attachment);
+        function iterate_attachments(function<boolean>);
+
+        -- Offset
+        function set_position(vector);
+        function set_position(number, number, number);
+        function get_position();
+        function set_rotation(vector);
+        function set_rotation(number, number, number);
+        function get_rotation();
+        function set_origin(vector);
+        function set_origin(number, number, number);
+        function get_origin();
+        function set_scale(vector);
+        function set_scale(number, number, number);
+        function set_scale(number);
+        function get_scale();
+        function get_transform();
+        function get_center();
+
+        -- Bones
+        function bone_id(string)
+        function bone_name(number)
+        function bone_visible(number)
+        function bone_visible(string)
+        function set_bone_visible(number, boolean, boolean)
+        function set_bone_visible(string, boolean, boolean)
+        function bone_transform(number)
+        function bone_transform(string)
+        function bone_position(number)
+        function bone_position(string)
+        function bone_direction(number)
+        function bone_direction(string)
+        function bone_parent(number)
+        function bone_parent(string)
+        function set_parent_bone(number);
+        function set_parent_bone(string);
+        function get_parent_bone();
+        function list_bones()
+
+        -- Bone Callbacks
+        function bone_callback(number, number, boolean);
+        function bone_callback(string, string, boolean);
+        function bone_callback(number, string, boolean);
+        function bone_callback(string, number, boolean);
+        function bone_callback(number, function<matrix>, boolean);
+        function bone_callback(string, function<matrix>, boolean);
+        function remove_bone_callback(number);
+        function remove_bone_callback(string);
+
+        -- Other
+        function set_type(number); -- ex. script_attachment_type.Hud
+        function get_type();
+        function set_model(string, boolean);
+        function get_model();
+        function set_name();
+        function get_name();
+        function play_motion(string, boolean, number);
+
+        -- Script 3D UI
+        function set_ui(string);
+        function get_ui();
+        function set_ui_bone(number);
+        function get_ui_bone();
+        function set_ui_position(vector);
+        function set_ui_position(number, number, number);
+        function get_ui_position();
+        function set_ui_rotation(vector);
+        function set_ui_rotation(number, number, number);
+        function get_ui_rotation();
+        function set_ui_scale(vector);
+        function set_ui_scale(number, number, number);
+        function get_ui_scale();
+        function set_ui_origin(vector);
+        function set_ui_origin(number, number, number);
+        function get_ui_origin();
+
+        -- Script Light
+        function attach_light(attachment_script_light*);
+        function detach_light();
+        function get_light();
+        function set_light_bone(number);
+        function set_light_bone(string);
+        function get_light_bone();
+
+        -- Shader and Texture
+		function get_shaders()
+		function get_default_shaders()
+		function set_shader(number, string, string)
+		function reset_shader(number)
+
+        -- Userdata
+        property userdata
+    }
+    
+    Script Attachment Guide: https://anomaly-modding-book.netlify.app/docs/tutorials/scripting/script-attachments
+--]]
