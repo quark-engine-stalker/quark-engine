@@ -2062,6 +2062,13 @@ bool CRenderDevice::Paused()
 
 void CRenderDevice::OnWM_Activate(WPARAM wParam, LPARAM lParam)
 {
+	// UnhandledFilter() minimizes the window (ShowWindow) while handling a fatal fault; that dispatches
+	// WM_ACTIVATE synchronously from inside the exception filter. At that point (and during process
+	// teardown) the input system / sequences are already destroyed, so dereferencing pInput here turned a
+	// single fault into a second access violation (device.cpp -> pInput->OnAppActivate()).
+	if (Debug.is_fatal_in_progress() || pInput == nullptr)
+		return;
+
 	u16 fActive = LOWORD(wParam);
 	BOOL fMinimized = (BOOL)HIWORD(wParam);
 	BOOL bActive = ((fActive != WA_INACTIVE) && (!fMinimized)) ? TRUE : FALSE;

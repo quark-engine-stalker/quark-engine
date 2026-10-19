@@ -741,6 +741,10 @@ CRenderTarget::CRenderTarget()
 		s_pp_bloom_pp.create(&b, "r2\\pp_bloom");
 	}
 	s_dof.create(b_dof, "r2\\dof");
+	{
+		CBlender_dof b(true);
+		s_dof_pp.create(&b, "r2\\dof");
+	}
 	s_gasmask_drops.create(b_gasmask_drops, "r2\\gasmask_drops");
 	s_gasmask_dudv.create(b_gasmask_dudv, "r2\\gasmask_dudv");
 	s_nightvision.create(b_nightvision, "r2\\nightvision");

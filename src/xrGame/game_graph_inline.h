@@ -273,6 +273,24 @@ IC const GameGraph::_GRAPH_ID& CGameGraph::current_level_vertex() const
 	return (m_current_level_some_vertex_id);
 }
 
+IC bool CGameGraph::nearest_vertex(const _LEVEL_ID level_id, const Fvector& level_point, u32& vertex_id, float& distance) const
+{
+	distance = flt_max;
+	vertex_id = u32(-1);
+	for (u32 i = 0, n = header().vertex_count(); i < n; ++i)
+	{
+		const CVertex* candidate = vertex(i);
+		if (candidate->level_id() != level_id)
+			continue;
+		const float current = candidate->level_point().distance_to(level_point);
+		if (current >= distance)
+			continue;
+		distance = current;
+		vertex_id = i;
+	}
+	return vertex_id != u32(-1);
+}
+
 IC void GameGraph::SLevel::load(IReader* reader)
 {
 	reader->r_stringZ(m_name);

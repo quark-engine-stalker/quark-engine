@@ -38,7 +38,9 @@ void CRenderTarget::phase_dof()
 	RCache.Vertex.Unlock(4, g_combine->vb_stride);
 
 	//Set pass
-	RCache.set_Element(s_dof->E[0]);
+	// The scene may currently live in rt_Generic after earlier ping-pong phases (3DSS reticle,
+	// sunshafts, fog, motion blur). Always sample the actual source, not a stale rt_Generic_0.
+	RCache.set_Element((pp_source_is_generic() ? s_dof_pp : s_dof)->E[0]);
 
 	//Set paramterers
 	//RCache.set_c("taa_params", ps_taa_params.x, ps_taa_params.y, 0, 0);

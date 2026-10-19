@@ -269,6 +269,7 @@ private:
 	ref_shader s_blur;
 	ref_shader s_blur_pp;
 	ref_shader s_dof;
+	ref_shader s_dof_pp; // DoF reading r2_RT_generic (ping-pong source)
 	ref_shader s_pp_bloom;
 	ref_shader s_pp_bloom_pp;
 	ref_shader s_gasmask_drops;
