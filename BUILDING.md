@@ -53,4 +53,4 @@ _build/_game/bin_dbg/AnomalyDX11AVX.pdb
 
 Other projects also create intermediate `.lib` and `.obj` files in `_build`. These files are excluded from Git.
 
-To use the build in the game, replace the corresponding files in **`Anomaly\bin`** as shown in the [README](README.md#engine-installation-and-requirements). If the `.pdb` is used for diagnostics, it must match that exact `.exe`.
+To use the build in the game, replace the corresponding files in **`Anomaly\bin`** as shown in the [README](README.md#installation-and-requirements). If the `.pdb` is used for diagnostics, it must match that exact `.exe`.

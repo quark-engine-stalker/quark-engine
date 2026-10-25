@@ -23,7 +23,7 @@
 
 <p align="center">
   <a href="https://github.com/quark-engine-stalker/quark-engine/releases">Скачать / Releases</a> &
-  <a href="#установка-движка-и-требования">Установка</a> &
+  <a href="#установка-и-требования">Установка</a> &
   <a href="CHANGELOG.ru.md">История изменений</a> &
   <a href="#документация">Документация</a> &
   <a href="https://discord.com/invite/X7GRYsNNEc">Discord</a>
