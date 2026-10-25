@@ -833,6 +833,52 @@ CRenderTarget::CRenderTarget()
 		u32 size = RImplementation.o.smapsize;
 		rt_smap_depth.create(r2_RT_smap_depth, size, size, depth_format);
 
+		// Light shadow cache page (+two atlases of VRAM). Created only together with
+		// the passes that clear its slots and copy them to the atlas; without them
+		// every face is drawn the usual way.
+		if (ps_r__light_shadow_cache && size <= 4096)
+		{
+			static const char clear_vs[] =
+				"float4 main(uint id : SV_VertexID) : SV_Position"
+				"{ return float4(float2((id << 1) & 2, id & 2) * float2(2, -2) + float2(-1, 1), 1, 1); }";
+			static const char copy_ps[] =
+				"Texture2D<float> s_cache : register(t0); cbuffer c : register(b0) { int4 offset; };"
+				"float main(float4 p : SV_Position) : SV_Depth { return s_cache.Load(int3(int2(p.xy) + offset.xy, 0)); }";
+			auto compile = [](const char* source, size_t length, const char* profile) -> ID3DBlob*
+			{
+				ID3DBlob* code = nullptr;
+				return SUCCEEDED(D3DCompile(source, length, nullptr, nullptr, nullptr, "main", profile,
+					D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, nullptr)) ? code : nullptr;
+			};
+			if (ID3DBlob* code = compile(clear_vs, sizeof(clear_vs) - 1, "vs_4_0"))
+			{
+				HW.pDevice->CreateVertexShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr,
+					&smap_cache_clear_vs);
+				code->Release();
+			}
+			if (ID3DBlob* code = compile(copy_ps, sizeof(copy_ps) - 1, "ps_4_0"))
+			{
+				HW.pDevice->CreatePixelShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr,
+					&smap_cache_copy_ps);
+				code->Release();
+			}
+			D3D11_BUFFER_DESC cb = {16, D3D11_USAGE_DYNAMIC, D3D11_BIND_CONSTANT_BUFFER, D3D11_CPU_ACCESS_WRITE, 0, 0};
+			HW.pDevice->CreateBuffer(&cb, nullptr, &smap_cache_copy_cb);
+			D3D11_DEPTH_STENCIL_DESC depth = {};
+			depth.DepthEnable = TRUE;
+			depth.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
+			depth.DepthFunc = D3D11_COMPARISON_ALWAYS;
+			HW.pDevice->CreateDepthStencilState(&depth, &smap_cache_clear_depth);
+			D3D11_RASTERIZER_DESC raster = {};
+			raster.FillMode = D3D11_FILL_SOLID;
+			raster.CullMode = D3D11_CULL_NONE;
+			raster.DepthClipEnable = TRUE;
+			HW.pDevice->CreateRasterizerState(&raster, &smap_cache_clear_raster);
+			if (smap_cache_clear_vs && smap_cache_copy_ps && smap_cache_copy_cb && smap_cache_clear_depth &&
+				smap_cache_clear_raster)
+				rt_smap_cache.create(r2_RT_smap_cache, size * 2, size, depth_format);
+		}
+
 		if (RImplementation.o.dx10_minmax_sm)
 		{
 			rt_smap_depth_minmax.create(r2_RT_smap_depth_minmax, size / 4, size / 4, D3DFMT_R32F);
@@ -1434,6 +1480,11 @@ CRenderTarget::CRenderTarget()
 CRenderTarget::~CRenderTarget()
 {
 	_RELEASE(t_ss_async);
+	_RELEASE(smap_cache_clear_vs);
+	_RELEASE(smap_cache_copy_ps);
+	_RELEASE(smap_cache_copy_cb);
+	_RELEASE(smap_cache_clear_depth);
+	_RELEASE(smap_cache_clear_raster);
 
 	// Textures
 	t_material->surface_set(NULL);

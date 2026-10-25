@@ -4,6 +4,12 @@
 #include "Frustum.h"
 #include <intrin.h>
 
+#if defined(__AVX2__) || defined(_M_AVX2)
+#	include <immintrin.h>
+#endif
+
+int ps_frustum_simd = 1;
+
 //////////////////////////////////////////////////////////////////////
 void CFrustum::fplane::cache()
 {
@@ -35,11 +41,20 @@ void CFrustum::fplane::cache()
 	}
 }
 
+void CFrustum::set_simd_lane(int i)
+{
+	simd[0][i] = planes[i].n.x;
+	simd[1][i] = planes[i].n.y;
+	simd[2][i] = planes[i].n.z;
+	simd[3][i] = planes[i].d;
+}
+
 void CFrustum::_add(Fplane& P)
 {
 	VERIFY(p_count<FRUSTUM_MAXPLANES);
 	planes[p_count].set(P);
 	planes[p_count].cache();
+	set_simd_lane(p_count);
 	p_count ++;
 }
 
@@ -48,6 +63,7 @@ void CFrustum::_add(Fvector& P1, Fvector& P2, Fvector& P3)
 	VERIFY(p_count<FRUSTUM_MAXPLANES);
 	planes[p_count].build_precise(P1, P2, P3);
 	planes[p_count].cache();
+	set_simd_lane(p_count);
 	p_count ++;
 }
 
@@ -70,9 +86,91 @@ u32 frustum_aabb_remap [8][6] =
 	{mx,my,mz,Mx,My,Mz}
 };
 
+#if defined(__AVX2__) || defined(_M_AVX2)
+namespace
+{
+	// Classifies the volume against eight planes at once, without the per-plane branches
+	// of the scalar loop. The verdict does not depend on the plane order (any rejection
+	// wins, every fully-containing plane leaves the mask), and the products and sums are
+	// done in the scalar order with mul/add (no FMA), so the result is bit-exact.
+
+	// ((n.x * x + n.y * y) + n.z * z) + d, as fplane::classify() and AABB_OverlapPlane()
+	ICF __m256 classify8(__m256 nx, __m256 ny, __m256 nz, __m256 d, __m256 x, __m256 y, __m256 z)
+	{
+		const __m256 xy = _mm256_add_ps(_mm256_mul_ps(nx, x), _mm256_mul_ps(ny, y));
+		return _mm256_add_ps(_mm256_add_ps(xy, _mm256_mul_ps(nz, z)), d);
+	}
+
+	IC u32 bits8(__m256 mask) { return u32(_mm256_movemask_ps(mask)); }
+
+	// testSphere / testAABB / testSAABB of the scalar code, eight planes per pass
+	template <bool use_sphere, bool use_box>
+	EFC_Visible test_planes_avx2(const CFrustum& F, const Fvector& c, float r, const float* mM, u32& test_mask)
+	{
+		const u32 active = test_mask & F.getMask();
+		u32 rejected = 0;
+		for (u32 base = 0; base < u32(F.p_count); base += 8)
+		{
+			const u32 lanes = (active >> base) & 0xFFu;
+			if (!lanes)
+				continue;
+
+			const __m256 nx = _mm256_loadu_ps(F.simd[0] + base);
+			const __m256 ny = _mm256_loadu_ps(F.simd[1] + base);
+			const __m256 nz = _mm256_loadu_ps(F.simd[2] + base);
+			const __m256 d = _mm256_loadu_ps(F.simd[3] + base);
+			// the sphere rejects or accepts most volumes, the box is tested only for the
+			// planes the sphere straddles
+			u32 none = 0, full = 0, inner = lanes;
+			if (use_sphere)
+			{
+				const __m256 radius = _mm256_set1_ps(r);
+				const __m256 cls = classify8(nx, ny, nz, d, _mm256_set1_ps(c.x), _mm256_set1_ps(c.y), _mm256_set1_ps(c.z));
+				const __m256 abs_cls = _mm256_and_ps(cls, _mm256_castsi256_ps(_mm256_set1_epi32(0x7fffffff)));
+				none = bits8(_mm256_cmp_ps(cls, radius, _CMP_GT_OQ)) & lanes;
+				full = bits8(_mm256_cmp_ps(abs_cls, radius, _CMP_GE_OQ)) & lanes;
+				inner = none ? 0 : lanes & ~full;
+			}
+			if (use_box && inner)
+			{
+				// nearest corner takes max where !(n >= 0), as fplane::cache() decides
+				const __m256 zero = _mm256_setzero_ps();
+				const __m256 neg_x = _mm256_cmp_ps(nx, zero, _CMP_NGE_UQ);
+				const __m256 neg_y = _mm256_cmp_ps(ny, zero, _CMP_NGE_UQ);
+				const __m256 neg_z = _mm256_cmp_ps(nz, zero, _CMP_NGE_UQ);
+				const __m256 min_x = _mm256_set1_ps(mM[0]), max_x = _mm256_set1_ps(mM[3]);
+				const __m256 min_y = _mm256_set1_ps(mM[1]), max_y = _mm256_set1_ps(mM[4]);
+				const __m256 min_z = _mm256_set1_ps(mM[2]), max_z = _mm256_set1_ps(mM[5]);
+				const __m256 near_cls = classify8(nx, ny, nz, d, _mm256_blendv_ps(min_x, max_x, neg_x),
+					_mm256_blendv_ps(min_y, max_y, neg_y), _mm256_blendv_ps(min_z, max_z, neg_z));
+				const __m256 far_cls = classify8(nx, ny, nz, d, _mm256_blendv_ps(max_x, min_x, neg_x),
+					_mm256_blendv_ps(max_y, min_y, neg_y), _mm256_blendv_ps(max_z, min_z, neg_z));
+				none |= bits8(_mm256_cmp_ps(near_cls, zero, _CMP_GT_OQ)) & inner;
+				full |= bits8(_mm256_cmp_ps(far_cls, zero, _CMP_LE_OQ)) & inner;
+			}
+			rejected |= none & lanes;
+			test_mask &= ~((full & lanes) << base);
+		}
+		test_mask = rejected ? 0 : test_mask;
+		return rejected ? fcvNone : test_mask ? fcvPartial : fcvFully;
+	}
+
+	// The vector pass costs the same for any number of planes; with four or fewer active
+	// planes the scalar loop and its early exits are cheaper (measured on the stand).
+	IC bool use_avx2(const CFrustum& F, u32 test_mask)
+	{
+		return ps_frustum_simd && __popcnt(test_mask & F.getMask()) > 4;
+	}
+}
+#endif
+
 //////////////////////////////////////////////////////////////////////
 EFC_Visible CFrustum::testSphere(const Fvector& c, float r, u32& test_mask) const
 {
+#if defined(__AVX2__) || defined(_M_AVX2)
+	if (use_avx2(*this, test_mask))
+		return test_planes_avx2<true, false>(*this, c, r, nullptr, test_mask);
+#endif
 	u32 active_mask = test_mask & ((1u << p_count) - 1u);
 	while (active_mask)
 	{
@@ -116,6 +214,10 @@ BOOL CFrustum::testSphere_dirty(const Fvector& c, float r) const
 
 EFC_Visible CFrustum::testAABB(const float* mM, u32& test_mask) const
 {
+#if defined(__AVX2__) || defined(_M_AVX2)
+	if (use_avx2(*this, test_mask))
+		return test_planes_avx2<false, true>(*this, Fvector(), 0.f, mM, test_mask);
+#endif
 	// go for trivial rejection or acceptance using "faster overlap test"
 	u32 active_mask = test_mask & ((1u << p_count) - 1u);
 	while (active_mask)
@@ -138,6 +240,10 @@ EFC_Visible CFrustum::testAABB(const float* mM, u32& test_mask) const
 
 EFC_Visible CFrustum::testSAABB(const Fvector& c, float r, const float* mM, u32& test_mask) const
 {
+#if defined(__AVX2__) || defined(_M_AVX2)
+	if (use_avx2(*this, test_mask))
+		return test_planes_avx2<true, true>(*this, c, r, mM, test_mask);
+#endif
 	u32 active_mask = test_mask & ((1u << p_count) - 1u);
 	while (active_mask)
 	{
@@ -193,6 +299,7 @@ void CFrustum::CreateFromPoints(Fvector* p, int count, Fvector& COP)
 
 void CFrustum::CreateFromPlanes(Fplane* p, int count)
 {
+	_clear();
 	for (int k = 0; k < count; k++)
 		planes[k].set(p[k]);
 
@@ -204,6 +311,7 @@ void CFrustum::CreateFromPlanes(Fplane* p, int count)
 		planes[i].n.z *= denom;
 		planes[i].d *= denom;
 		planes[i].cache();
+		set_simd_lane(i);
 	}
 
 	p_count = count;
@@ -416,7 +524,7 @@ BOOL CFrustum::CreateFromClipPoly(Fvector* p, int count, Fvector& vBase, CFrustu
 void CFrustum::CreateFromMatrix(Fmatrix& M, u32 mask)
 {
 	VERIFY(_valid(M));
-	p_count = 0;
+	_clear();
 
 	// Left clipping plane
 	if (mask & FRUSTUM_P_LEFT)
@@ -486,5 +594,6 @@ void CFrustum::CreateFromMatrix(Fmatrix& M, u32 mask)
 		planes[i].n.z *= denom;
 		planes[i].d *= denom;
 		planes[i].cache();
+		set_simd_lane(i);
 	}
 }

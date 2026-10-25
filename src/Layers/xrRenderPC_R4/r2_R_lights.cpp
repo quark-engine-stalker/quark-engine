@@ -1,5 +1,8 @@
 #include "stdafx.h"
 #include "../../xrCore/profiler.h"
+#include "../../xrEngine/frame_stats.h"
+#include "../../xrEngine/irenderable.h"
+#include "../../xrEngine/xr_object.h"
 
 IC bool pred_area(light* _1, light* _2)
 {
@@ -26,10 +29,323 @@ bool check_grass_shadow(light* L, const CFrustum& VB)
 	return true;
 }
 
+void CRender::smap_cache_release(light* L)
+{
+	light::_smap_cache& C = L->smap_cache;
+	for (u32 y = 0; y < C.cells; ++y)
+		for (u32 x = 0; x < C.cells; ++x)
+			m_smapCacheOwner[C.cell + y * SMAP_CACHE_GRID + x] = nullptr;
+	C.cells = 0;
+	C.valid = false;
+}
+
+void CRender::smap_cache_invalidate()
+{
+	for (light* owner : m_smapCacheOwner)
+		if (owner)
+			owner->smap_cache.valid = false;
+}
+
+// Gives a face that holds still a slot of the cache page, keeping the one it already
+// has. Returns false when the face is drawn the usual way this frame.
+bool CRender::smap_cache_acquire(light* L)
+{
+	light::_smap_cache& C = L->smap_cache;
+	if (C.size != L->X.S.size || memcmp(&C.combine, &L->X.S.combine, sizeof(Fmatrix)))
+	{
+		// A moving or resizing face would re-render its slot every frame.
+		g_frame_stats.count(L->flags.type == IRender_Light::OMNIPART ? fcLightCacheMovedPoint : fcLightCacheMovedSpot, 1);
+		C.size = L->X.S.size;
+		C.combine = L->X.S.combine;
+		C.valid = false;
+		C.uncacheable = false;
+		return false;
+	}
+	if (C.uncacheable || L->get_hud_mode())
+	{
+		g_frame_stats.count(C.uncacheable ? fcLightCacheVolatile : fcLightCacheNoSlot, 1);
+		smap_cache_release(L);
+		return false;
+	}
+
+	const u32 rows = o.smapsize / SMAP_CACHE_CELL;
+	const u32 columns = 2 * rows;
+	const u32 cells = (L->X.S.size + SMAP_CACHE_CELL - 1) / SMAP_CACHE_CELL;
+	if (C.cells != cells)
+	{
+		smap_cache_release(L);
+
+		// Prefer free cells, then the slots unused for the longest time; never evict
+		// a slot that served this or the previous frame: when the page is full, faces
+		// would evict each other and re-render their slots every frame.
+		u32 best = u32(-1);
+		u32 best_age = u32(-1);
+		for (u32 y = 0; best_age && y + cells <= rows; ++y)
+			for (u32 x = 0; best_age && x + cells <= columns; ++x)
+			{
+				u32 youngest = 0; // 0 = all cells free
+				bool usable = true;
+				for (u32 cy = y; usable && cy < y + cells; ++cy)
+					for (u32 cx = x; cx < x + cells; ++cx)
+					{
+						const light* owner = m_smapCacheOwner[cy * SMAP_CACHE_GRID + cx];
+						if (!owner)
+							continue;
+						if (owner->smap_cache.used_frame + 1 >= Device.dwFrame)
+						{
+							usable = false;
+							break;
+						}
+						youngest = _max(youngest, owner->smap_cache.used_frame + 1);
+					}
+				if (usable && youngest < best_age)
+				{
+					best = y * SMAP_CACHE_GRID + x;
+					best_age = youngest;
+				}
+			}
+		if (best == u32(-1))
+		{
+			g_frame_stats.count(fcLightCacheNoSlot, 1);
+			return false;
+		}
+
+		for (u32 y = 0; y < cells; ++y)
+			for (u32 x = 0; x < cells; ++x)
+			{
+				light*& owner = m_smapCacheOwner[best + y * SMAP_CACHE_GRID + x];
+				if (owner)
+					smap_cache_release(owner);
+				owner = L;
+			}
+		C.cell = u16(best);
+		C.cells = u8(cells);
+		C.x = u16(best % SMAP_CACHE_GRID * SMAP_CACHE_CELL);
+		C.y = u16(best / SMAP_CACHE_GRID * SMAP_CACHE_CELL);
+	}
+	C.used_frame = Device.dwFrame;
+	return true;
+}
+
+// build_cached_shadow() will draw the face from its slot without walking its static
+// casters. Not exact only when an earlier face evicts the slot this frame; that face
+// then walks them in render_shadow_face() itself.
+bool CRender::smap_cache_reusable(light* L)
+{
+	const light::_smap_cache& C = L->smap_cache;
+	if (!C.valid || C.uncacheable || L->get_hud_mode())
+		return false;
+	if (C.size != L->X.S.size || memcmp(&C.combine, &L->X.S.combine, sizeof(Fmatrix)))
+		return false;
+	if (C.cells != (L->X.S.size + SMAP_CACHE_CELL - 1) / SMAP_CACHE_CELL)
+		return false;
+	const float camera_distance = Device.vCameraPosition.distance_to(L->position);
+	return !(_abs(camera_distance - C.camera_distance) > 0.15f * C.camera_distance);
+}
+
+// The portal traversal of every face runs here, its results are copied, and job workers
+// walk the static casters and query the renderables of all faces at once. The draws then
+// replay them in render_shadow_face(); dsgraph and game code stay on this thread.
+void CRender::prepare_shadow_faces(xr_vector<light*>& faces, bool shadow_cache)
+{
+	m_shadowFacesUsed = static_cast<u32>(faces.size());
+	if (m_shadowFaces.size() < faces.size())
+		m_shadowFaces.resize(faces.size());
+	if (faces.empty())
+		return;
+
+	// The walk reads the phase; the face loop sets the same one.
+	phase = PHASE_SMAP;
+	for (u32 i = 0; i < faces.size(); ++i)
+	{
+		light* L = faces[i];
+		ShadowFace& face = m_shadowFaces[i];
+		face.frustums.clear_not_free();
+		face.sectors.clear_not_free();
+		face.statics.clear_not_free();
+		face.dynamics.clear_not_free();
+
+		IRender_Sector* sector = L->spatial.sector;
+		if (!sector)
+		{
+			L->spatial.type |= STYPEFLAG_INVALIDSECTOR;
+			L->spatial_updatesector();
+			sector = L->spatial.sector;
+		}
+		if (!sector)
+			sector = detectSector(L->position);
+
+		face.L = L;
+		face.sector = sector;
+		face.with_static = !(shadow_cache && sector && smap_cache_reusable(L));
+		if (!sector)
+			continue;
+
+		face.view.CreateFromMatrix(L->X.S.combine, FRUSTUM_P_ALL & (~FRUSTUM_P_NEAR));
+		PortalTraverser.traverse(sector, face.view, L->position, L->X.S.combine, 0);
+		for (IRender_Sector* traversed : PortalTraverser.r_sectors)
+		{
+			CSector* S = (CSector*)traversed;
+			if (!S || S->r_frustums.empty())
+				continue;
+			ShadowFaceSector record = {S, static_cast<u32>(face.frustums.size()), static_cast<u32>(S->r_frustums.size())};
+			face.sectors.push_back(record);
+			face.frustums.insert(face.frustums.end(), S->r_frustums.begin(), S->r_frustums.end());
+		}
+	}
+
+	run_parallel(m_shadowFacesUsed, &CRender::gather_shadow_face);
+}
+
+// Job worker: the part of r_dsgraph_render_subspace() that only reads level data.
+void CRender::gather_shadow_face(u32 index)
+{
+	ShadowFace& face = m_shadowFaces[index];
+	if (!face.sector)
+		return;
+
+	if (face.with_static)
+	{
+		for (const ShadowFaceSector& S : face.sectors)
+		{
+			dxRender_Visual* root = S.sector->root();
+			if (!root)
+				continue;
+			for (u32 f = S.first; f < S.first + S.count; ++f)
+				record_Static(root, face.frustums[f], face.frustums[f].getMask(), face.statics);
+		}
+	}
+
+	g_SpatialSpace->q_frustum(face.spatials, ISpatial_DB::O_ORDERED, STYPE_RENDERABLE, face.view);
+	for (ISpatial* spatial : face.spatials)
+	{
+		if (!spatial)
+			continue;
+		CSector* sector = (CSector*)spatial->spatial.sector;
+		if (!sector)
+			continue;
+		for (const ShadowFaceSector& S : face.sectors)
+		{
+			if (S.sector != sector)
+				continue;
+			for (u32 f = S.first; f < S.first + S.count; ++f)
+			{
+				if (!face.frustums[f].testSphere_dirty(spatial->spatial.sphere.P, spatial->spatial.sphere.R))
+					continue;
+				ShadowFaceDynamic item = {spatial, &face.frustums[f]};
+				face.dynamics.push_back(item);
+			}
+			break;
+		}
+	}
+}
+
+// r_dsgraph_render_subspace() of a prepared face, with the same dsgraph insertions in
+// the same order.
+void CRender::render_shadow_face(ShadowFace& face, BOOL _dynamic, BOOL _static)
+{
+	if (!face.sector)
+		return;
+
+	if (_static && !face.with_static)
+	{
+		r_dsgraph_render_subspace(face.sector, face.L->X.S.combine, face.L->position, _dynamic, FALSE, _static);
+		return;
+	}
+
+	marker++;
+	CFrustum ViewSave = ViewBase;
+	ViewBase = face.view;
+	View = &ViewBase;
+
+	if (_static)
+		replay_Static(face.statics);
+
+	if (_dynamic)
+	{
+		set_Object(0);
+		for (const ShadowFaceDynamic& item : face.dynamics)
+		{
+			// Large destroy queues are committed over several frames. Their
+			// objects must not keep casting shadows while awaiting net_Destroy.
+			CObject* object = item.spatial->dcast_CObject();
+			if (object && object->getDestroy())
+				continue;
+			IRenderable* renderable = item.spatial->dcast_Renderable();
+			if (!renderable)
+				continue;
+			set_Frustum(const_cast<CFrustum*>(item.view));
+			renderable->renderable_Render();
+		}
+	}
+
+	ViewBase = ViewSave;
+	View = 0;
+}
+
+// Builds the dsgraph of a face that owns a cache slot. Its static casters are drawn into
+// the slot only when they may have changed; the graph gets the dynamic casters and trees
+// that are drawn over them every frame. Returns true when the atlas slot has to receive
+// the static casters from the cache slot first. svis_open: svis.end() is still owed.
+bool CRender::build_cached_shadow(ShadowFace& face, bool& svis_open)
+{
+	light* L = face.L;
+	light::_smap_cache& C = L->smap_cache;
+	// Static casters are culled and LOD-ed by camera distance; bound how far that
+	// drifts from the cached render.
+	const float camera_distance = Device.vCameraPosition.distance_to(L->position);
+	if (!C.valid || _abs(camera_distance - C.camera_distance) > 0.15f * C.camera_distance)
+	{
+		Lights_LastFrame.push_back(L);
+		L->svis.begin();
+		svis_open = true;
+		C.trees.clear();
+		ShadowStatic record = {&C.trees};
+		{
+			SFrameScope stats_traverse_scope(fsLightTraverse);
+			val_shadow_static = &record;
+			render_shadow_face(face, FALSE, TRUE);
+			val_shadow_static = nullptr;
+		}
+		if (record.volatile_content || mapNormalPasses[1][0].size() || mapMatrixPasses[1][0].size() || mapSorted.size())
+		{
+			// Translucent or self-changing static casters: the face stays in the graph
+			// and is drawn the usual way, now and until it changes.
+			C.uncacheable = true;
+		}
+		else
+		{
+			C.static_casters = mapNormalPasses[0][0].size() || mapMatrixPasses[0][0].size();
+			if (C.static_casters)
+			{
+				SFrameScope stats_draw_scope(fsLightSmapDraw);
+				Target->phase_smap_cache(L);
+				RCache.set_xform_view(L->X.S.view);
+				RCache.set_xform_project(L->X.S.project);
+				r_dsgraph_render_graph(0);
+			}
+			L->svis.end(); // its occlusion test draws into the bound slot
+			svis_open = false;
+			C.valid = true;
+			C.camera_distance = camera_distance;
+			g_frame_stats.count(fcLightCacheRendered, 1);
+		}
+	}
+	else
+		g_frame_stats.count(fcLightCacheReused, 1);
+
+	SFrameScope stats_traverse_scope(fsLightTraverse);
+	render_shadow_face(face, TRUE, FALSE);
+	for (dxRender_Visual* tree : C.trees)
+		r_dsgraph_insert_static(tree);
+	return C.valid && C.static_casters;
+}
+
 void CRender::render_lights(light_Package& LP)
 {
 
 	RDEVICE.Statistic->RenderDUMP_Lights.Begin();
+	SFrameScope stats_setup_scope(fsLightSetup);
 	m_hudLightStateScratch.clear_and_reserve();
 
 	//////////////////////////////////////////////////////////////////////////
@@ -74,6 +390,8 @@ void CRender::render_lights(light_Package& LP)
 		applyHudLights(LP.v_point);
 		applyHudLights(LP.v_spot);
 	}
+
+	g_frame_stats.count(fcLightFacesIn, LP.v_shadowed.size());
 
 	RDEVICE.Statistic->RenderDUMP_Scalc.Begin();
 
@@ -124,6 +442,7 @@ void CRender::render_lights(light_Package& LP)
 			source[visible_count++] = L;
 		}
 		source.resize(visible_count);
+		g_frame_stats.count(fcLightFacesVisible, visible_count);
 
 		// Keep the authoritative portal query immediately before each shadow draw.
 	}
@@ -156,6 +475,7 @@ void CRender::render_lights(light_Package& LP)
 		for (u16 smap_ID = 0; !source.empty(); ++smap_ID)
 		{
 			LP_smap_pool.initialize(RImplementation.o.smapsize);
+			g_frame_stats.count(fcLightAtlasPages, 1);
 			if (has_equal_areas && smap_ID != 0)
 				std::sort(source.begin(), source.end(), pred_area);
 			const u32 source_count = static_cast<u32>(source.size());
@@ -188,6 +508,7 @@ void CRender::render_lights(light_Package& LP)
 	}
 
 	RDEVICE.Statistic->RenderDUMP_Scalc.End();
+	stats_setup_scope.stop();
 
 	PIX_EVENT(SHADOWED_LIGHTS);
 
@@ -206,6 +527,11 @@ void CRender::render_lights(light_Package& LP)
 	//		accumulate them
 	HOM.Disable();
 	m_shadowSpotScratch.clear_and_reserve();
+	const bool shadow_cache = ps_r__light_shadow_cache && Target->rt_smap_cache._get() && Target->rt_smap_cache->pZRT;
+	{
+		SFrameScope stats_traverse_scope(fsLightTraverse);
+		prepare_shadow_faces(LP.v_shadowed, shadow_cache);
+	}
 	while (LP.v_shadowed.size())
 	{
 		// if (has_spot_shadowed)
@@ -225,38 +551,42 @@ void CRender::render_lights(light_Package& LP)
 			L = source.back();
 			if (L->vis.smap_ID != sid) break;
 			source.pop_back();
-			Lights_LastFrame.push_back(L);
 
 			// render
 			RDEVICE.Statistic->RenderDUMP_Srender.Begin();
 			phase = PHASE_SMAP;
 			if (RImplementation.o.Tshadows) r_pmask(true, true);
 			else r_pmask(true, false);
-			L->svis.begin();
 			PIX_EVENT(SHADOWED_LIGHTS_RENDER_SUBSPACE);
 
-			// Resolve the sector and build the shadow dsgraph in the original light order.
-			{
+			// Faces are popped from the back: this one was prepared at the index left.
+			ShadowFace& face = m_shadowFaces[source.size()];
+			VERIFY(face.L == L);
 
-				IRender_Sector* shadow_sector = L->spatial.sector;
-				if (!shadow_sector)
-				{
-					L->spatial.type |= STYPEFLAG_INVALIDSECTOR;
-					L->spatial_updatesector();
-					shadow_sector = L->spatial.sector;
-				}
-				if (!shadow_sector)
-					shadow_sector = detectSector(L->position);
-				if (shadow_sector)
-					r_dsgraph_render_subspace(shadow_sector, L->X.S.combine, L->position, TRUE);
+			// Build the shadow dsgraph in the original light order.
+			bool svis_open = false;
+			bool cached_static = false;
+			if (shadow_cache && face.sector && smap_cache_acquire(L))
+				cached_static = build_cached_shadow(face, svis_open);
+			else
+			{
+				Lights_LastFrame.push_back(L);
+				L->svis.begin();
+				svis_open = true;
+				SFrameScope stats_traverse_scope(fsLightTraverse);
+				render_shadow_face(face, TRUE, TRUE);
 			}
 
 			bool bNormal = mapNormalPasses[0][0].size() || mapMatrixPasses[0][0].size();
 			bool bSpecial = mapNormalPasses[1][0].size() || mapMatrixPasses[1][0].size() || mapSorted.size();
 			{
+				SFrameScope stats_draw_scope(fsLightSmapDraw);
+				const u32 stats_calls_before = RCache.stat.calls;
+				const u32 stats_polys_before = RCache.stat.polys;
 
-				if (bNormal || bSpecial)
+				if (bNormal || bSpecial || cached_static)
 				{
+					g_frame_stats.count(fcLightMaps, 1);
 					{
 
 						if (!smap_page_has_casters)
@@ -267,6 +597,8 @@ void CRender::render_lights(light_Package& LP)
 						stats.s_merged ++;
 						L_spot_s.push_back(L);
 						Target->phase_smap_spot(L);
+						if (cached_static)
+							Target->smap_cache_blit(L);
 						RCache.set_xform_view(L->X.S.view);
 						RCache.set_xform_project(L->X.S.project);
 					}
@@ -301,17 +633,19 @@ void CRender::render_lights(light_Package& LP)
 				else
 				{
 					stats.s_finalclip ++;
+					g_frame_stats.count(fcLightEmpty, 1);
 				}
+				g_frame_stats.count(fcLightSmapCalls, RCache.stat.calls - stats_calls_before);
+				g_frame_stats.count(fcLightSmapPolys, RCache.stat.polys - stats_polys_before);
 			}
-			{
-
+			if (svis_open)
 				L->svis.end();
-			}
 			r_pmask(true, false);
 			RDEVICE.Statistic->RenderDUMP_Srender.End();
 		}
 
 		PIX_EVENT(UNSHADOWED_LIGHTS);
+		SFrameScope stats_accum_scope(fsLightAccum);
 
 		//		switch-to-accumulator
 		Target->phase_accumulator();
@@ -328,6 +662,7 @@ void CRender::render_lights(light_Package& LP)
 			L->vis_update();
 			if (L->vis.visible)
 			{
+				g_frame_stats.count(fcLightAccumPoint, 1);
 				Target->accum_point(L);
 				render_indirect(L);
 			}
@@ -344,6 +679,7 @@ void CRender::render_lights(light_Package& LP)
 			L->vis_update();
 			if (L->vis.visible)
 			{
+				g_frame_stats.count(fcLightAccumSpot, 1);
 				LR.compute_xf_spot(L);
 				Target->accum_spot(L);
 				render_indirect(L);
@@ -357,6 +693,7 @@ void CRender::render_lights(light_Package& LP)
 		{
 			PIX_EVENT(ACCUM_SPOT);
 			PIX_EVENT(ACCUM_VOLUMETRIC);
+			g_frame_stats.count(fcLightAccumShadow, L_spot_s.size());
 			for (u32 it = 0; it < L_spot_s.size(); it++)
 			{
 
@@ -385,6 +722,7 @@ void CRender::render_lights(light_Package& LP)
 	}
 
 	PIX_EVENT(POINT_LIGHTS_ACCUM);
+	SFrameScope stats_accum_tail_scope(fsLightAccum);
 	// Point lighting (unshadowed, if left)
 	if (!LP.v_point.empty())
 	{
@@ -395,6 +733,7 @@ void CRender::render_lights(light_Package& LP)
 			Lvec[pid]->vis_update();
 			if (Lvec[pid]->vis.visible)
 			{
+				g_frame_stats.count(fcLightAccumPoint, 1);
 				render_indirect(Lvec[pid]);
 				Target->accum_point(Lvec[pid]);
 			}
@@ -413,6 +752,7 @@ void CRender::render_lights(light_Package& LP)
 			Lvec[pid]->vis_update();
 			if (Lvec[pid]->vis.visible)
 			{
+				g_frame_stats.count(fcLightAccumSpot, 1);
 				LR.compute_xf_spot(Lvec[pid]);
 				render_indirect(Lvec[pid]);
 				Target->accum_spot(Lvec[pid]);

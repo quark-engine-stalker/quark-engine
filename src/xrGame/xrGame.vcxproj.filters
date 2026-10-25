@@ -6828,6 +6828,9 @@
     <ClInclude Include="ui\UIWindow.h">
       <Filter>UI\UIWindows\Windows</Filter>
     </ClInclude>
+    <ClInclude Include="ui\UIWindowScriptOwnership.h">
+      <Filter>UI\UIWindows\Windows</Filter>
+    </ClInclude>
     <ClInclude Include="ui\UIDoubleProgressBar.h">
       <Filter>UI\UIWindows\ProgressBar</Filter>
     </ClInclude>

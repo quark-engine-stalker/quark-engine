@@ -1105,14 +1105,20 @@ void CKinematicsAnimated::LL_BoneMatrixBuild(u16 bone_id, CBoneInstance& bi, con
 void CKinematicsAnimated::BuildBoneMatrix(const CBoneData* bd, CBoneInstance& bi, const Fmatrix* parent,
                                           u8 channel_mask /*= (1<<0)*/)
 {
-	// Normal NPC animation evaluates only interpolation channel 0. Avoid the
-	// four-channel SKeyTable and additive base-pose scratch in this exact case;
-	// mixed/additive/procedural callers retain the original path below.
-	if (channel_mask == (1u << 0))
+	// Normal NPC animation blends only interpolation channel 0, also when the whole
+	// pose (every channel) is requested. Then the four-channel path below reduces to
+	// MixInterlerp of the channel-0 keys: compute exactly that, without the SKeyTable
+	// and additive base-pose scratch. A bone with a blend on another requested channel
+	// (mixed/additive/procedural animation) retains the original path below.
+	const u16 bone_id = bd->GetSelfID();
+	CBlendInstance& blend_instance = LL_GetBlendInstance(bone_id);
+	const CBlendInstance::BlendSVec& blends = blend_instance.blend_vector();
+	bool channel0_only = !!(channel_mask & (1u << 0));
+	for (CBlendInstance::BlendSVecCIt blend_it = blends.begin(); channel0_only && blend_it != blends.end(); ++blend_it)
+		channel0_only = (*blend_it)->channel == 0 || !(channel_mask & (1u << (*blend_it)->channel));
+
+	if (channel0_only)
 	{
-		const u16 bone_id = bd->GetSelfID();
-		CBlendInstance& blend_instance = LL_GetBlendInstance(bone_id);
-		const CBlendInstance::BlendSVec& blends = blend_instance.blend_vector();
 		CKey base_keys[MAX_BLENDED];
 		CBlend* base_blends[MAX_BLENDED];
 		u16 base_count = 0;
@@ -1213,22 +1219,48 @@ void CKinematicsAnimated::OnCalculateBones()
 	UpdateTracks();
 }
 
+bool CKinematicsAnimated::CanQueueBonesOnWorker() const
+{
+	// An update-tracks callback can decline to advance time, which would make the
+	// worker run UpdateTracks (and the callback) itself. Never queue such a skeleton.
+	if (m_update_tracks_callback)
+	{
+		bone_callback_note_blocker(m_update_tracks_callback, bone_blocker_tracks_callback);
+		return false;
+	}
+
+	// Blend PlayCallbacks and the blend-destroy callback are deliberately ignored
+	// here: PrepareBonesOnMain() advances the tracks (the only place they can fire) on
+	// the main thread before the worker phase, and CanCalculateBonesOnWorker() verifies
+	// that it really happened.
+	return inherited::CanQueueBonesOnWorker();
+}
+
 bool CKinematicsAnimated::CanCalculateBonesOnWorker() const
 {
 	if (!inherited::CanCalculateBonesOnWorker())
 		return false;
-	if (m_blend_destroy_callback)
-	{
-		return false;
-	}
 	if (m_update_tracks_callback)
 	{
 		return false;
 	}
 
-	// A PlayCallback may enter an arbitrary game object or script when a motion
-	// reaches its end. Keep every active callback-bearing blend on the legacy
-	// main-thread path, even if it is unlikely to fire in this particular frame.
+	// Tracks already advanced for this game time (by PrepareBonesOnMain on the main
+	// thread): UpdateTracks() is a no-op in the worker, so neither a PlayCallback nor
+	// the blend-destroy callback can fire there.
+	if (Update_LastTime == RDEVICE.dwTimeGlobal)
+	{
+		return true;
+	}
+
+	// Tracks have not been advanced yet, so the worker would run them. A PlayCallback
+	// may enter an arbitrary game object or script when a motion reaches its end, and
+	// the blend-destroy callback enters animation-movement code. Keep such skeletons
+	// on the legacy main-thread path, even if it is unlikely to fire in this frame.
+	if (m_blend_destroy_callback)
+	{
+		return false;
+	}
 	for (u32 index = 0; index < blend_pool.size(); ++index)
 	{
 		const CBlend& blend = blend_pool[index];

@@ -16,6 +16,7 @@
 #include "object_factory.h"
 #include "alife_object_registry.h"
 #include "../xrEngine/xr_ioconsole.h"
+#include "../xrCore/engine_error_logger.h"
 
 #ifdef DEBUG
 #	include "moving_objects.h"
@@ -45,6 +46,12 @@ CALifeSimulator::CALifeSimulator(xrServer* server, shared_str* command_line) :
 	CALifeInteractionManager(server, alife_section),
 	CALifeSimulatorBase(server, alife_section)
 {
+	{
+		const IGame_Persistent::params& game = g_pGamePersistent->m_game_params;
+		char event[160];
+		_snprintf_s(event, sizeof(event), _TRUNCATE, "game start: %s %s", game.m_new_or_load, game.m_game_or_spawn);
+		QUARK_DIAGNOSTIC_BREADCRUMB(event);
+	}
 	restart_all();
 
 	ai().set_alife(this);

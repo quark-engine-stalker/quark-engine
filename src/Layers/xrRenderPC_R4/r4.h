@@ -286,11 +286,68 @@ private:
 		u32 cascade_mask;
 	};
 
+	// What add_Static()/add_leafs_Static() would do, recorded off the main thread and
+	// replayed by it in the same order (record_Static).
+	struct StaticOp
+	{
+		enum Kind : u32 { insert, lod, add_static, add_leafs };
+		Kind kind;
+		u32 planes;
+		dxRender_Visual* visual;
+		const CFrustum* view;
+		float distance;
+		float ssa;
+	};
+
+	// A shadowed light face prepared before the faces are drawn: the portal traversal
+	// snapshot, its static casters and the renderables seen through its sectors.
+	struct ShadowFaceSector
+	{
+		CSector* sector;
+		u32 first; // into ShadowFace::frustums
+		u32 count;
+	};
+
+	struct ShadowFaceDynamic
+	{
+		ISpatial* spatial;
+		const CFrustum* view;
+	};
+
+	struct ShadowFace
+	{
+		light* L;
+		IRender_Sector* sector;
+		bool with_static;
+		CFrustum view;
+		xr_vector<CFrustum> frustums;
+		xr_vector<ShadowFaceSector> sectors;
+		xr_vector<StaticOp> statics;
+		xr_vector<ISpatial*> spatials;
+		xr_vector<ShadowFaceDynamic> dynamics;
+	};
+
 	// Reused render-thread scratch. Keeping these buffers bounded avoids repeated
 	// per-frame map/vector allocations without pinning one pathological frame forever.
 	xr_vector<HudLightState> m_hudLightStateScratch;
 	xr_vector<light*> m_shadowRefactorScratch;
 	xr_vector<light*> m_shadowSpotScratch;
+
+	// Light shadow cache: Target->rt_smap_cache, two atlas pages side by side, is split
+	// into 128x128 cells (64x32 at most); a light face owns a square of them as large as
+	// its map.
+	enum { SMAP_CACHE_CELL = 128, SMAP_CACHE_GRID = 64 };
+	light* m_smapCacheOwner[SMAP_CACHE_GRID * SMAP_CACHE_GRID / 2] = {};
+	bool smap_cache_acquire(light* L);
+	bool smap_cache_reusable(light* L);
+	bool build_cached_shadow(ShadowFace& face, bool& svis_open);
+
+	// Faces of the render_lights() call in progress, indexed like its v_shadowed.
+	xr_vector<ShadowFace> m_shadowFaces;
+	u32 m_shadowFacesUsed = 0;
+	void prepare_shadow_faces(xr_vector<light*>& faces, bool shadow_cache);
+	void gather_shadow_face(u32 index);
+	void render_shadow_face(ShadowFace& face, BOOL _dynamic, BOOL _static);
 
 	// Visibility is collected before any renderable submits packets to dsgraph.
 	// clear() keeps capacity, avoiding per-frame allocator traffic.
@@ -339,6 +396,12 @@ private:
 	void add_Static_MultiFrustum(dxRender_Visual* pVisual, const xr_vector<CFrustum>& frustums,
 		const u32* masks, u32 mask_count);
 	void gather_sun_static(dxRender_Visual* pVisual, u32 sector_index, u32 cascade_mask, u32 fully_visible_mask);
+	void record_Static(dxRender_Visual* pVisual, const CFrustum& view, u32 planes, xr_vector<StaticOp>& out);
+	void record_leafs_Static(dxRender_Visual* pVisual, const CFrustum& view, xr_vector<StaticOp>& out);
+	void record_lod(dxRender_Visual* pVisual, const CFrustum& view, xr_vector<StaticOp>& out);
+	void replay_Static(const xr_vector<StaticOp>& ops);
+	// Calls (this->*work)(i) for every i < count on the job workers and this thread.
+	void run_parallel(u32 count, void (CRender::*work)(u32));
 	void prepare_sun_cascade(u32 cascade_ind, const Fmatrix& viewport, const Fmatrix& viewport_inverse);
 	void gather_sun_casters(CSector* cull_sector);
 	void submit_sun_cascade_casters(u32 cascade_ind);
@@ -354,6 +417,8 @@ public:
 	void render_smap_direct(Fmatrix& mCombined);
 	void render_indirect(light* L);
 	void render_lights(light_Package& LP);
+	void smap_cache_release(light* L);
+	void smap_cache_invalidate();
 	void render_sun();
 	void render_sun_near();
 	void render_sun_filtered();

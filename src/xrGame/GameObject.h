@@ -169,6 +169,16 @@ public:
 	animation_movement_controller* animation_movement() { return m_anim_mov_ctrl; }
 	// Game-specific events
 
+	// Skeleton job: the pose of a skeleton the renderer requested last frame is computed by the
+	// render-prep workers instead of lazily on the main thread during rendering.
+	void __stdcall calculate_bones_parallel();
+	void __stdcall prepare_bones_main();
+	void __stdcall finish_bones_main();
+	// Main-thread hook run right before the skeleton workers start. A derived class
+	// whose bone callbacks need data that is unsafe to read from a worker prepares it here.
+	virtual void on_prepare_bones_main() {}
+	void queue_skeleton_update();
+
 	virtual BOOL UsedAI_Locations();
 	BOOL TestServerFlag(u32 Flag) const;
 	virtual bool can_validate_position_on_spawn() { return true; }
@@ -333,6 +343,7 @@ private:
 private:
 	ai_obstacle* m_ai_obstacle;
 	Fmatrix m_previous_matrix;
+	u32 m_skeleton_job_frame;
 
 public:
 	virtual bool is_ai_obstacle() const;

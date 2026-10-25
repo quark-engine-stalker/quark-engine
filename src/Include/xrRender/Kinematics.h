@@ -110,6 +110,25 @@ public:
 	virtual bool CanCalculateBonesOnWorker() const = 0;
 	virtual void CalculateBonesOnWorker(BOOL bForceExact = TRUE) = 0;
 	virtual u32 LastExactBonesRequestFrame() const = 0;
+
+	// Two-phase worker preparation. PrepareBonesOnMain() is the main-thread half of
+	// CalculateBones(): it advances animation tracks, which is the only place where
+	// blend PlayCallbacks and blend-destroy callbacks may fire. After it has run for the
+	// current game time, CalculateBonesOnWorker() can finish the matrix evaluation on a
+	// worker without ever entering gameplay code.
+	// CanQueueBonesOnWorker() is the cheap, cached structural pre-filter used when a
+	// skeleton is queued (bone callbacks only; Update_Callback runs in FinishBonesOnMain(); blend callbacks are ignored because
+	// PrepareBonesOnMain() consumes them). CanCalculateBonesOnWorker() stays authoritative
+	// and is re-evaluated by the worker under the skeleton's lock.
+	virtual bool CanQueueBonesOnWorker() const = 0;
+	virtual void PrepareBonesOnMain() = 0;
+
+	// Post-phase of the two-phase preparation, main thread only, after the workers have
+	// finished. A worker never runs the skeleton's Update_Callback (IK, attachments,
+	// script visual callbacks are gameplay code). It only records that the callback is
+	// owed; FinishBonesOnMain() then runs it serially, on the same finished pose it
+	// would have seen at the end of CalculateBones(). Returns true if a callback ran.
+	virtual bool FinishBonesOnMain() = 0;
 };
 
 IC IKinematics* PKinematics(IRenderVisual* V) { return V ? V->dcast_PKinematics() : 0; }

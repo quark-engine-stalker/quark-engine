@@ -106,6 +106,7 @@ extern ECORE_API int ps_r__portal_traverse_optimized;
 extern ECORE_API int ps_r__static_multifrustum;
 extern ECORE_API int ps_r__visibility_submission;
 extern ECORE_API int ps_r__forward_visibility_reuse;
+extern ECORE_API int ps_r__light_shadow_cache;
 extern ECORE_API int ps_r__ssaDISCARD_gradient;
 extern ECORE_API float ps_r__ssaDISCARD_exp;
 extern ECORE_API float ps_r__ssaDISCARD_fade_k;

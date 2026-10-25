@@ -217,7 +217,7 @@ LONG WINAPI UnhandledFilter(struct _EXCEPTION_POINTERS* pExceptionInfo)
 
     string1024 reason;
     xr_sprintf(reason,
-        "*** Internal Error ***\nCrash diagnostics were written to the QUARK ENGINE\\ERROR category log.");
+        "*** Internal Error ***\nCrash diagnostics were written to the QUARK-ENGINE\\ERROR category log.");
     bool ref = false;
     Debug.backend(reason, 0, 0, 0, 0, 0, 0, ref);
 

@@ -5,6 +5,9 @@
 #include 	"SkeletonCustom.h"
 
 #include "../../xrCore/profiler.h"
+#include "../../xrCore/job_system.h"
+#include "../../xrEngine/frame_stats.h"
+#include "../../xrEngine/xr_object.h"
 
 extern int psSkeletonUpdate;
 
@@ -41,29 +44,98 @@ IC u32 bones_cache_generation(u64 state)
 
 }
 
+// How long (in frames) a cached bone-callback scan stays valid for the queue pre-filter.
+// A stale answer is harmless (see UCalc_WorkerHint), so the interval is generous.
+constexpr u32 worker_hint_frames = 8;
+
+bool CKinematics::BoneCallbacksWorkerSafe(const void** blocker_fn, u32* blocker_type) const
+{
+	// Per-bone callbacks routinely enter gameplay, IK and Lua-owned state. Only
+	// callbacks that were explicitly registered through bone_callback_mark_worker_safe()
+	// may run off the main thread; any other callback keeps the exact original lazy
+	// main-thread path for the whole skeleton.
+	const u32 count = bones->size();
+	for (u32 bone = 0; bone < count; ++bone)
+	{
+		CBoneInstance& instance = bone_instances[bone];
+		const BoneCallback callback = instance.callback();
+		if (callback && !bone_callback_is_worker_safe(callback))
+		{
+			if (blocker_fn)
+				*blocker_fn = reinterpret_cast<const void*>(callback);
+			if (blocker_type)
+				*blocker_type = instance.callback_type();
+			return false;
+		}
+	}
+
+	return true;
+}
+
 bool CKinematics::CanCalculateBonesOnWorker() const
 {
 	if (!bones || !bone_instances)
 	{
 		return false;
 	}
-	if (Update_Callback)
+	// Update_Callback does not disqualify a skeleton: the worker skips it and
+	// FinishBonesOnMain() runs it on the main thread after the batch.
+
+	return BoneCallbacksWorkerSafe();
+}
+
+bool CKinematics::CanQueueBonesOnWorker() const
+{
+	// Main thread only (called while queueing). The O(bones) callback scan touches one
+	// cache line per bone instance, so its result is cached for a few frames. The
+	// authoritative check is repeated by CalculateBonesOnWorker() under the lock.
+	if (!bones || !bone_instances)
 	{
 		return false;
 	}
-
-	// Per-bone callbacks routinely enter gameplay, IK and Lua-owned state. There
-	// is no worker-safety contract for them, so such skeletons retain the exact
-	// original lazy main-thread path.
-	for (u32 bone = 0; bone < bones->size(); ++bone)
+	const u32 frame = RDEVICE.dwFrame;
+	if (s32(UCalc_WorkerHintExpire - frame) > 0)
 	{
-		if (bone_instances[bone].callback())
-		{
-			return false;
-		}
+		if (!UCalc_WorkerHint)
+			bone_callback_note_blocker(UCalc_WorkerHintFn, UCalc_WorkerHintType);
+		return UCalc_WorkerHint;
 	}
 
-	return true;
+	const void* blocker_fn = nullptr;
+	u32 blocker_type = 0;
+	const bool safe = BoneCallbacksWorkerSafe(&blocker_fn, &blocker_type);
+	// Spread the re-scan of different skeletons over several frames.
+	const u32 jitter = u32((size_t(this) >> 4) & 3);
+	UCalc_WorkerHint = safe;
+	UCalc_WorkerHintFn = blocker_fn;
+	UCalc_WorkerHintType = blocker_type;
+	UCalc_WorkerHintExpire = frame + worker_hint_frames + jitter;
+	if (!safe)
+		bone_callback_note_blocker(blocker_fn, blocker_type);
+	return safe;
+}
+
+void CKinematics::PrepareBonesOnMain()
+{
+	// Main thread only. This is the head of CalculateBonesInternal() up to and including
+	// OnCalculateBones(): the one place where animation tracks advance and blend
+	// PlayCallbacks may enter gameplay code. Running it here, serially, lets the worker
+	// evaluate the (much more expensive) bone matrices without ever calling gameplay code.
+	// Both early-outs below match CalculateBonesInternal(), so no callback fires that the
+	// lazy path would not have fired in this frame.
+	const u32 frame = RDEVICE.dwFrame;
+	const u64 cache_state = UCalc_CacheState.load(std::memory_order_acquire);
+	if (frame != bones_cache_invalid_frame && bones_cache_frame(cache_state) == frame)
+	{
+		return;
+	}
+	if (RDEVICE.dwTimeGlobal == UCalc_Time)
+	{
+		return;
+	}
+
+	xrCriticalSectionGuard guard(UCalc_Mutex);
+	OnCalculateBones();
 }
 
 void CKinematics::CalculateBonesOnWorker(BOOL bForceExact)
@@ -75,33 +147,77 @@ void CKinematics::CalculateBonesOnWorker(BOOL bForceExact)
 	u64 cache_state = UCalc_CacheState.load(std::memory_order_acquire);
 	if (frame != bones_cache_invalid_frame && bones_cache_frame(cache_state) == frame)
 	{
-
+		InterlockedIncrement(&RDEVICE.SkeletonJobStats.already);
 		return;
 	}
 
-	// Several independent light queries can discover the same actor. Keep the
-	// callback/blend safety scan and pose update under the same per-instance lock;
-	// otherwise one worker could mutate blends in UpdateTracks while another scans
-	// them in CanCalculateBonesOnWorker. CRITICAL_SECTION is recursive, so the
-	// internal calculation can retain its normal locking contract.
-	xrCriticalSectionGuard guard(UCalc_Mutex);
+	// A worker must never block on a skeleton lock. Another thread (AI vision through
+	// Bone_GetAnimPos, IK through Bone_Calculate, the lazy renderer path) may own
+	// UCalc_Mutex or UCalc_Mutex2, and some of those paths take the two mutexes in the
+	// opposite order while running callbacks. Blocking here could therefore deadlock or
+	// leave a worker idle behind a slow owner. Instead the worker skips a busy skeleton
+	// and the renderer computes it lazily on the main thread, exactly as it always did.
+	// With try-locks only, no wait cycle involving a worker can ever form.
+	xrCriticalSectionTryGuard guard(UCalc_Mutex);
+	if (!guard.owns_lock())
+	{
+		InterlockedIncrement(&RDEVICE.SkeletonJobStats.busy);
+		return;
+	}
+
 	cache_state = UCalc_CacheState.load(std::memory_order_acquire);
 	if (frame != bones_cache_invalid_frame && bones_cache_frame(cache_state) == frame)
 	{
-
+		InterlockedIncrement(&RDEVICE.SkeletonJobStats.already);
 		return;
 	}
 
 	// Recheck at execution time: a derived object's UpdateCL may have installed a
-	// callback after it first became a candidate earlier in the frame.
+	// callback after it first became a candidate earlier in the frame. The safety scan
+	// and the pose update share this per-instance lock, so no other thread can mutate
+	// blends while the scan runs.
 	if (!CanCalculateBonesOnWorker())
 	{
-
+		InterlockedIncrement(&RDEVICE.SkeletonJobStats.rejected);
 		return;
 	}
 
-	CalculateBonesInternal(bForceExact);
+	// Hold UCalc_Mutex2 for the whole evaluation (try-lock, see above). The recursive
+	// Bone_Calculate() entry point re-enters it on this thread without blocking.
+	xrCriticalSectionTryGuard guard2(UCalc_Mutex2);
+	if (!guard2.owns_lock())
+	{
+		InterlockedIncrement(&RDEVICE.SkeletonJobStats.busy);
+		return;
+	}
 
+	// Update_Callback (IK, attachments, script visual callbacks) is gameplay code: the
+	// worker leaves it owed and FinishBonesOnMain() runs it on the main thread.
+	CalculateBonesInternal(bForceExact, true);
+	InterlockedIncrement(&RDEVICE.SkeletonJobStats.executed);
+}
+
+bool CKinematics::FinishBonesOnMain()
+{
+	// Main thread only, after xr_jobs::wait(): every worker of the batch has finished
+	// and its writes (including UCalc_CallbackOwed) are visible.
+	if (!UCalc_CallbackOwed)
+	{
+		return false;
+	}
+	UCalc_CallbackOwed = false;
+
+	UpdateCallback callback = Update_Callback;
+	if (!callback)
+	{
+		return false;
+	}
+
+	// Same lock the lazy path holds while it runs the callback.
+	xrCriticalSectionGuard guard(UCalc_Mutex);
+	callback(this);
+	++RDEVICE.SkeletonJobStats.post_callbacks;
+	return true;
 }
 
 u32 CKinematics::LastExactBonesRequestFrame() const
@@ -117,7 +233,7 @@ void CKinematics::CalculateBones(BOOL bForceExact)
 	CalculateBonesInternal(bForceExact);
 }
 
-void CKinematics::CalculateBonesInternal(BOOL bForceExact)
+void CKinematics::CalculateBonesInternal(BOOL bForceExact, bool on_worker)
 {
 	PROF_EVENT("CKinematics::CalculateBones");
 
@@ -141,6 +257,9 @@ void CKinematics::CalculateBonesInternal(BOOL bForceExact)
 		return; // early out for "fast" update
 	}
 
+	// frame_stats: poses the main thread builds itself instead of the render-prep workers.
+	const u64 main_started = !on_worker && g_frame_stats.enabled && !xr_jobs::is_worker_thread() ? CPU::QPC() : 0;
+
 	// demonized: reduce calculate bones updates when the object is far away and not in frustum
 	// Available only if can get parent xform
 	// Refactor later for per object basis
@@ -160,8 +279,11 @@ void CKinematics::CalculateBonesInternal(BOOL bForceExact)
 			float ssa_k = IK_CALC_SSA / ssa;
 			update_rate_k = _max(1.f, ssa_k);
 
-			// Visibility check, perform always
-			bool visibleCheck = (perceived_dist < IK_ALWAYS_CALC_DIST) || ::Render->ViewBase.testSphere_dirty(sphere.P, sphere.R);
+			// Visibility check, perform always. A worker only runs for skeletons the renderer
+			// requested last frame, and the renderer tests ViewBase of the pass that asks (sun
+			// cascade, light), so the camera frustum here would leave shadow-only casters to the
+			// main thread every frame.
+			bool visibleCheck = on_worker || (perceived_dist < IK_ALWAYS_CALC_DIST) || ::Render->ViewBase.testSphere_dirty(sphere.P, sphere.R);
 			if (!visibleCheck)
 			{
 				bForceExact = FALSE;
@@ -306,9 +428,10 @@ void CKinematics::CalculateBonesInternal(BOOL bForceExact)
 
 	if (Update_Callback)
 	{
-
-		Update_Callback(this);
-
+		if (on_worker)
+			UCalc_CallbackOwed = true; // a worker never runs gameplay code, see FinishBonesOnMain()
+		else
+			Update_Callback(this);
 	}
 
 	u64 expected_state = calculation_state;
@@ -316,6 +439,15 @@ void CKinematics::CalculateBonesInternal(BOOL bForceExact)
 	UCalc_CacheState.compare_exchange_strong(expected_state, published_state,
 		std::memory_order_release, std::memory_order_relaxed);
 
+	if (main_started)
+	{
+		CLASS_ID owner = 0;
+#ifdef OPTIMIZE_CALCULATE_BONES
+		if (CObject* object = spatialParent ? spatialParent->dcast_CObject() : nullptr)
+			owner = object->CLS_ID;
+#endif
+		g_frame_stats.note_bones_main(owner, CPU::QPC() - main_started);
+	}
 }
 
 #ifdef DEBUG

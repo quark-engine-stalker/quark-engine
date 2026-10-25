@@ -45,6 +45,7 @@
 #define		r2_RT_smap_surf		"$user$smap_surf"		// --- directional
 #define		r2_RT_smap_depth	"$user$smap_depth"		// ---directional
 #define		r2_RT_smap_depth_minmax	"$user$smap_depth_minmax"
+#define		r2_RT_smap_cache	"$user$smap_cache"		// persistent light shadow page
 
 #define		r2_material			"$user$material"		// ---
 #define		r2_ds2_fade			"$user$ds2_fade"		// ---

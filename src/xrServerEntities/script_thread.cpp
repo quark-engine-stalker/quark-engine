@@ -16,7 +16,6 @@
 #include "script_engine.h"
 #include "script_thread.h"
 #include "ai_space.h"
-#include "../xrCore/engine_error_logger.h"
 
 #include <luabind/detail/ref.hpp>
 
@@ -41,7 +40,6 @@ const LPCSTR main_function = "console_command_run_string_main_thread_function";
 
 CScriptThread::CScriptThread(LPCSTR caNamespaceName, bool do_string, bool reload)
 {
-	EngineErrorLogger::ExternalContentScope externalContentScope;
 	m_virtual_machine = 0;
 	m_thread_reference = LUA_NOREF;
 	m_thread_vm_token = nullptr;
@@ -169,7 +167,6 @@ CScriptThread::~CScriptThread()
 
 bool CScriptThread::update()
 {
-	EngineErrorLogger::ExternalContentScope externalContentScope;
 	if (m_thread_vm_token && !m_thread_vm_token->alive)
 	{
 		m_active = false;

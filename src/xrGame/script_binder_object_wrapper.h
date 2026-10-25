@@ -15,7 +15,8 @@ class CScriptGameObject;
 
 extern BOOL psLua_Profile;
 extern int psLua_ProfileThresholdUS;
-void lua_profile_dump_callbacks(u32 limit);
+// emit == nullptr prints to the log; otherwise every line goes to emit(ctx, line).
+void lua_profile_dump_callbacks(u32 limit, void (*emit)(void*, const char*) = nullptr, void* ctx = nullptr);
 void lua_profile_reset_callbacks();
 
 class CScriptBinderObjectWrapper : public CScriptBinderObject, public ::luabind::wrap_base

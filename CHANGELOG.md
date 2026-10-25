@@ -1,6 +1,36 @@
 # Changelog
 
-**English** · [Русский](CHANGELOG.ru.md)
+**English** & [Русский](CHANGELOG.ru.md)
+
+VER 1.0 [BUG FIXES AND PERFORMANCE]
+
+FIXES:
+
+- Fixed detected crashes when loading saves and changing screen resolution
+- Fixed crashes when opening sound settings (+ gamedata updated, replace it with the latest one from the archive)
+- Fixed FPS drop in the PDA when tracking a quest with a target marker
+- Fixed 'One Life' mode: all corresponding saves are now deleted after death
+- Fixed and improved the engine error logger to version 2.1 (added a feature for the lazy: if the game crashes, the engine's ERROR folder containing the necessary files opens automatically)
+- Other crash and bug fixes
+
+OPTIMIZATION:
+
+- NPC skeletons moved to multithreading and overhead reduced (according to tests, 90%+ of the heavy work is already processed on workers)
+- Lua- and render-related optimizations
+- Improved shadow cache for static objects (walls, lamps, etc.)
+- Slightly reduced freeze when taking quests from NPCs
+- Several other minor optimizations
+
+ADDED QUARK-SCHEDULER TO THE ENGINE
+Especially useful for hybrid CPUs (Intel P & E cores and multi-CCD Ryzen), given that this is a THREAD-BOUND engine.
+orchestration_threads on is enabled by default, but you can disable it by typing orchestration_threads off in the console (it's enough to enter it once, and it stays permanent).
+
+How it works:
+
+>> Regular CPUs (Intel & AMD, SINGLE-CCD & SMT): the engine reads core rankings (CPPC on AMD / Turbo Boost Max 3.0 on Intel) and assigns the main thread an ideal processor (a hint to the Windows scheduler) on the first logical processor of the best core. The engine's other threads (workers, driver, sound) are not allowed onto this core, so there is no SMT-set splitting by engine threads and no local cache pollution. Once per second, outside the frame (meaning it doesn't affect the pipeline), the engine checks where the Windows scheduler is actually keeping the main thread and moves the reserve there. If core 'X' stays loaded for 2 seconds in a row (for example, by heavy threads from other software), core 'X' is excluded for 30 seconds and the main thread moves to another core. If CPPC is disabled on AMD and Intel has no Turbo Boost Max 3.0 (so the rankings cannot be read), the engine does not interfere with thread placement.
+>> Intel with P/E cores (Alder Lake and newer): the engine distinguishes P-cores from E-cores by core classes. The main thread is allowed to run only on P-cores, and it also gets an ideal processor on the first logical processor of the best P-core. The engine's other threads (workers, driver, sound) run on all remaining cores, both P and E, but do not start on the core where the main thread is running, so the main thread's HT sibling is not occupied by engine threads (+ a cache boost, as I mentioned earlier). Once per second, outside the frame (doesn't affect the pipeline), the engine checks which P-core the Windows scheduler is actually keeping the main thread on and moves the reserve there. If P-core 'X' stays loaded for 2 seconds in a row (for example, by heavy threads from other software), core 'X' is excluded for 30 seconds and the main thread moves to another P-core. If all P-cores are busy, the main thread is temporarily allowed to run on E-cores.
+>> AMD Dual-CCD (7900X/7950X/9950X and X3D): the engine picks the one CCD with the largest L3 (on X3D, the V-Cache CCD), and if L3 is equal, the one containing the core with the best CPPC ranking. All engine threads (main thread, workers, driver, sound) run only on this CCD, so there is no inter-CCD latency between the main thread and workers. Within the CCD the logic is the same as on regular CPUs (ideal processor for the main thread on the CCD's best core), and the engine's other threads are not allowed onto that core. If CPPC is disabled, only the CCD affinity remains.
++ On any CPU, the main thread is marked High QoS, which disables its throttling by the Windows scheduler.
 
 VER 0.0.6 [BUG FIXES]
 

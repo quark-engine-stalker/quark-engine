@@ -134,15 +134,20 @@ public:
 			};
 		};
 
+		// World sphere enclosing the element: a ray missing it cannot hit the element,
+		// so _RayQuery skips the exact test. R < 0: no such shortcut for this element.
+		Fsphere bound;
 		u16 type;
 		u16 elem_id;
 	public:
 		SElement() : elem_id(u16(-1)), type(0)
 		{
+			bound.R = -1.f;
 		}
 
 		SElement(u16 id, u16 t) : elem_id(id), type(t)
 		{
+			bound.R = -1.f;
 		}
 
 		BOOL valid() const { return (elem_id != (u16(-1))) && (type != 0); }

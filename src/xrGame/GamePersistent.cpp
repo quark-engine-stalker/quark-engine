@@ -1,4 +1,5 @@
 #include "pch_script.h"
+#include "../xrEngine/frame_stats.h"
 #include "gamepersistent.h"
 #include "../xrEngine/fmesh.h"
 #include "../xrEngine/xr_ioconsole.h"
@@ -788,6 +789,7 @@ void CGamePersistent::OnFrame()
 		{
 			// Realtime and explicitly main-thread-only callbacks preserve main-thread
 			// ownership. The remaining bounded non-RT queue overlaps rendering.
+			SFrameScope stats_scope(fsUpdScheduler);
 			Engine.Sheduler.UpdateInit();
 			Engine.Sheduler.UpdateRT();
 			Engine.Sheduler.UpdateMainThread();
@@ -795,6 +797,7 @@ void CGamePersistent::OnFrame()
 		}
 		else
 		{
+			SFrameScope stats_scope(fsUpdScheduler);
 			Engine.Sheduler.Update();
 		}
 	}

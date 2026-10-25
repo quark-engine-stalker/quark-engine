@@ -1,4 +1,5 @@
 ﻿#include "stdafx.h"
+#include "../../xrEngine/frame_stats.h"
 #include "../../xrEngine/igame_persistent.h"
 #include "../../xrEngine/irenderable.h"
 #include "../../xrEngine/xr_object.h"
@@ -1526,6 +1527,7 @@ void CRender::render_sun_cascades()
 	Fmatrix viewport_inverse;
 	D3DXMatrixInverse((D3DXMATRIX*)&viewport_inverse, 0, (D3DXMATRIX*)&viewport);
 
+	SFrameScope stats_gather_scope(fsSunGather);
 	VERIFY(m_sun_cascades.size() <= SUN_CASCADE_GATHER_COUNT);
 	for (u32 i = 0; i < m_sun_cascades.size() && i < SUN_CASCADE_GATHER_COUNT; ++i)
 		prepare_sun_cascade(i, viewport, viewport_inverse);
@@ -1551,6 +1553,7 @@ void CRender::render_sun_cascades()
 	}
 
 	gather_sun_casters(largest_sector);
+	stats_gather_scope.stop();
 
 	for (u32 i = 0; i < m_sun_cascades.size() && i < SUN_CASCADE_GATHER_COUNT; ++i)
 		render_sun_cascade(i, largest_sector);
@@ -1573,6 +1576,7 @@ void CRender::render_sun_cascade(u32 cascade_ind, CSector* cull_sector)
 	if (!fuckingsun)
 		return;
 
+	g_frame_stats.count(fcSunCascades, 1);
 	const s32 limit = RImplementation.o.smapsize - 1;
 	fuckingsun->X.D.minX = 0;
 	fuckingsun->X.D.maxX = limit;
@@ -1591,7 +1595,10 @@ void CRender::render_sun_cascade(u32 cascade_ind, CSector* cull_sector)
 
 	// Fill dsgraph from the shared gather instead of traversing the sector graph
 	// and spatial octree independently for every cascade.
-	submit_sun_cascade_casters(cascade_ind);
+	{
+		SFrameScope stats_submit_scope(fsSunSubmit);
+		submit_sun_cascade_casters(cascade_ind);
+	}
 
 	fuckingsun->X.D.combine = m_sunPrepared[cascade_ind].xform;
 
@@ -1599,6 +1606,9 @@ void CRender::render_sun_cascade(u32 cascade_ind, CSector* cull_sector)
 	// cascade transforms are intentionally unchanged for GAMMA/shader compatibility.
 	bool bNormal = mapNormalPasses[0][0].size() || mapMatrixPasses[0][0].size();
 	bool bSpecial = mapNormalPasses[1][0].size() || mapMatrixPasses[1][0].size() || mapSorted.size();
+	SFrameScope stats_draw_scope(fsSunDraw);
+	const u32 stats_calls_before = RCache.stat.calls;
+	const u32 stats_polys_before = RCache.stat.polys;
 	if (bNormal || bSpecial)
 	{
 		Target->phase_smap_direct(fuckingsun, SE_SUN_FAR);
@@ -1623,7 +1633,11 @@ void CRender::render_sun_cascade(u32 cascade_ind, CSector* cull_sector)
 	}
 
 	r_pmask(true, false);
+	g_frame_stats.count(fcSunCalls, RCache.stat.calls - stats_calls_before);
+	g_frame_stats.count(fcSunPolys, RCache.stat.polys - stats_polys_before);
+	stats_draw_scope.stop();
 
+	SFrameScope stats_accum_scope(fsSunAccum);
 	Target->phase_accumulator();
 	if (Target->use_minmax_sm_this_frame())
 	{

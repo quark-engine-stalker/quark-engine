@@ -259,7 +259,7 @@ void xrDebug::do_exit(const std::string& message)
 		__FUNCTION__
 	);
 	FlushLog();
-	MessageBox(NULL, message.c_str(), "Error", MB_OK | MB_ICONERROR | MB_SYSTEMMODAL);
+	EngineErrorLogger::OpenLogFolder();
 	TerminateProcess(GetCurrentProcess(), 1);
 }
 
@@ -296,11 +296,6 @@ void xrDebug::backend(const char* expression, const char* description, const cha
 	gather_info(expression, description, argument0, argument1, file, line, function, assertion_info,
 	            sizeof(assertion_info));
 
-	LPCSTR endline = "\r\n";
-	LPSTR buffer = assertion_info + xr_strlen(assertion_info);
-	buffer += xr_sprintf(buffer, sizeof(assertion_info) - u32(buffer - &assertion_info[0]),
-	                     "%sPress OK to abort execution%s", endline, endline);
-
 	if (handler)
 		handler();
 
@@ -309,14 +304,8 @@ void xrDebug::backend(const char* expression, const char* description, const cha
     if (IsDebuggerPresent())
         DebugBreak();
 
-	ShowCursor(true);
-	ShowWindow(GetActiveWindow(), SW_FORCEMINIMIZE);
-	MessageBox(
-		NULL,
-		assertion_info,
-		"Fatal Error",
-		MB_OK | MB_ICONERROR | MB_SYSTEMMODAL
-	);
+	// No dialog: the report is already in ERROR, show the player that folder.
+	EngineErrorLogger::OpenLogFolder();
 
 	CS.Leave();
 
@@ -710,13 +699,19 @@ LONG WINAPI UnhandledFilter(_EXCEPTION_POINTERS* pExceptionInfo)
     if (IsDebuggerPresent())
         return EXCEPTION_CONTINUE_SEARCH; // pass the original exception to debugger
 
-    ShowCursor(true);
-    ShowWindow(GetActiveWindow(), SW_FORCEMINIMIZE);
-    MessageBoxA(nullptr,
-        "Unhandled exception. Check QUARK ENGINE/ERROR for v2 diagnostics. "
-        "Keep the matching EXE/PDB for analysis.",
-        "QUARK ENGINE - Fatal Error", MB_OK | MB_ICONERROR | MB_SYSTEMMODAL);
+    EngineErrorLogger::OpenLogFolder();
     return EXCEPTION_CONTINUE_SEARCH; // preserve process termination policy
+}
+
+// Windows ends the process on heap corruption without calling the unhandled
+// exception filter, but vectored handlers still see the exception first.
+static LONG CALLBACK heap_corruption_handler(EXCEPTION_POINTERS* pExceptionInfo)
+{
+    static volatile LONG reported = 0;
+    if (pExceptionInfo->ExceptionRecord->ExceptionCode == 0xC0000374 /*STATUS_HEAP_CORRUPTION*/ &&
+        !InterlockedExchange(&reported, 1))
+        UnhandledFilter(pExceptionInfo);
+    return EXCEPTION_CONTINUE_SEARCH;
 }
 
 //-AVO
@@ -1038,6 +1033,9 @@ void xrDebug::_initialize(const bool& dedicated)
     SetupExceptionHandler(is_dedicated);
 #endif // USE_BUG_TRAP
 	previous_filter = ::SetUnhandledExceptionFilter(UnhandledFilter); // exception handler to all "unhandled" exceptions
+#ifdef NO_BUG_TRAP
+	AddVectoredExceptionHandler(1, heap_corruption_handler);
+#endif
 
 #if 0
     struct foo

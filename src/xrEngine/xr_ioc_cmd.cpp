@@ -6,6 +6,7 @@
 #include "xr_ioconsole.h"
 #include "xr_ioc_cmd.h"
 #include "../xrCore/engine_error_logger.h"
+#include "../xrCore/cpu_placement.h"
 #include "IGame_Persistent.h"
 //#include "fbasicvisual.h"
 #include "cameramanager.h"
@@ -18,6 +19,9 @@
 
 #include "xr_object.h"
 #include "MonitorList.h"
+#include "frame_stats.h"
+#include "xrSheduler.h"
+#include "Engine.h"
 
 xr_token* vid_quality_token = NULL;
 
@@ -83,13 +87,13 @@ public:
 			Msg(
 				"* QUARK engine error logging: %s [%s]",
 				EngineErrorLogger::IsEnabled() ? "on" : "off",
-				"QUARK ENGINE/ERROR"
+				"QUARK-ENGINE/ERROR"
 			);
 		}
 		else if (EQ(args, "on") || EQ(args, "1"))
 		{
 			EngineErrorLogger::SetEnabled(true);
-			Msg("* QUARK engine error logging: on [%s]", "QUARK ENGINE/ERROR");
+			Msg("* QUARK engine error logging: on [%s]", "QUARK-ENGINE/ERROR");
 		}
 		else if (EQ(args, "off") || EQ(args, "0"))
 		{
@@ -105,7 +109,7 @@ public:
 			}
 
             if (EngineErrorLogger::WriteSelfTest())
-                Msg("* QUARK v2 simulated render error written to ERROR/RENDER-LOG-SELFTEST-v2.log");
+                Msg("* QUARK simulated render error written to ERROR/RENDER-LOG-SELFTEST.log");
             else Msg("! QUARK logger self-test failed to write its file");
 		}
 		else
@@ -1057,6 +1061,148 @@ float scope_fog_sharp = 4.0f;
 int scope_2dtexactive = 0.0;
 Fvector3 ssfx_wetness_multiplier = Fvector3().set(1.0f, 0.3f, 0.0f);
 
+// orchestration_threads on|off - soft placement of engine threads on the CPU topology
+//                          (xrCore/cpu_placement.cpp); on by default, kept in user.ltx
+static Flags32 ps_orchestration_threads = {TRUE};
+class CCC_OrchestrationThreads : public CCC_Mask
+{
+public:
+	CCC_OrchestrationThreads(LPCSTR N) : CCC_Mask(N, &ps_orchestration_threads, TRUE) {}
+
+	virtual void Execute(LPCSTR args)
+	{
+		const BOOL previous = GetValue();
+		CCC_Mask::Execute(args);
+		cpu_placement::set_enabled(GetValue() != FALSE);
+		// A player's change is saved at once, not only on a clean exit: a crash must not
+		// bring the feature back. Frame 0 is user.ltx itself being executed at startup.
+		if (GetValue() != previous && Device.dwFrame)
+			Console->Execute("cfg_save");
+	}
+};
+
+// frame_stats            - report: main-thread frame stages, scheduler cost per class;
+//                          also saved to quark_frame_stats.txt on the desktop
+// frame_stats <N>        - same, N rows in the per-class tables (default 25)
+// frame_stats reset      - start a new measurement window
+// frame_stats deep       - toggle UpdateCL timing per object class (starts a new window)
+// frame_stats on|off     - stage timers on/off (on by default; the cost is under 1 us per frame)
+class CCC_FrameStats : public IConsole_Command
+{
+public:
+	CCC_FrameStats(LPCSTR N) : IConsole_Command(N)
+	{
+		bEmptyArgsHandled = TRUE;
+	}
+
+	virtual void Execute(LPCSTR args)
+	{
+		const bool has_args = args && args[0];
+		if (has_args && !_stricmp(args, "reset"))
+		{
+			g_frame_stats.reset();
+			Engine.Sheduler.ResetClassCosts();
+			Msg("[frame_stats] window reset");
+			return;
+		}
+		if (has_args && !_stricmp(args, "deep"))
+		{
+			g_frame_stats.deep = !g_frame_stats.deep;
+			g_frame_stats.reset();
+			Engine.Sheduler.ResetClassCosts();
+			Msg("[frame_stats] deep=%d (UpdateCL per class), window reset", g_frame_stats.deep ? 1 : 0);
+			return;
+		}
+		if (has_args && !_stricmp(args, "on"))
+		{
+			g_frame_stats.enabled = true;
+			g_frame_stats.reset();
+			Msg("[frame_stats] enabled");
+			return;
+		}
+		if (has_args && !_stricmp(args, "off"))
+		{
+			g_frame_stats.enabled = false;
+			g_frame_stats.deep = false;
+			Msg("[frame_stats] disabled");
+			return;
+		}
+
+		u32 top = 25;
+		if (has_args)
+		{
+			const int requested = atoi(args);
+			if (requested > 0)
+				top = u32(requested > 64 ? 64 : requested);
+		}
+		g_frame_stats.write_report(top);
+	}
+
+	virtual void Info(TInfo& I)
+	{
+		xr_strcpy(I, "frame time per stage + cost per object class; 'reset', 'deep' (UpdateCL per class), 'on'/'off', or a number of rows");
+	}
+};
+
+// frame_ab <seconds> <command A> | <command B>
+//                        - A/B of two console states in one session, for example
+//                          frame_ab 120 r__ssa_discard_gradient 0 | r__ssa_discard_gradient 1;
+//                          the report also goes to quark_frame_ab.txt on the desktop
+// frame_ab stop          - end early; the report covers the finished segments
+class CCC_FrameAB : public IConsole_Command
+{
+public:
+	CCC_FrameAB(LPCSTR N) : IConsole_Command(N)
+	{
+		bEmptyArgsHandled = TRUE;
+	}
+
+	virtual void Execute(LPCSTR args)
+	{
+		if (args && !_stricmp(args, "stop"))
+		{
+			g_frame_ab.stop();
+			return;
+		}
+		if (g_frame_ab.active)
+		{
+			Msg("[frame_ab] already running, `frame_ab stop` ends it");
+			return;
+		}
+
+		char* rest = nullptr;
+		const double seconds = args ? strtod(args, &rest) : 0.0;
+		const char* split = rest ? strchr(rest, '|') : nullptr;
+		string256 command[2] = {};
+		if (seconds > 0.0 && split)
+		{
+			const auto trimmed = [](string256& out, const char* begin, const char* end)
+			{
+				while (begin < end && *begin == ' ')
+					++begin;
+				while (end > begin && end[-1] == ' ')
+					--end;
+				const size_t length = _min(size_t(end - begin), sizeof(string256) - 1);
+				memcpy(out, begin, length);
+				out[length] = 0;
+			};
+			trimmed(command[0], rest, split);
+			trimmed(command[1], split + 1, split + xr_strlen(split));
+		}
+		if (!command[0][0] || !command[1][0])
+		{
+			Msg("usage: frame_ab <seconds> <command A> | <command B>, e.g. frame_ab 120 r__ssa_discard_gradient 0 | r__ssa_discard_gradient 1");
+			return;
+		}
+		g_frame_ab.start(seconds, command[0], command[1]);
+	}
+
+	virtual void Info(TInfo& I)
+	{
+		xr_strcpy(I, "<seconds> <command A> | <command B>: interleaved A/B of frame time in one session; 'stop' ends early");
+	}
+};
+
 void CCC_Register()
 {
 	// General
@@ -1166,6 +1312,8 @@ void CCC_Register()
 	CMD4(CCC_Integer, "snd_occlusion_update_ms", &psSoundOcclusionUpdateMS, 0, 100);
 	CMD4(CCC_Integer, "snd_targets", &psSoundTargets, 32, 1024);
 	CMD4(CCC_Integer, "snd_cache_size", &psSoundCacheSizeMB, 8, 1024);
+	CMD4(CCC_Float, "snd_max_distance_multiplier", &psSoundMaxDistanceMultiplier, 0.2f, 2.0f);
+	CMD4(CCC_Float, "snd_max_ai_distance_multiplier", &psSoundMaxAIDistanceMultiplier, 0.2f, 2.0f);
 
 	// Distance based delay power
 	CMD4(CCC_Float, "snd_distance_based_delay_power", &soundSmoothingParams::distanceBasedDelayPower, 0.f, 2.f);
@@ -1257,6 +1405,9 @@ void CCC_Register()
 
 	CMD4(CCC_Integer, "r__framelimit", &ps_framelimiter, 0, 500);
 	CMD4(CCC_Integer, "mt_scheduler", &mt_Scheduler, 0, 1);
+	CMD1(CCC_FrameStats, "frame_stats");
+	CMD1(CCC_FrameAB, "frame_ab");
+	CMD1(CCC_OrchestrationThreads, "orchestration_threads");
 	CMD4(CCC_Integer, "scheduler_batch_size", &psShedulerBatchSize, 16, 8192);
 	CMD4(CCC_Integer, "scheduler_main_budget_ms", &psShedulerMainBudgetMs, 1, 33);
 	CMD4(CCC_Integer, "scheduler_deferred_budget_ms", &psShedulerDeferredBudgetMs, 1, 33);

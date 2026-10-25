@@ -3,6 +3,8 @@
 
 #include "ISheduled.h"
 
+struct SFrameReportSink;
+
 class ENGINE_API CSheduler
 {
 private:
@@ -39,6 +41,11 @@ private:
 		u32 last_seen_frame;
 		u16 slow_hits;
 		u16 reserved;
+		// Diagnostics (frame_stats): totals since the last reset, section -> class id.
+		u64 total_us;
+		u32 calls;
+		u32 max_us;
+		u64 clsid;
 	};
 
 private:
@@ -116,6 +123,11 @@ public:
 
 	void Initialize();
 	void Destroy();
+
+	// Diagnostics for `frame_stats`: shedule_Update() cost per class id and per section
+	// since the last reset. Needs scheduler_class_prediction 1 (default).
+	void DumpClassCosts(u32 top, double seconds, SFrameReportSink& sink);
+	void ResetClassCosts();
 };
 
 extern ENGINE_API BOOL mt_Scheduler;

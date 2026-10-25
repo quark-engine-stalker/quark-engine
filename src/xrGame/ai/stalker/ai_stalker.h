@@ -131,6 +131,13 @@ private:
     Fvector savedOrientation;
     u32 dTimeFSeen;
     u32 dTimeNfSeen;
+    // Inputs of LookAtActor that cannot be read safely from a skeleton worker (visual
+    // memory lookup mutates index caches, the actor head needs a locked bone chain).
+    // They are prepared on the main thread right before the workers start and are only
+    // valid for m_look_prepared_frame.
+    u32 m_look_prepared_frame;
+    bool m_look_prepared_visible;
+    Fmatrix m_look_prepared_actor_head;
 
 private:
 	float m_fRankDisperison;
@@ -197,6 +204,8 @@ public:
 
 	static void BoneCallback(CBoneInstance* B);
 	void LookAtActor(CBoneInstance* headBone);
+	void prepare_look_at_actor();
+	virtual void on_prepare_bones_main();
 
 	virtual BOOL net_Spawn(CSE_Abstract* DC);
 	virtual void net_Export(NET_Packet& P);

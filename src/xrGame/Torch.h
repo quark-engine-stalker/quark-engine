@@ -39,6 +39,7 @@ private:
 	bool isFlickering;
 	bool lightRenderState;
 	bool m_shadow_enabled;
+	Fvector m_npc_beam_dir; // beam direction last given to the lights in NPC hands
 	float lastFlicker;
 	int l_flickerChance;
 	float l_flickerDelay;

@@ -14,7 +14,10 @@ public:
 	bool Similar(dx10ConstantBuffer& _in);
 	ID3DBuffer* GetBuffer() { return m_pBuffer; }
 
-	void Flush();
+	void Flush() { Flush(m_uiBufferSize); }
+	// Makes at least bytes [0, size) current on the GPU. A discarded buffer keeps
+	// nothing else, so a later shader that reads more forces a new upload.
+	void Flush(u32 size);
 
 	//	Set copy data into constant buffer
 	//	Plain buffer member
@@ -46,6 +49,7 @@ private:
 
 	ID3DBuffer* m_pBuffer;
 	u32 m_uiBufferSize; //	Cache buffer size for debug validation
+	u32 m_uiUploadedSize; // bytes of the GPU copy that match m_pBufferData
 	void* m_pBufferData;
 	bool m_bChanged;
 

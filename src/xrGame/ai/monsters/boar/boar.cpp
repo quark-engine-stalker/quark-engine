@@ -2,6 +2,7 @@
 #include "boar.h"
 #include "boar_state_manager.h"
 #include "../../../../Include/xrRender/KinematicsAnimated.h"
+#include "../../../../xrEngine/bone.h"
 #include "../monster_velocity_space.h"
 #include "../../../game_object_space.h"
 #include "../control_animation_base.h"
@@ -161,6 +162,9 @@ BOOL CAI_Boar::net_Spawn(CSE_Abstract* DC)
 	{
 		CBoneInstance& BI = smart_cast<IKinematics*>(Visual())->LL_GetBoneInstance(
 			smart_cast<IKinematics*>(Visual())->LL_BoneID("bip01_head"));
+		// Reads look_at_enemy/_cur_delta (written by the main thread outside the skeleton
+		// worker batch) and writes only its bone, so skeleton workers may run it.
+		bone_callback_mark_worker_safe(&CAI_Boar::BoneCallback);
 		BI.set_callback(bctCustom, BoneCallback, this);
 	}
 

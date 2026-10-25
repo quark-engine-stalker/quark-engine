@@ -523,7 +523,6 @@ void disable_os_funcs(lua_State* L)
 
 bool LoadKernelScriptToGlobal(lua_State* L, const char* name)
 {
-	EngineErrorLogger::ExternalContentScope externalContentScope;
 	string_path FileName;
 	xr_string FixedFileName = name;
 	//FixedFileName = "kernel\\" + FixedFileName; //When this line is enabled all lua files are not being loaded after loading a game
@@ -571,10 +570,15 @@ bool LoadKernelScriptToGlobal(lua_State* L, const char* name)
 	return true;
 };
 
+namespace
+{
+lua_State* g_logged_vm = nullptr; // read by fatal/crash records on the VM thread
+void write_lua_stack(char* output, size_t capacity);
+}
+
 BOOL lua_debug = FALSE;
 void CScriptStorage::reinit()
 {
-	EngineErrorLogger::ExternalContentScope externalContentScope;
 #ifdef DEBUG
 	R_ASSERT2(InterlockedCompareExchange(&m_lua_owner_thread, 0, 0) == 0 &&
 		InterlockedCompareExchange(&m_lua_owner_depth, 0, 0) == 0,
@@ -582,6 +586,7 @@ void CScriptStorage::reinit()
 #endif
 	if (m_virtual_machine)
 	{
+		g_logged_vm = nullptr;
 		set_lua_allocation_tracking(false);
 		luabind::weak_ref::invalidate(m_virtual_machine);
 		lua_close(m_virtual_machine);
@@ -600,6 +605,8 @@ void CScriptStorage::reinit()
 		Msg("! ERROR : Cannot initialize script virtual machine!");
 		return;
 	}
+	g_logged_vm = m_virtual_machine;
+	EngineErrorLogger::SetLuaStackWriter(&write_lua_stack);
 
 	// Grow the main VM stack once during initialization instead of paying for a
 	// relocation/copy in the middle of a deep C++ -> Lua callback chain.
@@ -690,7 +697,6 @@ void CScriptStorage::reinit()
 
 void CScriptStorage::DebuggerAttach()
 {
-	EngineErrorLogger::ExternalContentScope externalContentScope;
     const char* S = "debugger_attach()";
     shared_str m_script_name = "console command";
     int l_iErrorCode = luaL_loadbuffer(lua(), S, xr_strlen(S), "@console_command");
@@ -995,9 +1001,8 @@ bool CScriptStorage::load_buffer(lua_State* L, LPCSTR caBuffer, size_t tSize, LP
 
 	if (l_iErrorCode)
 	{
-//#ifdef DEBUG
-		if (strstr(Core.Params, "-dbg")) print_output(L,caScriptName,l_iErrorCode,recoveredModuleLoad);
-//#endif //-DEBUG
+		// Always: without the reason a broken mod script fails silently.
+		print_output(L,caScriptName,l_iErrorCode,recoveredModuleLoad);
 		on_error(L);
 		return (false);
 	}
@@ -1025,7 +1030,6 @@ static bool unlocalRegex(const std::set<std::string>& unlocals, std::string& s, 
 
 bool CScriptStorage::do_file(LPCSTR caScriptName, LPCSTR caNameSpaceName)
 {
-	EngineErrorLogger::ExternalContentScope externalContentScope;
 	if (!unlocalizerPassed) {
 		auto file_list = FS.file_list_open("$game_config$", "unlocalizers\\", FS_RootOnly | FS_ListFiles);
 		if (!file_list) {
@@ -1227,9 +1231,7 @@ bool CScriptStorage::do_file(LPCSTR caScriptName, LPCSTR caNameSpaceName)
 #endif // #ifdef USE_DEBUGGER
 	if (l_iErrorCode)
 	{
-//#ifdef DEBUG
-		if (strstr(Core.Params, "-dbg")) print_output(lua(),caScriptName,l_iErrorCode,true);
-//#endif
+		print_output(lua(),caScriptName,l_iErrorCode,true);
 		on_error(lua());
 		lua_settop(lua(), start);
 		return (false);
@@ -1420,16 +1422,8 @@ struct raii_guard : private xray::noncopyable
 namespace
 {
 // Read debug metadata only. No locals, values, Lua allocations or script hooks.
-// Called before the protected-call error value is popped by its original caller.
-void collect_lua_error_trace(lua_State* state, int status, char* output, size_t capacity)
+size_t collect_lua_frames(lua_State* state, char* output, size_t capacity)
 {
-    if (!capacity) return;
-    output[0] = 0;
-    if (status == LUA_ERRMEM)
-    {
-        strncpy_s(output, capacity, "Lua traceback skipped for memory-allocation failure", _TRUNCATE);
-        return;
-    }
     size_t used = 0;
     for (int index = 0; index < 32 && used + 1 < capacity; ++index)
     {
@@ -1458,15 +1452,35 @@ void collect_lua_error_trace(lua_State* state, int status, char* output, size_t 
         if (written < 0) { used = strlen(output); break; }
         used += static_cast<size_t>(written);
     }
-    if (!used) strncpy_s(output, capacity,
-        "Lua frames unavailable after protected-call unwind; consult error message/chunk", _TRUNCATE);
+    return used;
+}
+
+// Called before the protected-call error value is popped by its original caller.
+void collect_lua_error_trace(lua_State* state, int status, char* output, size_t capacity)
+{
+    if (!capacity) return;
+    output[0] = 0;
+    if (status == LUA_ERRMEM)
+        strncpy_s(output, capacity, "Lua traceback skipped for memory-allocation failure", _TRUNCATE);
+    else if (!collect_lua_frames(state, output, capacity))
+        strncpy_s(output, capacity,
+            "Lua frames unavailable after protected-call unwind; consult error message/chunk", _TRUNCATE);
+}
+
+void write_lua_stack(char* output, size_t capacity)
+{
+    output[0] = 0;
+    if (g_logged_vm)
+        collect_lua_frames(g_logged_vm, output, capacity);
 }
 }
 
-bool CScriptStorage::print_output(lua_State* L, LPCSTR caScriptFileName, int iErorCode, bool recoveredModuleLoad)
+bool CScriptStorage::print_output(lua_State* L, LPCSTR caScriptFileName, int iErorCode, bool recoveredModuleLoad,
+    bool fatalFollows)
 {
     const char* message = lua_type(L, -1) == LUA_TSTRING ? lua_tostring(L, -1) : nullptr;
-    if (EngineErrorLogger::IsEnabled() &&
+    // The Debug.fatal record that follows already carries the message and the Lua stack.
+    if (!fatalFollows && EngineErrorLogger::IsEnabled() &&
         EngineErrorLogger::ShouldReportScriptFailure(iErorCode, recoveredModuleLoad, message))
     {
         char traceback[8192] = {};

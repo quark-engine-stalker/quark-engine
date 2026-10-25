@@ -736,9 +736,6 @@
 	<string id="ui_mm_modded_exes_gameplay_gameplay_general_disable_actor_body_rotation_delay">
 		<text>Мгновенный поворот модели игрока (disable_actor_body_rotation_delay)</text>
 	</string>
-	<string id="ui_mm_modded_exes_gameplay_gameplay_general_allow_accel_during_lookout">
-		<text>Возможность бега вместе с выглядыванием из-за угла (allow_accel_during_lookout)</text>
-	</string>
 
 	<!-- Aim -->
 	<string id="ui_mm_menu_aim">
@@ -838,9 +835,6 @@
 	</string>
 	<string id="ui_mm_modded_exes_gameplay_weapons_g_decouple_horz_recoil">
 		<text>Горизонтальная отдача не зависит от вертикальной (g_decouple_horz_recoil)</text>
-	</string>
-	<string id="ui_mm_modded_exes_gameplay_weapons_scale_hud_motion_marks_by_speed">
-		<text>Регулировать Motion Marks в зависимости от скорости анимации (scale_hud_motion_marks_by_speed)</text>
 	</string>
 	
 	<string id="ui_mm_modded_exes_gameplay_weapons_g_fire_reloads_ubgl">
@@ -1392,5 +1386,35 @@
 
 	<string id="ui_mm_modded_exes_optimizations_unstable_text">
 		<text>Опции ниже нестабильны и приводят к багам и вылетам, включать их не рекомендуется</text>
+	</string>
+   <string id="ui_mm_modded_exes_visual_particles_step_particle_distance">
+		<text>Дальность отображения частиц шагов (step_particle_distance)</text>
+	</string>
+	<string id="ui_mm_modded_exes_visual_particles_step_particle_distance_desc">
+		<text>Расстояние от камеры, на котором отображаются частицы шагов. По умолчанию: 50 м.</text>
+	</string>
+	<string id="ui_mm_menu_sound_distance">
+		<text>Дальность звука</text>
+	</string>
+	<string id="ui_mm_sound_distance_modded_exes">
+		<text>Дальность звука</text>
+	</string>
+	<string id="ui_mm_modded_exes_sound_sound_distance_snd_max_distance_multiplier">
+		<text>Множитель дальности слышимости (snd_max_distance_multiplier)</text>
+	</string>
+	<string id="ui_mm_modded_exes_sound_sound_distance_snd_max_distance_multiplier_desc">
+		<text>В Stalker максимальная дальность каждого звукового эффекта задаётся в его файле .ogg. Параметр step_sound_distance задаёт жёсткое ограничение дальности воспроизведения звуков шагов, но не увеличивает значения, указанные в .ogg. Этот параметр масштабирует значения из .ogg, чтобы согласовать их с step_sound_distance. По умолчанию: 1.0 (при 1.0 соответствует step_sound_distance = 50 м).</text>
+	</string>
+	<string id="ui_mm_modded_exes_sound_sound_distance_snd_max_ai_distance_multiplier">
+		<text>Множитель дальности обнаружения звука ИИ (snd_max_ai_distance_multiplier)</text>
+	</string>
+	<string id="ui_mm_modded_exes_sound_sound_distance_snd_max_ai_distance_multiplier_desc">
+		<text>Определяет, на каком расстоянии NPC реагируют на звук. Как и snd_max_distance_multiplier, это значение задаётся внутри файла .ogg. По умолчанию: 1.0 (при 1.0 соответствует step_sound_distance = 50 м).</text>
+	</string>
+	<string id="ui_mm_modded_exes_sound_sound_distance_step_sound_distance">
+		<text>Дальность звука шагов (step_sound_distance)</text>
+	</string>
+	<string id="ui_mm_modded_exes_sound_sound_distance_step_sound_distance_desc">
+		<text>Жёсткое условное ограничение дальности воспроизведения звуков шагов. Увеличьте значение, если не хотите, чтобы Луркеры или химеры кусали вас прямо на границе слышимости шагов. По умолчанию: 50 м.</text>
 	</string>
 </string_table>

@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "igame_level.h"
+#include "frame_stats.h"
 #include "igame_persistent.h"
 
 #include "x_ray.h"
@@ -195,7 +196,10 @@ void IGame_Level::OnRender()
 	// Level render, only when no client output required
 	if (!g_dedicated_server)
 	{
-		Render->Calculate();
+		{
+			SFrameScope stats_scope(fsRendCalc);
+			Render->Calculate();
+		}
 		Render->Render();
 	}
 	else
@@ -222,9 +226,15 @@ void IGame_Level::OnFrame()
 
 	// Update all objects
 	VERIFY(bReady);
-	Objects.Update(false);
+	{
+		SFrameScope stats_scope(fsUpdObjects);
+		Objects.Update(false);
+	}
 
-	g_hud->OnFrame();
+	{
+		SFrameScope stats_scope(fsUpdHud);
+		g_hud->OnFrame();
+	}
 
 	// Ambience
 	if (Sounds_Random.size() && (Device.dwTimeGlobal > Sounds_Random_dwNextTime))

@@ -1698,6 +1698,11 @@ BOOL CInifile::line_exist(LPCSTR S, LPCSTR L) const
 					if (*item.first && xr_strcmp(*item.first, L) == 0)
 						return TRUE;
 				}
+
+				// Small sections have no line index, and misses are common: search the
+				// section found above instead of looking it up twice more.
+				auto A = std::lower_bound(section.Data.begin(), section.Data.end(), L, item_comparator());
+				return A != section.Data.end() && xr_strcmp(*A->first, L) == 0;
 			}
 		}
 	}

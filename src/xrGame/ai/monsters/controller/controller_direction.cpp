@@ -2,6 +2,7 @@
 #include "controller_direction.h"
 #include "controller.h"
 #include "../../../game_object_space.h"
+#include "../../../../xrEngine/bone.h"
 
 const float _pmt_head_bone_limit = PI_DIV_6;
 const float _pmt_torso_bone_limit = PI_DIV_3;
@@ -36,6 +37,9 @@ void CControllerDirection::assign_bones()
 	if (!m_controller->PPhysicsShell())
 	{
 		//нельзя ставить колбеки, если создан физ шел - у него стоят свои колбеки!!!
+		// m_bones.Update() changes only this controller's m_bones, which the main thread
+		// writes outside the skeleton worker batch, so skeleton workers may run it.
+		bone_callback_mark_worker_safe(&CControllerDirection::bone_callback);
 		m_bone_spine->set_callback(bctCustom, bone_callback, this);
 		m_bone_head->set_callback(bctCustom, bone_callback, this);
 	}

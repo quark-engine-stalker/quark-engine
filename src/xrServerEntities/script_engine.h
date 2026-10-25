@@ -90,11 +90,12 @@ protected:
 #endif // #ifdef USE_DEBUGGER
 
 private:
-	string128 m_last_no_file;
-	u32 m_last_no_file_length;
+	// Globals without a script file: auto_load is hit by every read of an undefined
+	// global, and scripts probe many different optional names.
+	xr_unordered_set<shared_str> m_missing_scripts;
 
-	bool no_file_exists(LPCSTR file_name, u32 string_length);
-	void add_no_file(LPCSTR file_name, u32 string_length);
+	bool no_file_exists(LPCSTR file_name);
+	void add_no_file(LPCSTR file_name);
 	void register_cached_functor(ICachedScriptFunctor* functor);
 	void unregister_cached_functor(ICachedScriptFunctor* functor);
 	void advance_script_generation();
@@ -131,7 +132,8 @@ public:
 	u32 lua_profile_epoch() const { return m_lua_profile_epoch; }
 	bool lua_hotspot_profiler_enabled() const;
 	void set_lua_hotspot_profiler(bool enabled, u32 threshold_us);
-	void dump_lua_hotspots(u32 limit) const;
+	// emit == nullptr prints to the log; otherwise every line goes to emit(ctx, line).
+	void dump_lua_hotspots(u32 limit, void (*emit)(void*, const char*) = nullptr, void* ctx = nullptr) const;
 	void reset_lua_hotspots();
 	bool start_lua_record(u32 threshold_us);
 	bool stop_lua_record();

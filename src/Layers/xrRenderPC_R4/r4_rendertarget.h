@@ -170,6 +170,14 @@ public:
 	ref_rt rt_smap_surf; // 32bit,		color
 	ref_rt rt_smap_depth; // 24(32) bit,	depth
 	ref_rt rt_smap_depth_minmax; //	is used for min/max sm
+	// Light shadow cache page (same size and format as rt_smap_depth, kept across
+	// frames): static casters of light faces, cleared and copied to the atlas by slot.
+	ref_rt rt_smap_cache;
+	ID3D11VertexShader* smap_cache_clear_vs = nullptr;
+	ID3D11PixelShader* smap_cache_copy_ps = nullptr;
+	ID3D11Buffer* smap_cache_copy_cb = nullptr;
+	ID3D11DepthStencilState* smap_cache_clear_depth = nullptr;
+	ID3D11RasterizerState* smap_cache_clear_raster = nullptr;
 	//	TODO: DX10: CHeck if we need old-style SMAP
 	//	IDirect3DSurface9*			rt_smap_ZB;		//
 
@@ -471,6 +479,9 @@ public:
 	void phase_smap_spot_clear();
 	void phase_smap_spot(light* L);
 	void phase_smap_spot_tsh(light* L);
+	void phase_smap_cache(light* L); // phase_smap_spot into the light's cleared cache slot
+	void smap_cache_blit(light* L); // after phase_smap_spot: the face's cached static casters
+	void smap_cache_triangle(ID3D11DepthStencilView* dsv, ID3D11PixelShader* ps, ID3D11ShaderResourceView* srv);
 	void phase_accumulator();
 	void phase_vol_accumulator();
 	void shadow_direct(light* L, u32 dls_phase);

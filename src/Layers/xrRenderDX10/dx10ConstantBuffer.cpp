@@ -3,6 +3,7 @@
 
 #include "dx10BufferUtils.h"
 #include "../xrRender/dxRenderDeviceRender.h"
+#include "../../xrEngine/frame_stats.h"
 
 dx10ConstantBuffer::~dx10ConstantBuffer()
 {
@@ -13,7 +14,7 @@ dx10ConstantBuffer::~dx10ConstantBuffer()
 }
 
 dx10ConstantBuffer::dx10ConstantBuffer(ID3DShaderReflectionConstantBuffer* pTable)
-	: m_bChanged(true)
+	: m_uiUploadedSize(0), m_bChanged(true)
 {
 	D3D_SHADER_BUFFER_DESC Desc;
 
@@ -83,9 +84,13 @@ bool dx10ConstantBuffer::Similar(dx10ConstantBuffer& _in)
 	return true;
 }
 
-void dx10ConstantBuffer::Flush()
+void dx10ConstantBuffer::Flush(u32 size)
 {
-    if (m_bChanged)
+	// Shorten only the big bone-palette uploads: a short upload costs one more Map
+	// when the next shader reads further without any data change.
+	if (size >= m_uiBufferSize || m_uiBufferSize - size < 1024)
+		size = m_uiBufferSize;
+	if (size && (m_bChanged || size > m_uiUploadedSize))
     {
 		void* pData;
 #ifdef USE_DX11
@@ -97,12 +102,15 @@ void dx10ConstantBuffer::Flush()
 #endif
 		VERIFY(pData);
         VERIFY(m_pBufferData);
-		CopyMemory(pData, m_pBufferData, m_uiBufferSize);
+		CopyMemory(pData, m_pBufferData, size);
 #ifdef USE_DX11
 		HW.pContext->Unmap(m_pBuffer, 0);
 #else
 		m_pBuffer->Unmap();
 #endif
+		m_uiUploadedSize = size;
         m_bChanged = false;
+		g_frame_stats.count(fcCBufferUploads, 1);
+		g_frame_stats.count(fcCBufferBytes, size);
     }
 }

@@ -14,6 +14,14 @@ public:
 	R_constant* c_c_bias;
 	R_constant* c_c_sun;
 
+	// Have no binders: looked up by name on the first tree draw after a table switch (unmap).
+	R_constant* c_prev_wave;
+	R_constant* c_prev_wind;
+	R_constant* c_benders_setup;
+	R_constant* c_benders_pos;
+	R_constant* c_benders_prev_pos;
+	bool named_resolved;
+
 public:
 	R_tree();
 	void unmap();

@@ -113,8 +113,22 @@ static void _BCL callback_rotation_blend(CBoneInstance* const bone)
 	R_ASSERT(_valid( bone->mTransform ));
 }
 
+// callback_rotation / callback_rotation_blend only read per-stalker state (sight
+// rotations, shot effector deltas, cover flag and the stalker's own blend) and write
+// the bone they are called for. All writers of that state run on the main thread,
+// which is blocked at the render-preparation barrier while workers evaluate bones, so
+// these two callbacks may be evaluated by the skeleton job workers. Registration is
+// idempotent and always happens before either callback is installed on a bone.
+static void register_worker_safe_bone_callbacks()
+{
+	bone_callback_mark_worker_safe(&callback_rotation);
+	bone_callback_mark_worker_safe(&callback_rotation_blend);
+}
+
 void CStalkerAnimationManager::assign_bone_callbacks()
 {
+	register_worker_safe_bone_callbacks();
+
 	IKinematics* kinematics = smart_cast<IKinematics*>(m_visual);
 	VERIFY(kinematics);
 
@@ -155,6 +169,8 @@ void CStalkerAnimationManager::assign_bone_callbacks()
 
 void CStalkerAnimationManager::assign_bone_blend_callbacks(bool const& forward_direction)
 {
+	register_worker_safe_bone_callbacks();
+
 	IKinematics* kinematics = smart_cast<IKinematics*>(m_visual);
 	VERIFY(kinematics);
 

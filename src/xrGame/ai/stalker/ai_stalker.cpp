@@ -8,6 +8,8 @@
 
 #include "pch_script.h"
 #include "ai_stalker.h"
+#include "../../../xrCore/job_system.h"
+#include "../../../xrEngine/bone.h"
 #include "../ai_monsters_misc.h"
 #include "../../weapon.h"
 #include "../../hit.h"
@@ -153,6 +155,9 @@ CAI_Stalker::CAI_Stalker() :
 	savedOrientation.set(0.f, 0.f, 0.f);
 	dTimeFSeen = Device.dwTimeGlobal + 1000;
 	dTimeNfSeen = Device.dwTimeGlobal + 1000;
+	m_look_prepared_frame = u32(-1);
+	m_look_prepared_visible = false;
+	m_look_prepared_actor_head.identity();
 
 #ifdef HOLDERCUSTOM_NEW
 	m_holder = nullptr;
@@ -868,6 +873,10 @@ BOOL CAI_Stalker::net_Spawn(CSE_Abstract* DC)
 		if (k)
 		{
 			CBoneInstance* bone_head = &k->LL_GetBoneInstance(k->LL_BoneID("bip01_head"));
+			// LookAtActor only reads state that no thread writes while skeleton workers
+			// run; the two inputs that are not safe to read there are prepared on the main
+			// thread (see prepare_look_at_actor), so the callback may run on a worker.
+			bone_callback_mark_worker_safe(&CAI_Stalker::BoneCallback);
 			bone_head->set_callback(bctCustom, BoneCallback, this);
 		}
 	}
@@ -1683,10 +1692,12 @@ void CAI_Stalker::ResetBoneProtections(LPCSTR imm_sect, LPCSTR bone_sect)
 			? ini->r_string("immunities", "immunities_sect")
 			: (imm_sect ? imm_sect : "stalker_immunities"), pSettings);
 
-	m_boneHitProtection->reload(
-		(ini && ini->section_exist("bone_protection") && ini->line_exist("bone_protection", "bones_protection_sect"))
-			? ini->r_string("bone_protection", "bones_protection_sect")
-			: (bone_sect ? bone_sect : "stalker_damage"), pKinematics);
+	// null when the spawn visual had no bone_protection (see net_Spawn)
+	if (m_boneHitProtection)
+		m_boneHitProtection->reload(
+			(ini && ini->section_exist("bone_protection") && ini->line_exist("bone_protection", "bones_protection_sect"))
+				? ini->r_string("bone_protection", "bones_protection_sect")
+				: (bone_sect ? bone_sect : "stalker_damage"), pKinematics);
 }
 
 void CAI_Stalker::ChangeVisual(shared_str NewVisual)
@@ -1702,9 +1713,13 @@ void CAI_Stalker::ChangeVisual(shared_str NewVisual)
 	IKinematicsAnimated* V = smart_cast<IKinematicsAnimated*>(Visual());
 	if (V)
 	{
+		// Called from a script net_spawn (not Ready yet): the rest of net_Spawn sets up physics (in_NetSpawn),
+		// bone protections and animations from the new visual; m_boneHitProtection does not exist yet.
+		const bool spawned = !!getReady();
 		if (!g_Alive())
 		{
-			m_pPhysics_support->in_Die(false);
+			if (spawned)
+				m_pPhysics_support->in_Die(false);
 		}
 		else
 		{
@@ -1712,10 +1727,13 @@ void CAI_Stalker::ChangeVisual(shared_str NewVisual)
 		}
 
 		CDamageManager::reload(cNameSect_str(), "damage", pSettings);
-		ResetBoneProtections(NULL, NULL);
 		reattach_items();
-		m_pPhysics_support->in_ChangeVisual();
-		animation().reload();
+		if (spawned)
+		{
+			ResetBoneProtections(NULL, NULL);
+			m_pPhysics_support->in_ChangeVisual();
+			animation().reload();
+		}
 		movement().reload(cNameSect_str());
 	}
 
@@ -1745,6 +1763,44 @@ void CAI_Stalker::LookAtActorSoftReset(CBoneInstance* headBone)
 	headBone->mTransform.mulB_43(M);
 }
 
+// Main thread, once per queued skeleton right before the worker batch. Mirrors the early
+// outs of LookAtActor(): a stalker that would soft-reset before touching the actor needs no
+// preparation (those outs only read plain state). For the few stalkers inside the
+// interaction radius it resolves the two inputs a worker must not read itself.
+void CAI_Stalker::prepare_look_at_actor()
+{
+	m_look_prepared_frame = u32(-1);
+
+	if (!g_Alive() || wounded() || !NPCsLookAtActor)
+		return;
+
+	CActor* actor = Actor();
+	if (!actor)
+		return;
+
+	if (actor->Position().distance_to(Position()) > NPCsLookAtActorMinDistance)
+		return;
+
+	const bool visible = memory().visual().visible_right_now(actor);
+	m_look_prepared_visible = visible;
+
+	if (visible && LookAtActorLuaResult)
+	{
+		IKinematics* actor_kinematics = smart_cast<IKinematics*>(actor->Visual());
+		if (!actor_kinematics)
+			return;
+		actor_kinematics->Bone_GetAnimPos(m_look_prepared_actor_head, u16(actor->m_head), u8(-1), false);
+		m_look_prepared_actor_head.mulA_43(actor->XFORM());
+	}
+
+	m_look_prepared_frame = Device.dwFrame;
+}
+
+void CAI_Stalker::on_prepare_bones_main()
+{
+	prepare_look_at_actor();
+}
+
 void CAI_Stalker::LookAtActor(CBoneInstance* headBone) {
 	if (!g_Alive()) return;
 	if (!Actor()) return;
@@ -1760,8 +1816,18 @@ void CAI_Stalker::LookAtActor(CBoneInstance* headBone) {
 	if (distance > NPCsLookAtActorMinDistance)
 		return LookAtActorSoftReset(headBone);
 
+	// Inside the skeleton worker batch the two inputs below come from
+	// prepare_look_at_actor(), which ran on the main thread in this same frame. Outside
+	// it (lazy main-thread path) they are read directly, exactly as before. A worker
+	// never reads them itself: visual memory lookups update index caches and the actor
+	// head needs the actor's skeleton lock, which a worker must never block on.
+	const bool prepared = (m_look_prepared_frame == Device.dwFrame);
+	if (!prepared && xr_jobs::is_worker_thread())
+		return LookAtActorSoftReset(headBone);
+
 	// soft reset if can't see actor
-	if (!memory().visual().visible_right_now(Actor()))
+	const bool visible = prepared ? m_look_prepared_visible : memory().visual().visible_right_now(Actor());
+	if (!visible)
 		return LookAtActorSoftReset(headBone);
 
 	// soft reset if lua callback returned false
@@ -1769,8 +1835,15 @@ void CAI_Stalker::LookAtActor(CBoneInstance* headBone) {
 		return LookAtActorSoftReset(headBone);
 
 	Fmatrix actorHead;
-	smart_cast<IKinematics*>(Actor()->Visual())->Bone_GetAnimPos(actorHead, u16(Actor()->m_head), u8(-1), false);
-	actorHead.mulA_43(Actor()->XFORM());
+	if (prepared)
+	{
+		actorHead = m_look_prepared_actor_head;
+	}
+	else
+	{
+		smart_cast<IKinematics*>(Actor()->Visual())->Bone_GetAnimPos(actorHead, u16(Actor()->m_head), u8(-1), false);
+		actorHead.mulA_43(Actor()->XFORM());
+	}
 
 	Fmatrix myHead = headBone->mTransform;
 	myHead.mulA_43(XFORM());

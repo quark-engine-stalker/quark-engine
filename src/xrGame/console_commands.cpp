@@ -1,15 +1,16 @@
 #include "pch_script.h"
+#include "../xrEngine/frame_stats.h"
 #ifdef _WIN64
 extern "C"
 {
 #include "../3rd party/luajit-2/src/xr_alloc.h"
 }
 #endif
-#include "../xrCore/engine_error_logger.h"
 #include "../xrEngine/xr_ioconsole.h"
 #include "../xrEngine/xr_ioc_cmd.h"
 #include "../xrEngine/customhud.h"
 #include "../xrEngine/Feel_Vision.h"
+#include "../xrEngine/bone.h"
 #include "../xrEngine/fdemorecord.h"
 #include "../xrEngine/fdemoplay.h"
 #include "xrMessages.h"
@@ -62,6 +63,9 @@ extern "C"
 #include "ai_debug_variables.h"
 #include "../xrphysics/console_vars.h"
 #include <sstream>
+#include <algorithm>
+#include <dbghelp.h>
+#pragma comment(lib, "dbghelp.lib")
 #include "..\xrCore\LocatorAPI.h"
 #ifdef DEBUG
 #	include "PHDebug.h"
@@ -580,6 +584,219 @@ static void dump_luajit_cache_stats()
 	}
 }
 
+// Counters of the parallel skeleton evaluation since the last reset. Funnel, in order:
+//   skip_hidden = object skeletons not queued because the renderer did not request them in the
+//                 previous frame (off screen / just appeared),
+//   skip_unsafe = not queued because an unregistered bone callback or update-tracks callback is
+//                 installed (Update_Callback no longer counts: it runs on the main thread),
+//   queued      = skeletons put into the render-prep queue,
+//   discarded   = batches dropped because there were fewer than 4 skeletons or 192 bones,
+//   batches     = batches that actually ran on workers,
+//   executed    = skeletons whose bone matrices a worker computed,
+//   busy        = skeleton skipped because another thread held its lock (the main thread
+//                 computes it lazily instead),
+//   rejected    = skeleton no longer eligible when the worker re-validated it,
+//   post_callbacks = Update_Callbacks (IK, attachments, script) run on the main thread after a batch.
+// Per-batch timing (ms): main = serial animation-track phase, work = the frame thread's own
+// share of the parallel phase, wait = frame thread idle at the barrier, post = serial
+// Update_Callback phase. total is their sum; max is the slowest single batch.
+namespace
+{
+// Describes a code address for the "blockers" report: "Class::function+0xN" when the PDB
+// next to the executable can be loaded, otherwise "module+0xRVA". DbgHelp is given its own
+// private session handle and never touches global symbol options, so the crash logger's
+// session is unaffected. Diagnostic command only: the first call may take a few seconds.
+void describe_code_address(const void* address, char* out, size_t out_size)
+{
+	HMODULE module = nullptr;
+	char module_path[MAX_PATH] = {};
+	if (!address || !GetModuleHandleExA(
+		GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+		static_cast<LPCSTR>(address), &module) || !module)
+	{
+		xr_sprintf(out, out_size, "%p", address);
+		return;
+	}
+	GetModuleFileNameA(module, module_path, MAX_PATH);
+	const char* module_name = strrchr(module_path, '\\');
+	module_name = module_name ? module_name + 1 : module_path;
+	const u64 rva = u64(static_cast<const char*>(address) - reinterpret_cast<const char*>(module));
+
+	static HANDLE session = reinterpret_cast<HANDLE>(uintptr_t(0x51534B4C));
+	static bool session_ready = false;
+	static bool session_tried = false;
+	static DWORD64 loaded_base = 0;
+	if (!session_tried)
+	{
+		session_tried = true;
+		string_path directory;
+		xr_strcpy(directory, module_path);
+		if (char* slash = strrchr(directory, '\\'))
+			*slash = 0;
+		if (SymInitialize(session, directory, FALSE))
+			session_ready = true;
+	}
+	if (session_ready && loaded_base != reinterpret_cast<DWORD64>(module))
+	{
+		PIMAGE_NT_HEADERS headers = ImageNtHeader(module);
+		const DWORD image_size = headers ? headers->OptionalHeader.SizeOfImage : 0;
+		if (image_size &&
+			SymLoadModuleEx(session, nullptr, module_path, nullptr, reinterpret_cast<DWORD64>(module), image_size,
+				nullptr, 0))
+			loaded_base = reinterpret_cast<DWORD64>(module);
+	}
+
+	if (session_ready && loaded_base == reinterpret_cast<DWORD64>(module))
+	{
+		alignas(SYMBOL_INFO) char buffer[sizeof(SYMBOL_INFO) + 256];
+		SYMBOL_INFO* symbol = reinterpret_cast<SYMBOL_INFO*>(buffer);
+		ZeroMemory(buffer, sizeof(buffer));
+		symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+		symbol->MaxNameLen = 255;
+		DWORD64 displacement = 0;
+		if (SymFromAddr(session, reinterpret_cast<DWORD64>(address), &displacement, symbol) && symbol->NameLen)
+		{
+			xr_sprintf(out, out_size, "%s+0x%llx (%s)", symbol->Name,
+				static_cast<unsigned long long>(displacement), module_name);
+			return;
+		}
+	}
+	xr_sprintf(out, out_size, "%s+0x%llx (no symbols)", module_name, static_cast<unsigned long long>(rva));
+}
+
+LPCSTR bone_blocker_type_name(u32 type)
+{
+	switch (type)
+	{
+	case bone_blocker_update_callback: return "Update_Callback";
+	case bone_blocker_tracks_callback: return "tracks_callback(object)";
+	case bctPhysics: return "bone/physics";
+	case bctCustom: return "bone/custom";
+	case bctDummy: return "bone/dummy";
+	default: return "bone/other";
+	}
+}
+} // namespace
+
+namespace
+{
+void frame_stats_emit(void* ctx, const char* line)
+{
+	static_cast<SFrameReportSink*>(ctx)->line("%s", line);
+}
+
+// Extra section of the frame_stats report file: Lua timings of the existing profiler.
+void frame_stats_lua_report(const u32 top, SFrameReportSink& sink)
+{
+	if (!g_pGameLevel)
+		return;
+
+	sink.line("[frame_stats] --- Lua profiler (needs `lua_profile 1`; it adds its own overhead and covers the time since it was enabled or reset) ---");
+	if (!psLua_Profile)
+	{
+		sink.line("[frame_stats] lua_profile is 0: no Lua timings recorded");
+		return;
+	}
+	ai().script_engine().dump_lua_hotspots(top, &frame_stats_emit, &sink);
+	lua_profile_dump_callbacks(top, &frame_stats_emit, &sink);
+}
+} // namespace
+
+class CCC_SkeletonJobStats : public IConsole_Command
+{
+public:
+	CCC_SkeletonJobStats(LPCSTR N) : IConsole_Command(N)
+	{
+		bEmptyArgsHandled = TRUE;
+	}
+
+	virtual void Execute(LPCSTR args)
+	{
+		if (args && args[0] && !_stricmp(args, "blockers"))
+		{
+			SBoneCallbackBlocker blockers[24];
+			const u32 count = bone_callback_get_blockers(blockers, 24);
+			if (!count)
+			{
+				Msg("[mt_skeleton] no blockers recorded (nothing was rejected by a callback since the last reset)");
+				return;
+			}
+			std::sort(blockers, blockers + count,
+				[](const SBoneCallbackBlocker& a, const SBoneCallbackBlocker& b) { return a.count > b.count; });
+			u64 total = 0;
+			for (u32 i = 0; i < count; ++i)
+				total += blockers[i].count;
+
+			Msg("[mt_skeleton] callbacks that kept skeletons off the workers (resolving symbols, the first call can take a few seconds)...");
+			for (u32 i = 0; i < count && i < 12; ++i)
+			{
+				char description[512];
+				describe_code_address(blockers[i].fn, description, sizeof(description));
+				Msg("[mt_skeleton] #%u %5.1f%% count=%u type=%s %s", i + 1,
+					100.0 * double(blockers[i].count) / double(total), blockers[i].count,
+					bone_blocker_type_name(blockers[i].type), description);
+			}
+			return;
+		}
+
+		Msg("[mt_skeleton] enabled=%d callbacks=%d workers=%u",
+			g_mt_config.test(mtSkeletonJobs) ? 1 : 0, g_bone_worker_callbacks,
+			xr_jobs::worker_count());
+		Msg("[mt_skeleton] skip_hidden=%u skip_unsafe=%u queued=%u discarded=%u batches=%u",
+			Device.SkeletonJobStats.skip_hidden, Device.SkeletonJobStats.skip_unsafe,
+			Device.SkeletonJobStats.queued, Device.SkeletonJobStats.discarded,
+			Device.SkeletonJobStats.batches);
+		Msg("[mt_skeleton] executed=%ld busy=%ld rejected=%ld already=%ld post_callbacks=%u",
+			Device.SkeletonJobStats.executed, Device.SkeletonJobStats.busy,
+			Device.SkeletonJobStats.rejected, Device.SkeletonJobStats.already,
+			Device.SkeletonJobStats.post_callbacks);
+
+		// Average cost of one worker batch (one per frame at most), by phase.
+		if (Device.SkeletonJobStats.batches)
+		{
+			LARGE_INTEGER freq;
+			QueryPerformanceFrequency(&freq);
+			const double ms = 1000.0 / double(freq.QuadPart) / double(Device.SkeletonJobStats.batches);
+			const double main_ms = double(Device.SkeletonJobStats.ticks_main) * ms;
+			const double work_ms = double(Device.SkeletonJobStats.ticks_work) * ms;
+			const double wait_ms = double(Device.SkeletonJobStats.ticks_wait) * ms;
+			const double post_ms = double(Device.SkeletonJobStats.ticks_post) * ms;
+			Msg("[mt_skeleton] per batch (ms): main=%.3f work=%.3f wait=%.3f post=%.3f total=%.3f max=%.3f",
+				main_ms, work_ms, wait_ms, post_ms, main_ms + work_ms + wait_ms + post_ms,
+				double(Device.SkeletonJobStats.ticks_total_max) * 1000.0 / double(freq.QuadPart));
+			Msg("[mt_skeleton] skeletons/batch=%.1f post_callbacks/batch=%.1f",
+				double(Device.SkeletonJobStats.executed) / double(Device.SkeletonJobStats.batches),
+				double(Device.SkeletonJobStats.post_callbacks) / double(Device.SkeletonJobStats.batches));
+		}
+
+		if (args && args[0] && !_stricmp(args, "reset"))
+		{
+			InterlockedExchange(&Device.SkeletonJobStats.executed, 0);
+			InterlockedExchange(&Device.SkeletonJobStats.busy, 0);
+			InterlockedExchange(&Device.SkeletonJobStats.rejected, 0);
+			InterlockedExchange(&Device.SkeletonJobStats.already, 0);
+			Device.SkeletonJobStats.skip_hidden = 0;
+			Device.SkeletonJobStats.skip_unsafe = 0;
+			Device.SkeletonJobStats.queued = 0;
+			Device.SkeletonJobStats.discarded = 0;
+			Device.SkeletonJobStats.batches = 0;
+			Device.SkeletonJobStats.post_callbacks = 0;
+			Device.SkeletonJobStats.ticks_main = 0;
+			Device.SkeletonJobStats.ticks_work = 0;
+			Device.SkeletonJobStats.ticks_wait = 0;
+			Device.SkeletonJobStats.ticks_post = 0;
+			Device.SkeletonJobStats.ticks_total_max = 0;
+			bone_callback_reset_blockers();
+			Msg("[mt_skeleton] counters reset");
+		}
+	}
+
+	virtual void Info(TInfo& I)
+	{
+		xr_strcpy(I, "show parallel skeleton counters; 'blockers' lists the callbacks that keep skeletons off the workers; 'reset' clears all");
+	}
+};
+
 class CCC_LuaJITStats : public IConsole_Command
 {
 public:
@@ -777,7 +994,7 @@ public:
 				luaJIT_resetjitstats(lua_state);
 			if (!script_engine.start_lua_record(threshold_us))
 			{
-				Msg("! [lua_record] failed to create record in %%APPDATA%%\\QUARK ENGINE\\LUA");
+				Msg("! [lua_record] failed to create record in %%APPDATA%%\\QUARK-ENGINE\\LUA");
 				return;
 			}
 
@@ -2250,7 +2467,6 @@ public:
 
 	virtual void Execute(LPCSTR args)
 	{
-		EngineErrorLogger::ExternalContentScope externalContentScope;
 		if (!xr_strlen(args))
 			Log("* Specify string to run!");
 		else
@@ -2966,6 +3182,10 @@ void CCC_RegisterCommands()
 	CMD4(CCC_Float, "hud_fov", &psHUD_FOV_def, 0.1f, 1.0f);
 	CMD4(CCC_Float, "fov", &g_fov, 5.0f, 180.0f);
 	CMD4(CCC_Float, "viewport_near", &Device.ViewportNear, 0.0f, 1.0f);
+	extern float g_step_sound_distance;
+	extern float g_step_particle_distance;
+	CMD4(CCC_Float, "step_sound_distance", &g_step_sound_distance, 10.0f, 100.0f);
+	CMD4(CCC_Float, "step_particle_distance", &g_step_particle_distance, 10.0f, 100.0f);
 	//#endif // DEBUG
 
 	// Demo
@@ -2984,7 +3204,6 @@ void CCC_RegisterCommands()
 	CMD3(CCC_Mask, "mt_ai_vision", &g_mt_config, mtAiVision);
 	CMD3(CCC_Mask, "mt_level_path", &g_mt_config, mtLevelPath);
 	CMD3(CCC_Mask, "mt_detail_path", &g_mt_config, mtDetailPath);
-	CMD3(CCC_Mask, "mt_skeleton", &g_mt_config, mtSkeletonJobs);
 	CMD3(CCC_Mask, "mt_object_handler", &g_mt_config, mtObjectHandler);
 	CMD3(CCC_Mask, "mt_sound_player", &g_mt_config, mtSoundPlayer);
 	CMD3(CCC_Mask, "mt_bullets", &g_mt_config, mtBullets);
@@ -2993,6 +3212,16 @@ void CCC_RegisterCommands()
 	CMD3(CCC_Mask, "mt_alife", &g_mt_config, mtALife);
 	CMD3(CCC_Mask, "mt_map", &g_mt_config, mtMap);
 #endif // MASTER_GOLD
+
+	// Skeleton worker controls are available in shipping builds: they are the escape
+	// hatch and the diagnostics for the parallel bone evaluation.
+	CMD3(CCC_Mask, "mt_skeleton", &g_mt_config, mtSkeletonJobs);
+	// 0 = every bone callback keeps its skeleton on the main thread (original behaviour),
+	// 1 = callbacks registered as worker-safe (stalker head/spine/shoulder rotation) may
+	// be evaluated by the skeleton workers.
+	CMD4(CCC_Integer, "mt_skeleton_callbacks", &g_bone_worker_callbacks, 0, 1);
+	CMD1(CCC_SkeletonJobStats, "mt_skeleton_stats");
+	g_frame_stats_extra = &frame_stats_lua_report;
 
 #ifndef MASTER_GOLD
 	CMD3(CCC_Mask, "ai_obstacles_avoiding", &psAI_Flags, aiObstaclesAvoiding);

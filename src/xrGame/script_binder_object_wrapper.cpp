@@ -82,7 +82,25 @@ private:
 };
 }
 
-void lua_profile_dump_callbacks(const u32 limit)
+namespace
+{
+void binder_emit_line(void (*emit)(void*, const char*), void* ctx, const char* format, ...)
+{
+	char line[768];
+	va_list args;
+	va_start(args, format);
+	vsnprintf(line, sizeof(line), format, args);
+	line[sizeof(line) - 1] = 0;
+	va_end(args);
+
+	if (emit)
+		emit(ctx, line);
+	else
+		Msg("%s", line);
+}
+}
+
+void lua_profile_dump_callbacks(const u32 limit, void (*emit)(void*, const char*), void* ctx)
 {
 	struct profile_row
 	{
@@ -100,7 +118,7 @@ void lua_profile_dump_callbacks(const u32 limit)
 		return left.stats.total_ticks > right.stats.total_ticks;
 	});
 
-	Msg("[Lua profile] binder update sections=%u, showing=%u",
+	binder_emit_line(emit, ctx, "[Lua profile] binder update sections=%u, showing=%u",
 		static_cast<u32>(rows.size()), _min(limit, static_cast<u32>(rows.size())));
 
 	const u32 row_count = _min(limit, static_cast<u32>(rows.size()));
@@ -115,7 +133,7 @@ void lua_profile_dump_callbacks(const u32 limit)
 			static_cast<double>(row.stats.total_ticks) * 1000000.0 /
 			(static_cast<double>(CPU::qpc_freq) * static_cast<double>(row.stats.calls)) : 0.0;
 
-		Msg("[Lua profile] %2u. %-40s calls=%llu total=%.3f ms avg=%.2f us max=%.3f ms alloc=%llu realloc=%llu free=%llu allocated=%.2f KB freed=%.2f KB",
+		binder_emit_line(emit, ctx, "[Lua profile] %2u. %-40s calls=%llu total=%.3f ms avg=%.2f us max=%.3f ms alloc=%llu realloc=%llu free=%llu allocated=%.2f KB freed=%.2f KB",
 			index + 1,
 			row.section.c_str(),
 			static_cast<unsigned long long>(row.stats.calls),

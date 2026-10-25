@@ -7,18 +7,7 @@ namespace EngineErrorLogger
     enum class Severity : unsigned char
     {
         Error,
-        Fatal,
-        Crash
-    };
-
-    class XRCORE_API ExternalContentScope
-    {
-    public:
-        ExternalContentScope();
-        ~ExternalContentScope();
-
-        ExternalContentScope(const ExternalContentScope&) = delete;
-        ExternalContentScope& operator=(const ExternalContentScope&) = delete;
+        Fatal
     };
 
     XRCORE_API void Initialize();
@@ -26,28 +15,21 @@ namespace EngineErrorLogger
     XRCORE_API bool IsEnabled();
     XRCORE_API LPCSTR GetDirectory();
 
-    // Lightweight, allocation-free crash context. Calls only update thread-local
-    // state and are safe to use on hot frame paths.
-    XRCORE_API void SetThreadStage(
-        LPCSTR stage,
-        LPCSTR file,
-        int line,
-        LPCSTR function,
-        const void* callbackAddress = nullptr
-    );
+    // Allocation-free crash context of the calling thread, safe on hot frame
+    // paths. stage must be a string literal: only the pointer is stored.
+    XRCORE_API void SetThreadStage(LPCSTR stage, const void* callbackAddress = nullptr);
     XRCORE_API void ClearThreadStage();
-    XRCORE_API void SetFrameNumber(unsigned int frameNumber);
+    XRCORE_API void SetThreadName(LPCSTR name);
 
-    // Bounded, non-blocking in-memory event history. It is appended to the category log on crash,
-    // but does not touch the disk during normal gameplay. Native source paths are
-    // normalized to repository-relative names before they enter persistent state.
-    XRCORE_API void AddBreadcrumb(
-        LPCSTR category,
-        LPCSTR message,
-        LPCSTR file,
-        int line,
-        LPCSTR function
-    );
+    // Bounded in-memory history (game-log warnings, loading, saving). It is
+    // printed in fatal and crash records and never touches the disk by itself.
+    XRCORE_API void AddBreadcrumb(LPCSTR message);
+
+    // Writes the running Lua call stack as "  #NN source:line (function)\r\n"
+    // lines. It is registered on the Lua VM thread and called only on that
+    // thread, under SEH, by fatal and crash records.
+    using LuaStackWriter = void (*)(char* output, size_t capacity);
+    XRCORE_API void SetLuaStackWriter(LuaStackWriter writer);
 
     XRCORE_API void Report(
         Severity severity,
@@ -90,26 +72,23 @@ namespace EngineErrorLogger
     XRCORE_API void ReportScriptFailure(int status, LPCSTR script,
         LPCSTR message, LPCSTR traceback, LPCSTR file = nullptr, int line = 0,
         LPCSTR function = nullptr, bool recoveredModuleLoad = false);
+    // Opens the ERROR folder in Explorer once per process, instead of an error dialog.
+    XRCORE_API void OpenLogFolder();
     // A separate filename and explicit SIMULATED marker, never a live failure.
     XRCORE_API bool WriteSelfTest();
     XRCORE_API void ReportUnhandledException(void* exceptionPointers);
-    XRCORE_API void __cdecl ReportExplicit(LPCSTR file, int line, LPCSTR function, LPCSTR format, ...);
-
 }
 
-#define QUARK_ENGINE_ERROR(...) \
-    ::EngineErrorLogger::ReportExplicit(__FILE__, __LINE__, __FUNCTION__, __VA_ARGS__)
-
 #define QUARK_DIAGNOSTIC_STAGE(stage) \
-    ::EngineErrorLogger::SetThreadStage((stage), __FILE__, __LINE__, __FUNCTION__, nullptr)
+    ::EngineErrorLogger::SetThreadStage(stage)
 
 #define QUARK_DIAGNOSTIC_STAGE_ADDRESS(stage, address) \
-    ::EngineErrorLogger::SetThreadStage((stage), __FILE__, __LINE__, __FUNCTION__, reinterpret_cast<const void*>(address))
+    ::EngineErrorLogger::SetThreadStage((stage), reinterpret_cast<const void*>(address))
 
 #define QUARK_DIAGNOSTIC_CLEAR_STAGE() \
     ::EngineErrorLogger::ClearThreadStage()
 
-#define QUARK_DIAGNOSTIC_BREADCRUMB(category, message) \
-    ::EngineErrorLogger::AddBreadcrumb((category), (message), __FILE__, __LINE__, __FUNCTION__)
+#define QUARK_DIAGNOSTIC_BREADCRUMB(message) \
+    ::EngineErrorLogger::AddBreadcrumb(message)
 
 #endif // engine_error_loggerH

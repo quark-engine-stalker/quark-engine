@@ -71,7 +71,9 @@ void CLight_Compute_XFORM_and_VIS::compute_xf_spot(light* L)
 	u32 _size = iFloor(factor * SMAP_adapt_optimal);
 	if (_size < ps_ssfx_shadows.x) _size = ps_ssfx_shadows.x;
 	if (_size > max_size) _size = max_size;
-	int _epsilon = iCeil(float(_size) * 0.01f);
+	// 10% hysteresis: a size change re-renders a cached shadow face, so do not
+	// follow every metre the camera moves.
+	int _epsilon = iCeil(float(_size) * 0.1f);
 	int _diff = _abs(int(_size) - int(_cached_size));
 	L->X.S.size = (_diff >= _epsilon) ? _size : _cached_size;
 

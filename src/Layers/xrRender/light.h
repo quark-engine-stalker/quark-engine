@@ -73,6 +73,23 @@ public:
 	u32				m_xform_frame;
 	Fmatrix			m_xform;
 
+	// Static casters of this shadow face kept in the persistent shadow cache page
+	// (r2_R_lights.cpp); dynamic casters and trees are drawn over them every frame.
+	struct _smap_cache
+	{
+		u16			cell = 0;		// top-left cell of the slot
+		u8			cells = 0;		// slot edge in cells, 0 = no slot
+		u16			x = 0, y = 0;	// slot position in pixels
+		bool		valid = false;	// slot holds the static casters of combine/size
+		bool		static_casters = false;
+		bool		uncacheable = false; // static part changes by itself (until combine/size change)
+		u32			size = 0;
+		u32			used_frame = 0;
+		float		camera_distance = 0.f;
+		Fmatrix		combine;
+		xr_vector<dxRender_Visual*> trees;
+	}				smap_cache;
+
 	struct _vis		{
 		u32			frame2test;		// frame the test is sheduled to
 		R_occlusion::occq_id query_id; // generation-checked occlusion-query owner

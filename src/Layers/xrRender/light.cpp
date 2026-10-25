@@ -48,6 +48,7 @@ light::~light()
 {
 	for (int f = 0; f < 6; f++) xr_delete(omnipart[f]);
 	set_active(false);
+	RImplementation.smap_cache_release(this);
 
 	// remove from Lights_LastFrame
 	for (u32 it = 0; it < RImplementation.Lights_LastFrame.size(); it++)

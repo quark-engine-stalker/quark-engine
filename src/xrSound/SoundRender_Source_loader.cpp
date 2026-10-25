@@ -78,7 +78,7 @@ bool CSoundRender_Source::LoadWave(LPCSTR pName)
 
 	if (ovi->rate != 44100)
 	{
-		Msg("! Warning: Invalid source rate: %s", pname.c_str());
+		Msg("! Warning: Invalid source rate %u (need 44100), playing silence: %s", u32(ovi->rate), pname.c_str());
 		ov_clear(&ovf);
 		FS.r_close(wave);
 		return false;
@@ -91,15 +91,7 @@ bool CSoundRender_Source::LoadWave(LPCSTR pName)
     }
 #endif // #ifdef DEBUG
 
-	ZeroMemory(&m_wformat, sizeof( WAVEFORMATEX ));
-
-	m_wformat.nSamplesPerSec = (ovi->rate); //44100;
-	m_wformat.wFormatTag = WAVE_FORMAT_PCM;
-	m_wformat.nChannels = u16(ovi->channels);
-	m_wformat.wBitsPerSample = 16;
-
-	m_wformat.nBlockAlign = m_wformat.wBitsPerSample / 8 * m_wformat.nChannels;
-	m_wformat.nAvgBytesPerSec = m_wformat.nSamplesPerSec * m_wformat.nBlockAlign;
+	set_format(u16(ovi->channels));
 
 	s64 pcm_total = ov_pcm_total(&ovf, -1);
 	dwBytesTotal = u32(pcm_total * m_wformat.nBlockAlign);
@@ -177,8 +169,50 @@ void CSoundRender_Source::load(LPCSTR name)
 		}
     }
 
-	if (LoadWave(fn))
-		SoundRender->cache.cat_create(CAT, dwBytesTotal);
+	if (!LoadWave(fn))
+	{
+		// A rejected file (rate != 44100) would stay registered without a format,
+		// and a zero-size stream block is fatal; play silence like a missing file.
+		FS.update_path(fn, "$game_sounds$", "$no_sound.ogg");
+		if (!LoadWave(fn))
+			return;
+	}
+	SoundRender->cache.cat_create(CAT, dwBytesTotal);
+}
+
+void CSoundRender_Source::set_format(u16 channels)
+{
+	ZeroMemory(&m_wformat, sizeof( WAVEFORMATEX ));
+
+	m_wformat.nSamplesPerSec = 44100; // LoadWave rejects any other rate
+	m_wformat.wFormatTag = WAVE_FORMAT_PCM;
+	m_wformat.nChannels = channels;
+	m_wformat.wBitsPerSample = 16;
+
+	m_wformat.nBlockAlign = m_wformat.wBitsPerSample / 8 * m_wformat.nChannels;
+	m_wformat.nAvgBytesPerSec = m_wformat.nSamplesPerSec * m_wformat.nBlockAlign;
+}
+
+// Same result as load(name) when path is the ogg it resolves to and h came from get_header() for that file
+void CSoundRender_Source::load(LPCSTR name, LPCSTR path, const header& h)
+{
+	fname = name;
+	pname = path;
+	set_format(u16(h.channels));
+	dwBytesTotal = h.bytes_total;
+	fTimeTotal = h.time_total;
+	m_fBaseVolume = h.base_volume;
+	m_fMinDist = h.min_dist;
+	m_fMaxDist = h.max_dist;
+	m_fMaxAIDist = h.max_ai_dist;
+	m_uGameType = h.game_type;
+	SoundRender->cache.cat_create(CAT, dwBytesTotal);
+}
+
+CSoundRender_Source::header CSoundRender_Source::get_header() const
+{
+	return {dwBytesTotal, fTimeTotal, m_fBaseVolume, m_fMinDist, m_fMaxDist, m_fMaxAIDist, m_uGameType,
+		m_wformat.nChannels};
 }
 
 void CSoundRender_Source::unload()

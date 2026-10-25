@@ -138,6 +138,14 @@ FS_file_list_ex::FS_file_list_ex(LPCSTR path, u32 flags, LPCSTR mask)
 	// seconds with a large GAMMA gamedata tree. Preserve explicit refreshes made
 	// through FS.rescan_path()/rescan_pathes(), but make ordinary list queries
 	// use the already populated index just like file_list_open().
+	// User data under $app_data_root$ is small and written by Lua io (*.scoc saves,
+	// MCM logs) behind the index's back, so it is always re-read like in Monolith.
+	if (FS.path_exist("$app_data_root$"))
+	{
+		LPCSTR app_data = FS.get_path("$app_data_root$")->m_Path;
+		if (0 == _strnicmp(P->m_Path, app_data, xr_strlen(app_data)))
+			P->m_Flags.set(FS_Path::flNeedRescan, TRUE);
+	}
 	if (P->m_Flags.is(FS_Path::flNeedRescan))
 	{
 		const BOOL previous_need_check = FS.m_Flags.test(CLocatorAPI::flNeedCheck);

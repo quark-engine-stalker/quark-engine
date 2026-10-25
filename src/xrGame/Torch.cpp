@@ -25,6 +25,7 @@ static Fvector TORCH_OFFSET = {-0.2f, +0.1f, -0.3f};
 static const Fvector OMNI_OFFSET = {-0.2f, +0.1f, -0.1f};
 static const float OPTIMIZATION_DISTANCE = 100.f;
 static const float NPC_SHADOW_REENABLE_DISTANCE = OPTIMIZATION_DISTANCE * .85f;
+static const float NPC_BEAM_TURN_COS = 0.999998f; // cos(0.002 rad), the on-screen step of the position eps
 
 static bool stalker_use_dynamic_lights = false;
 
@@ -36,6 +37,7 @@ CTorch::CTorch(void)
 	light_render->set_type(IRender_Light::SPOT);
 	light_render->set_shadow(true);
 	m_shadow_enabled = true;
+	m_npc_beam_dir.set(0, 0, 0);
 	light_omni = ::Render->light_create();
 	light_omni->set_type(IRender_Light::POINT);
 	light_omni->set_shadow(false);
@@ -372,6 +374,7 @@ void CTorch::UpdateCL()
 
 		if (actor)
 		{
+			m_npc_beam_dir.set(0, 0, 0); // the beam set below is not the NPC one
             float eps = 0.001f;
 			if (actor->active_cam() == eacLookAt)
 			{
@@ -428,14 +431,22 @@ void CTorch::UpdateCL()
 			if (can_use_dynamic_lights())
 			{
 				light_render->set_position(M.c, eps);
-				light_render->set_rotation(M.k, M.i, d_eps);
+				// Idle animation turns the beam a little every frame, and any turn
+				// re-renders the whole shadow map; a still beam reuses its cached statics.
+				Fvector beam_dir;
+				beam_dir.normalize_safe(M.k);
+				if (!r_optimize_torch || m_npc_beam_dir.dotproduct(beam_dir) < NPC_BEAM_TURN_COS)
+				{
+					m_npc_beam_dir = beam_dir;
+					light_render->set_rotation(M.k, M.i, d_eps);
+					light_omni->set_rotation(M.k, M.i, d_eps);
+				}
 
 				Fvector offset = M.c;
 				offset.mad(M.i, m_omni_offset.x);
 				offset.mad(M.j, m_omni_offset.y);
 				offset.mad(M.k, m_omni_offset.z);
 				light_omni->set_position(M.c, eps);
-				light_omni->set_rotation(M.k, M.i, d_eps);
 			} 
 
 			glow_render->set_position(M.c, eps);

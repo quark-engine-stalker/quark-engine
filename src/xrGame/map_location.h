@@ -89,8 +89,9 @@ public:
 	CMiniMapSpot* MiniMapSpotNC() { return m_minimap_spot; }
 
 	IC bool PointerEnabled() { return SpotEnabled() && !!m_flags.test(ePointerEnabled); };
-	void EnablePointer();
-	void DisablePointer();
+	// UpdateTasks() turns pointers off and back on every frame, so these must not mark locations dirty.
+	IC void EnablePointer() { m_flags.set(ePointerEnabled,TRUE); };
+	IC void DisablePointer() { m_flags.set(ePointerEnabled,FALSE); };
 
 	IC bool Collidable() const { return !!m_flags.test(eCollidable); }
 	IC bool SpotEnabled() { return !!m_flags.test(eSpotEnabled); };
@@ -108,7 +109,7 @@ public:
 	virtual bool Update();
 	Fvector GetLastPosition() { return m_position_global; };
 	bool Serializable() const { return !!m_flags.test(eSerailizable); }
-	void SetSerializable(bool b);
+	void SetSerializable(bool b) { m_flags.set(eSerailizable, b); }
 
 	virtual void save(IWriter& stream);
 	virtual void load(IReader& stream);

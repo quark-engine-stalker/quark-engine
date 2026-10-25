@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "igame_level.h"
+#include "frame_stats.h"
 #include "igame_persistent.h"
 
 #include "xrSheduler.h"
@@ -125,7 +126,15 @@ void CObjectList::SingleUpdate(CObject* O)
 
 	// Msg ("[%d][0x%08x]IAmNotACrowAnyMore (CObjectList::SingleUpdate)", Device.dwFrame, fast_dynamic_cast<void*>(O));
 
-	O->UpdateCL();
+	if (g_frame_stats.deep)
+	{
+		// frame_stats deep: UpdateCL time grouped by class id.
+		const u64 stats_started = CPU::QPC();
+		O->UpdateCL();
+		g_frame_stats.note_updatecl(O->CLS_ID, CPU::QPC() - stats_started);
+	}
+	else
+		O->UpdateCL();
 #ifdef DEBUG
 	VERIFY3(O->dbg_update_cl == Device.dwFrame, "Broken sequence of calls to 'UpdateCL'", *O->cName());
 #endif
@@ -423,7 +432,7 @@ u32 CObjectList::net_Export(NET_Packet* _Packet, u32 start, u32 max_object_size)
 		CObject* P = (start < objects_active.size())
 			             ? objects_active[start]
 			             : objects_sleeping[start - objects_active.size()];
-		if (P->net_Relevant() && !P->getDestroy())
+		if (P->getReady() && P->net_Relevant() && !P->getDestroy())
 		{
 			Packet.w_u16(u16(P->ID()));
 			Packet.w_chunk_open8(position);

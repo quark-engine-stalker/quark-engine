@@ -25,8 +25,9 @@ EGameIDs ParseStringToGameType(const char* str);
 
 struct predicate_find_stat
 {
-	const char* id;
-	predicate_find_stat(const char* id) { this->id = id; }
+	// Docked once per lookup: comparing shared_str with const char* would dock id for every static.
+	shared_str id;
+	predicate_find_stat(const char* id) : id(id) {}
 
 	bool operator()(StaticDrawableWrapper* s)
 	{

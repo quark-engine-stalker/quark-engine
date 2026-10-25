@@ -74,6 +74,43 @@ bool CCF_Skeleton::_ElementCenter(u16 elem_id, Fvector& e_center)
 	return false;
 }
 
+// Element bounds are trusted only for unit-scale transforms (bone and object matrices
+// normally are); otherwise the exact tests measure in a scaled space and the element
+// keeps the exact test only. The slack keeps float rounding of the exact tests inside.
+IC bool unit_length(const Fvector& v) { return fsimilar(v.square_magnitude(), 1.f, 1e-3f); }
+IC float bound_slack(float r) { return r * 1.001f + 0.001f; }
+
+// Can the ray S + t*D (D normalized), 0 <= t < range, touch the sphere? Conservative.
+// The distance to the axis is taken from the closest-point vector, not as |L|^2 - t^2,
+// which loses all precision for bones far along a long ray (bullets).
+// The exact cylinder test loses precision with distance (its discriminant subtracts
+// terms of the order of distance^2) and may report hits slightly outside the cylinder.
+// The bound grows by 0.2 mm per metre to keep such hits, and farther than pretest_far
+// elements always get the exact test, so results stay as they were.
+constexpr float pretest_far = 50.f;
+
+IC bool ray_may_hit(const Fsphere& s, const Fvector& S, const Fvector& D, float range)
+{
+	Fvector L;
+	L.sub(s.P, S);
+	const float L2 = L.square_magnitude();
+	if (L2 > pretest_far * pretest_far)
+		return true;
+	const float radius = s.R + 2e-4f * _sqrt(L2);
+	const float R2 = radius * radius;
+	if (L2 <= R2)
+		return true;
+	const float t = L.dotproduct(D);
+	if (t < 0.f)
+		return false;
+	Fvector closest;
+	closest.mad(L, D, -t);
+	const float d2 = closest.square_magnitude();
+	if (d2 > R2)
+		return false;
+	return t - _sqrt(R2 - d2) < range;
+}
+
 IC bool RAYvsOBB(const Fmatrix& IM, const Fvector& b_hsize, const Fvector& S, const Fvector& D, float& R, BOOL bCull)
 {
 	Fbox E = {-b_hsize.x, -b_hsize.y, -b_hsize.z, b_hsize.x, b_hsize.y, b_hsize.z};
@@ -185,6 +222,9 @@ void CCF_Skeleton::BuildState()
 #endif //#ifdef DEBUG
 					I->elem_id = u16(-1); //. hack - disable invalid bone
 				}
+				I->bound.P.set(TW.c);
+				I->bound.R = (unit_length(TW.i) && unit_length(TW.j) && unit_length(TW.k)) ?
+					bound_slack(B.m_halfsize.magnitude()) : -1.f;
 			}
 			break;
 		case SBoneShape::stSphere:
@@ -193,6 +233,7 @@ void CCF_Skeleton::BuildState()
 				Mbone.transform_tiny(I->s_sphere.P, S.P);
 				L2W.transform_tiny(I->s_sphere.P);
 				I->s_sphere.R = S.R;
+				I->bound.R = -1.f; // the exact test is a sphere test already
 			}
 			break;
 		case SBoneShape::stCylinder:
@@ -204,6 +245,9 @@ void CCF_Skeleton::BuildState()
 				L2W.transform_dir(I->c_cylinder.m_direction);
 				I->c_cylinder.m_height = C.m_height;
 				I->c_cylinder.m_radius = C.m_radius;
+				I->bound.P.set(I->c_cylinder.m_center);
+				I->bound.R = unit_length(I->c_cylinder.m_direction) ?
+					bound_slack(_sqrt(0.25f * C.m_height * C.m_height + C.m_radius * C.m_radius)) : -1.f;
 			}
 			break;
 		}
@@ -253,10 +297,23 @@ BOOL CCF_Skeleton::_RayQuery(const collide::ray_defs& Q, collide::rq_results& R)
 		}
 	}
 
+	// A ray through the body sphere usually crosses few of its bones; skip the exact
+	// test of the others. The exact tests measure true distances whatever the length
+	// of Q.dir, so the pre-test uses it normalized; the longer range covers element
+	// spaces scaled within the unit_length() tolerance.
+	const float dir_len = Q.dir.magnitude();
+	const bool pretest = dir_len > EPS_S;
+	Fvector dir;
+	if (pretest)
+		dir.mul(Q.dir, 1.f / dir_len);
+	const float pretest_range = bound_slack(Q.range);
+
 	BOOL bHIT = FALSE;
 	for (ElementVecIt I = elements.begin(); I != elements.end(); I++)
 	{
 		if (!I->valid())continue;
+		if (pretest && I->bound.R >= 0.f && !ray_may_hit(I->bound, Q.start, dir, pretest_range))
+			continue;
 		bool res = false;
 		float range = Q.range;
 		switch (I->type)

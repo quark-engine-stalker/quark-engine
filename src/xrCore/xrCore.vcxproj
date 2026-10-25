@@ -146,6 +146,7 @@
     <ClCompile Include="lzo_compressor.cpp" />
     <ClCompile Include="memory_allocation_stats.cpp" />
     <ClCompile Include="job_system.cpp" />
+    <ClCompile Include="cpu_placement.cpp" />
     <ClCompile Include="memory_monitor.cpp" />
     <ClCompile Include="memory_usage.cpp" />
     <ClCompile Include="mezz_stringbuffer.cpp" />
@@ -249,6 +250,7 @@
     <ClInclude Include="ppmd_compressor.h" />
     <ClInclude Include="profiler.h" />
     <ClInclude Include="job_system.h" />
+    <ClInclude Include="cpu_placement.h" />
     <ClInclude Include="resource.h" />
     <ClInclude Include="rt_compressor.h" />
     <ClInclude Include="rt_config1x.h" />

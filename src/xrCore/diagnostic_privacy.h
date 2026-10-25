@@ -87,9 +87,10 @@ template<class Sink> void sanitize(const char* text, Sink& sink, const Names& na
             continue;
         }
         // Include drive-relative paths (C:foo), extended/device paths and UNC.
+        // "lj_api.c:1158" and "xrstring.h:57" are source lines, not drive paths.
         const bool drive = ((text[0] >= 'A' && text[0] <= 'Z') ||
             (text[0] >= 'a' && text[0] <= 'z')) && text[1] == ':' &&
-            (separator(text[2]) || ((text == begin || !word(text[-1])) && text[2] && word(text[2])));
+            (separator(text[2]) || ((text == begin || (!word(text[-1]) && text[-1] != '.')) && text[2] && word(text[2])));
         const bool unc = separator(text[0]) && separator(text[1]) &&
             text[2] && text[2] != ' ';
         const bool rooted = separator(text[0]) && text[1] &&

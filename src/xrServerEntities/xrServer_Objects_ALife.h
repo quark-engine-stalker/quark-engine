@@ -331,6 +331,11 @@ SERVER_ENTITY_DECLARE_BEGIN(CSE_ALifeDynamicObject, CSE_ALifeObject)
 	virtual CSE_ALifeDynamicObject* cast_alife_dynamic_object() { return this; }
 SERVER_ENTITY_DECLARE_END
 
+// alife():object(id) pushes this type; server entities and their script wrappers
+// have no virtual bases, so luabind may cache its wrap_base cast per vtable.
+template <>
+struct luabind::detail::cache_wrap_base_cast<CSE_ALifeDynamicObject> : std::true_type {};
+
 SERVER_ENTITY_DECLARE_BEGIN2(CSE_ALifeDynamicObjectVisual, CSE_ALifeDynamicObject, CSE_Visual)
 	CSE_ALifeDynamicObjectVisual(LPCSTR caSection);
 	virtual ~CSE_ALifeDynamicObjectVisual();

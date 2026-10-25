@@ -123,6 +123,11 @@ CKinematics::CKinematics()
 	UCalc_ThisFrame = false;
 	UCalc_CacheState.store((u64(1) << 32) | u64(u32(-1)), std::memory_order_relaxed);
 	UCalc_ExactRequestFrame.store(u32(-1), std::memory_order_relaxed);
+	UCalc_WorkerHintExpire = 0;
+	UCalc_WorkerHint = false;
+	UCalc_WorkerHintFn = nullptr;
+	UCalc_WorkerHintType = 0;
+	UCalc_CallbackOwed = false;
 }
 
 CKinematics::~CKinematics()
@@ -493,6 +498,10 @@ void CKinematics::Spawn()
 {
 	inherited::Spawn();
 	UCalc_ExactRequestFrame.store(u32(-1), std::memory_order_relaxed);
+	// A pooled model is re-spawned with fresh bone instances; drop the callback hint.
+	UCalc_WorkerHintExpire = 0;
+	UCalc_WorkerHint = false;
+	UCalc_CallbackOwed = false;
 	// bones
 	for (u32 i = 0; i < bones->size(); i++)
 		bone_instances[i].construct();

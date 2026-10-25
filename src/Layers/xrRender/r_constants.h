@@ -184,7 +184,12 @@ public:
 	typedef xr_vector<ref_constant> c_table;
 	c_table table;
 
-	typedef std::pair<u32, ref_cbuffer> cb_table_record;
+	struct cb_table_record
+	{
+		u32 first; // buffer type | slot
+		ref_cbuffer second;
+		u32 used_size; // the shader reads only bytes [0, used_size) of the buffer
+	};
 	typedef xr_vector<cb_table_record> cb_table;
 	cb_table m_CBTable;
 
@@ -226,7 +231,7 @@ private:
 	void rebuild_cb_bindings();
 	void rebuild_name_lookup();
 
-	BOOL parseConstants(ID3DShaderReflectionConstantBuffer* pTable, u32 destination);
+	BOOL parseConstants(ID3DShaderReflectionConstantBuffer* pTable, u32 destination, u32& used_size);
 	BOOL parseResources(ID3DShaderReflection* pReflection, int ResNum, u32 destination);
 
 public:

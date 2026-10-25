@@ -16,6 +16,7 @@
 #include "xr_input.h"
 #include "xr_ioconsole.h"
 #include "x_ray.h"
+#include "../xrCore/engine_error_logger.h"
 #include "std_classes.h"
 #include "GameFont.h"
 #include "resource.h"
@@ -1848,6 +1849,7 @@ void CApplication::LoadBegin()
 	ll_dwReference++;
 	if (1 == ll_dwReference)
 	{
+		QUARK_DIAGNOSTIC_BREADCRUMB("loading started");
 		g_appLoaded = FALSE;
 
 		//AVO:
@@ -1884,6 +1886,7 @@ void CApplication::LoadEnd()
 		}
 
 		g_appLoaded = TRUE;
+		QUARK_DIAGNOSTIC_BREADCRUMB("loading finished");
 		// DUMP_PHASE;
 	}
 }

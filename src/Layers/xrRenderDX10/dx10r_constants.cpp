@@ -19,8 +19,9 @@ IC bool p_sort(ref_constant C1, ref_constant C2)
 	return xr_strcmp(C1->name, C2->name) < 0;
 }
 
-BOOL R_constant_table::parseConstants(ID3DShaderReflectionConstantBuffer* pTable, u32 destination)
+BOOL R_constant_table::parseConstants(ID3DShaderReflectionConstantBuffer* pTable, u32 destination, u32& used_size)
 {
+	used_size = 0;
 	//VERIFY(_desc);
 	VERIFY(pTable);
 	D3D_SHADER_BUFFER_DESC TableDesc;
@@ -40,6 +41,8 @@ BOOL R_constant_table::parseConstants(ID3DShaderReflectionConstantBuffer* pTable
 		pVar = pTable->GetVariableByIndex(i);
 		VERIFY(pVar);
 		pVar->GetDesc(&VarDesc);
+		if (VarDesc.uFlags & D3D_SVF_USED)
+			used_size = _max(used_size, (VarDesc.StartOffset + VarDesc.Size + 15u) & ~15u);
 		pType = pVar->GetType();
 		VERIFY(pType);
 		pType->GetDesc(&TypeDesc);
@@ -382,9 +385,10 @@ BOOL R_constant_table::parse(void* _desc, u32 destination)
 					? CB_BufferPixelShader : (destination&RC_dest_vertex)
 					? CB_BufferVertexShader : CB_BufferGeometryShader;*/
 
-				parseConstants(pTable, updatedDest);
+				u32 used_size;
+				parseConstants(pTable, updatedDest, used_size);
 				ref_cbuffer tempBuffer = dxRenderDeviceRender::Instance().Resources->_CreateConstantBuffer(pTable);
-				m_CBTable.push_back(cb_table_record(uiBufferIndex, tempBuffer));
+				m_CBTable.push_back(cb_table_record{uiBufferIndex, tempBuffer, used_size});
 			}
 		}
 	}

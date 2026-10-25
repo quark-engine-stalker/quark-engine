@@ -2,6 +2,7 @@
 #pragma hdrstop
 
 #include "job_system.h"
+#include "cpu_placement.h"
 #include "engine_error_logger.h"
 
 #include <process.h>
@@ -415,11 +416,9 @@ private:
         worker_thread_ = true;
         worker_dispatch_sequence_ = startup->index * 17u;
         QUARK_DIAGNOSTIC_STAGE("worker/idle");
-        QUARK_DIAGNOSTIC_BREADCRUMB("jobs", "job worker started");
 
         owner->worker_loop();
 
-        QUARK_DIAGNOSTIC_BREADCRUMB("jobs", "job worker stopped");
         QUARK_DIAGNOSTIC_CLEAR_STAGE();
         worker_thread_ = false;
         return 0;
@@ -668,7 +667,9 @@ private:
 
     static u32 resolve_total_threads(u32 requested)
     {
-        u32 logical_threads = CPU::ID.n_threads;
+        u32 logical_threads = cpu_placement::thread_budget();
+        if (logical_threads == 0)
+            logical_threads = CPU::ID.n_threads;
         if (logical_threads == 0)
             logical_threads = std::thread::hardware_concurrency();
         if (logical_threads == 0)

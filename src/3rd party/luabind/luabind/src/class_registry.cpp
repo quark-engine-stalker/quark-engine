@@ -229,14 +229,26 @@ namespace luabind { namespace detail {
 
         assert((m_classes.find(info) == m_classes.end()) && "you are trying to register a class twice");
         m_classes[info] = crep;
+        // A release build may re-register a type; never hand out the replaced class.
+        for (find_cache_entry& entry : m_find_cache)
+            entry = {};
     }
 
     class_rep* class_registry::find_class(LUABIND_TYPE_INFO info) const
     {
+        find_cache_entry& cached = m_find_cache[(reinterpret_cast<std::uintptr_t>(info) >> 4) & 63];
+        if (cached.info == info)
+            return cached.crep;
+
         map_class<LUABIND_TYPE_INFO, class_rep*, cmp>::const_iterator i(
             m_classes.find(info));
 
-        return (i == m_classes.end()) ? nullptr /* the type is not registered */ : i->second /* else */;
+        if (i == m_classes.end())
+            return nullptr; // the type is not registered
+
+        cached.info = info;
+        cached.crep = i->second;
+        return i->second;
     }
 
 }} // namespace luabind::detail

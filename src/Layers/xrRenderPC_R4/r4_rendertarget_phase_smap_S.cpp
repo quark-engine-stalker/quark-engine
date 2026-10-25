@@ -34,6 +34,106 @@ void CRenderTarget::phase_smap_spot(light* L)
 	//HW.pContext->ClearDepthStencilView( rt_smap_depth->pZRT, D3D_CLEAR_DEPTH, 1.0f, 0L);
 }
 
+// A depth-stencil view cannot be cleared or copied partially: one triangle covering
+// the bound viewport writes depth into dsv instead, from the vertex shader (ps == null)
+// or from ps reading srv. Every device state it touches is restored, so the backend's
+// state caches stay valid.
+void CRenderTarget::smap_cache_triangle(ID3D11DepthStencilView* dsv, ID3D11PixelShader* ps_new,
+	ID3D11ShaderResourceView* srv_new)
+{
+	ID3D11DeviceContext* context = HW.pContext;
+	ID3D11InputLayout* layout = nullptr;
+	D3D11_PRIMITIVE_TOPOLOGY topology;
+	ID3D11VertexShader* vs = nullptr;
+	ID3D11PixelShader* ps = nullptr;
+	ID3D11GeometryShader* gs = nullptr;
+	ID3D11HullShader* hs = nullptr;
+	ID3D11DomainShader* ds = nullptr;
+	ID3D11DepthStencilState* depth = nullptr;
+	UINT stencil_ref = 0;
+	ID3D11RasterizerState* raster = nullptr;
+	ID3D11ShaderResourceView* srv = nullptr;
+	ID3D11Buffer* cb = nullptr;
+	ID3D11RenderTargetView* rtvs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
+	ID3D11DepthStencilView* dsv_old = nullptr;
+	context->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, rtvs, &dsv_old);
+	context->IAGetInputLayout(&layout);
+	context->IAGetPrimitiveTopology(&topology);
+	context->VSGetShader(&vs, nullptr, nullptr);
+	context->PSGetShader(&ps, nullptr, nullptr);
+	context->GSGetShader(&gs, nullptr, nullptr);
+	context->HSGetShader(&hs, nullptr, nullptr);
+	context->DSGetShader(&ds, nullptr, nullptr);
+	context->OMGetDepthStencilState(&depth, &stencil_ref);
+	context->RSGetState(&raster);
+	context->PSGetShaderResources(0, 1, &srv);
+	context->PSGetConstantBuffers(0, 1, &cb);
+
+	context->OMSetRenderTargets(0, nullptr, dsv);
+	context->IASetInputLayout(nullptr);
+	context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	context->VSSetShader(smap_cache_clear_vs, nullptr, 0);
+	context->PSSetShader(ps_new, nullptr, 0);
+	context->GSSetShader(nullptr, nullptr, 0);
+	context->HSSetShader(nullptr, nullptr, 0);
+	context->DSSetShader(nullptr, nullptr, 0);
+	context->OMSetDepthStencilState(smap_cache_clear_depth, 0);
+	context->RSSetState(smap_cache_clear_raster);
+	context->PSSetShaderResources(0, 1, &srv_new);
+	context->PSSetConstantBuffers(0, 1, &smap_cache_copy_cb);
+	context->Draw(3, 0);
+
+	context->IASetInputLayout(layout);
+	context->IASetPrimitiveTopology(topology);
+	context->VSSetShader(vs, nullptr, 0);
+	context->PSSetShader(ps, nullptr, 0);
+	context->GSSetShader(gs, nullptr, 0);
+	context->HSSetShader(hs, nullptr, 0);
+	context->DSSetShader(ds, nullptr, 0);
+	context->OMSetDepthStencilState(depth, stencil_ref);
+	context->RSSetState(raster);
+	context->PSSetShaderResources(0, 1, &srv); // before the targets: srv_new may alias dsv_old
+	context->PSSetConstantBuffers(0, 1, &cb);
+	context->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, rtvs, dsv_old);
+	for (ID3D11RenderTargetView*& rtv : rtvs)
+		_RELEASE(rtv);
+	_RELEASE(dsv_old);
+	_RELEASE(layout);
+	_RELEASE(vs);
+	_RELEASE(ps);
+	_RELEASE(gs);
+	_RELEASE(hs);
+	_RELEASE(ds);
+	_RELEASE(depth);
+	_RELEASE(raster);
+	_RELEASE(srv);
+	_RELEASE(cb);
+
+	RCache.set_CullMode(CULL_CCW);
+	RCache.set_Stencil(FALSE);
+	RCache.set_ColorWriteEnable(FALSE);
+}
+
+void CRenderTarget::phase_smap_cache(light* L)
+{
+	u_setrt(rt_smap_surf, NULL, NULL, rt_smap_cache->pZRT);
+	D3D_VIEWPORT VP = {(float)L->smap_cache.x, (float)L->smap_cache.y, (float)L->X.S.size, (float)L->X.S.size, 0, 1};
+	HW.pContext->RSSetViewports(1, &VP);
+	smap_cache_triangle(rt_smap_cache->pZRT, nullptr, nullptr); // far depth over the slot
+}
+
+void CRenderTarget::smap_cache_blit(light* L)
+{
+	// The atlas slot bound by phase_smap_spot gets the depth of the face's cache slot.
+	D3D11_MAPPED_SUBRESOURCE mapped;
+	if (FAILED(HW.pContext->Map(smap_cache_copy_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+		return;
+	const int offset[4] = {int(L->smap_cache.x) - int(L->X.S.posX), int(L->smap_cache.y) - int(L->X.S.posY), 0, 0};
+	memcpy(mapped.pData, offset, sizeof(offset));
+	HW.pContext->Unmap(smap_cache_copy_cb, 0);
+	smap_cache_triangle(rt_smap_depth->pZRT, smap_cache_copy_ps, rt_smap_cache->pTexture->get_SRView());
+}
+
 void CRenderTarget::phase_smap_spot_tsh(light* L)
 {
 	VERIFY(!"Implement clear of the buffer for tsh!");

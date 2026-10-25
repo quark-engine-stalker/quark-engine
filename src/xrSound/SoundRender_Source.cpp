@@ -11,6 +11,9 @@ CSoundRender_Source::CSoundRender_Source()
 	m_fMaxAIDist = 300.f;
 	m_fBaseVolume = 1.f;
 	m_uGameType = 0;
+	fTimeTotal = 0.f;
+	dwBytesTotal = 0;
+	ZeroMemory(&m_wformat, sizeof(m_wformat));
 	fname = 0;
 	CAT.table = 0;
 	CAT.size = 0;

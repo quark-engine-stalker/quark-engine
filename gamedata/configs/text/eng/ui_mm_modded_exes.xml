@@ -737,9 +737,6 @@
 	<string id="ui_mm_modded_exes_gameplay_gameplay_general_disable_actor_body_rotation_delay">
 		<text>Disable Actor Body Rotation Delay (disable_actor_body_rotation_delay)</text>
 	</string>
-	<string id="ui_mm_modded_exes_gameplay_gameplay_general_allow_accel_during_lookout">
-		<text>Allow Acceleration During Lookout (allow_accel_during_lookout)</text>
-	</string>
 
 	<!-- Aim -->
 	<string id="ui_mm_menu_aim">
@@ -839,9 +836,6 @@
 	</string>
 	<string id="ui_mm_modded_exes_gameplay_weapons_g_decouple_horz_recoil">
 		<text>Horizontal recoil is independent of vertical (g_decouple_horz_recoil)</text>
-	</string>
-	<string id="ui_mm_modded_exes_gameplay_weapons_scale_hud_motion_marks_by_speed">
-		<text>Scale Hud Motion Marks By Anim Speed (scale_hud_motion_marks_by_speed)</text>
 	</string>
 	
 	<string id="ui_mm_modded_exes_gameplay_weapons_g_fire_reloads_ubgl">
@@ -1396,5 +1390,35 @@
 
 	<string id="ui_mm_modded_exes_optimizations_unstable_text">
 		<text>Options below are unstable and will lead to bugs and crashes, enabling them is not recommended</text>
+	</string>
+   <string id="ui_mm_modded_exes_visual_particles_step_particle_distance">
+		<text>Footstep particle effects distance (step_particle_distance)</text>
+	</string>
+	<string id="ui_mm_modded_exes_visual_particles_step_particle_distance_desc">
+		<text>How far away from the camera the footstep particle effects are rendered. Default: 50m.</text>
+	</string>
+	<string id="ui_mm_menu_sound_distance">
+		<text>Sound Distances</text>
+	</string>
+	<string id="ui_mm_sound_distance_modded_exes">
+		<text>Sound Distances</text>
+	</string>
+	<string id="ui_mm_modded_exes_sound_sound_distance_snd_max_distance_multiplier">
+		<text>Sound hearing distance multiplier (snd_max_distance_multiplier)</text>
+	</string>
+	<string id="ui_mm_modded_exes_sound_sound_distance_snd_max_distance_multiplier_desc">
+		<text>Sound effects in Staker declare their own max distance in the .ogg files. step_sound_distance cvar allows you to increase the hard cut-off for playing step sound effects but it does not increase these .ogg internal values. This settings allows you to scale the .ogg values to match the step_sound_distance value. Default: 1.0 (1.0 matches step_sound_distance value of 50m)</text>
+	</string>
+	<string id="ui_mm_modded_exes_sound_sound_distance_snd_max_ai_distance_multiplier">
+		<text>AI sound detection distance multiplier (snd_max_ai_distance_multiplier)</text>
+	</string>
+	<string id="ui_mm_modded_exes_sound_sound_distance_snd_max_ai_distance_multiplier_desc">
+		<text>How far away from the sound NPCs react to it. This similarly to snd_max_distance_multiplier is an .ogg internal value. Default: 1.0 (1.0 matches step_sound_distance value of 50m)</text>
+	</string>
+	<string id="ui_mm_modded_exes_sound_sound_distance_step_sound_distance">
+		<text>Footstep sound distance (step_sound_distance)</text>
+	</string>
+	<string id="ui_mm_modded_exes_sound_sound_distance_step_sound_distance_desc">
+		<text>Hard, arbitrary cut-off for playing footstep sounds. Increase this if you do not enjoy dying to Lurkers/chimera biting your ass right from the edge of the step-audible range. Default: 50m.</text>
 	</string>
 </string_table>

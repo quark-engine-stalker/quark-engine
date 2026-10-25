@@ -4,6 +4,7 @@
 #include "../../../actor.h"
 #include "../../../ActorEffector.h"
 #include "../../../../Include/xrRender/KinematicsAnimated.h"
+#include "../../../../xrEngine/bone.h"
 #include "../../../level.h"
 #include "../../../material_manager.h"
 #include "bloodsucker_vampire_effector.h"
@@ -380,6 +381,9 @@ void CAI_Bloodsucker::vfAssignBones()
 		smart_cast<IKinematics*>(Visual())->LL_BoneID("bip01_head"));
 	if (!PPhysicsShell()) //нельзя ставить колбеки, если создан физ шел - у него стоят свои колбеки!!!
 	{
+		// Bones.Update() changes only this monster's Bones, which the main thread writes
+		// (SetMotion) outside the skeleton worker batch, so skeleton workers may run it.
+		bone_callback_mark_worker_safe(&CAI_Bloodsucker::BoneCallback);
 		bone_spine->set_callback(bctCustom, BoneCallback, this);
 		bone_head->set_callback(bctCustom, BoneCallback, this);
 	}

@@ -8,11 +8,11 @@
 #include <ShlObj.h>
 #include <DbgHelp.h>
 #include <Psapi.h>
-#include <winternl.h>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 
 #include "../3rd party/stackwalker/include/StackWalker.h"
 
@@ -25,9 +25,11 @@ namespace EngineErrorLogger
 namespace
 {
     constexpr unsigned long long kMaxLogSize = 16ull * 1024ull * 1024ull;
-    constexpr USHORT kFatalStackFrameCount = 32;
-    constexpr unsigned int kBreadcrumbCount = 96;
-    constexpr unsigned int kDetailedStackFrameLimit = 32;
+    constexpr unsigned int kStackFrameLimit = 32;
+    constexpr unsigned int kBreadcrumbCount = 64;
+    constexpr unsigned int kBreadcrumbsShown = 12;
+    constexpr DWORD kCppException = 0xE06D7363;
+    constexpr DWORD kNoMemory = 0xC0000017;
 
     enum class Category : u8
     {
@@ -42,74 +44,44 @@ namespace
         Game,
         Engine,
         Script,
-        Fatal,
         Crash
-    };
-
-    enum class Origin : u8
-    {
-        EngineNative,
-        EngineNativeDuringScriptContent,
-        ScriptContent,
-        ThirdPartyNative,
-        Unknown
-    };
-
-    struct ThreadStageState
-    {
-        char stage[128] = {};
-        char file[260] = {};
-        char function[160] = {};
-        int line = 0;
-        const void* callbackAddress = nullptr;
-        unsigned long long changedTick = 0;
     };
 
     struct __declspec(align(64)) BreadcrumbSlot
     {
         volatile LONG busy = 0;
         LONG64 sequence = 0;
-        unsigned long long tick = 0;
-        DWORD threadId = 0;
-        char category[32] = {};
         char message[160] = {};
-        char file[160] = {};
-        char function[128] = {};
-        int line = 0;
     };
 
+    // Static storage: a crash may come from heap corruption or a stack overflow.
     struct CrashWorkspace
     {
-        char crashId[96] = {};
-        char faultModule[MAX_PATH] = {};
-        char faultLocation[1536] = {};
-        char primarySource[1024] = {};
-        char primaryFunction[1024] = {};
-        DWORD primaryLine = 0;
-        char exceptionDetails[12288] = {};
-        char stack[24576] = {};
-        char stackScan[2048] = {};
-        char breadcrumbs[8192] = {};
-        char systemInfo[1024] = {};
-        char modules[1024] = {};
+        CONTEXT context;
+        char error[1024];
+        char where[1536];
+        char module[MAX_PATH + 128];
+        char stack[8192];    // module+RVA frames, unwound without DbgHelp or heap
+        char symbols[24576]; // the same stack with symbols, when DbgHelp succeeds
+        char lua[8192];
+        char machine[1024];
+        char record[65536];
     };
 
     volatile LONG g_enabled = 1;
-    volatile LONG64 g_processStartTick = 0;
     volatile LONG64 g_breadcrumbSequence = 0;
-    volatile LONG g_frameNumber = 0;
     volatile LONG g_crashWorkspaceInUse = 0;
+    volatile LONG g_sessionFiles = 0; // bit per category: already written by this process
     SRWLOCK g_writeLock = SRWLOCK_INIT;
     SRWLOCK g_symbolLock = SRWLOCK_INIT;
     char g_directory[MAX_PATH * 3] = {};
     wchar_t g_directoryWide[MAX_PATH] = {};
-    volatile LONG64 g_incidentSequence = 0;
-    volatile LONG64 g_droppedBreadcrumbs = 0;
     DiagnosticPrivacy::Names g_privateNames;
     INIT_ONCE g_privacyOnce = INIT_ONCE_STATIC_INIT;
     HANDLE g_symbolProcess = nullptr; // unique DbgHelp session, process lifetime
     char g_buildIdentity[512] = {};
-    thread_local char g_incidentId[128] = {};
+    LuaStackWriter g_luaStackWriter = nullptr;
+    volatile DWORD g_luaThread = 0;
     thread_local LPCSTR g_testFilename = nullptr;
     thread_local bool g_lastWriteSucceeded = false;
     struct FailureCodeState { long result = 0, removedReason = 0; bool valid = false, hasRemovedReason = false; };
@@ -119,12 +91,9 @@ namespace
     CrashWorkspace g_crashWorkspace = {};
     thread_local bool g_insideLogger = false;
     thread_local bool g_insideCrashHandler = false;
-    thread_local unsigned int g_externalContentDepth = 0;
-    thread_local ThreadStageState g_threadStage = {};
-    thread_local LPCSTR g_threadStageSourceStage = nullptr;
-    thread_local LPCSTR g_threadStageSourceFile = nullptr;
-    thread_local LPCSTR g_threadStageSourceFunction = nullptr;
-    thread_local int g_threadStageSourceLine = 0;
+    thread_local LPCSTR g_threadStage = nullptr;
+    thread_local const void* g_threadStageCallback = nullptr;
+    thread_local char g_threadName[64] = {};
 
     bool ascii_equal_i(char left, char right)
     {
@@ -200,17 +169,6 @@ namespace
         return TRUE;
     }
 
-    void begin_incident()
-    {
-        SYSTEMTIME utc = {};
-        GetSystemTime(&utc);
-        _snprintf_s(g_incidentId, sizeof(g_incidentId), _TRUNCATE,
-            "%04u%02u%02uT%02u%02u%02u.%03uZ-P%lu-T%lu-Q%llu",
-            utc.wYear, utc.wMonth, utc.wDay, utc.wHour, utc.wMinute, utc.wSecond, utc.wMilliseconds,
-            GetCurrentProcessId(), GetCurrentThreadId(),
-            static_cast<unsigned long long>(InterlockedIncrement64(&g_incidentSequence)));
-    }
-
     LPCSTR result_name(long result)
     {
         switch (static_cast<unsigned long>(result))
@@ -229,20 +187,8 @@ namespace
         case 0x887A000A: return "DXGI_ERROR_WAS_STILL_DRAWING";
         case 0x887A0020: return "DXGI_ERROR_DRIVER_INTERNAL_ERROR";
         case 0x887A0022: return "DXGI_ERROR_NOT_CURRENTLY_AVAILABLE";
-        default: return "unmapped HRESULT";
+        default: return nullptr;
         }
-    }
-
-        unsigned long long process_uptime_ms()
-    {
-        const LONG64 now = static_cast<LONG64>(GetTickCount64());
-        LONG64 start = InterlockedCompareExchange64(&g_processStartTick, 0, 0);
-        if (!start)
-        {
-            const LONG64 previous = InterlockedCompareExchange64(&g_processStartTick, now, 0);
-            start = previous ? previous : now;
-        }
-        return static_cast<unsigned long long>(now - start);
     }
 
     LPCSTR path_basename(LPCSTR path)
@@ -368,7 +314,7 @@ namespace
     {
         if (!value || !*value)
             return;
-        append_format(buffer, capacity, used, "%-12s: ", label);
+        append_format(buffer, capacity, used, "%-10s: ", label);
         size_t limit = used + 4096;
         if (limit > capacity) limit = capacity;
         append_single_line_text(buffer, limit, used, value);
@@ -419,7 +365,7 @@ namespace
             const auto nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
             if (nt->Signature != IMAGE_NT_SIGNATURE) return;
             const DWORD size = nt->OptionalHeader.SizeOfImage;
-            _snprintf_s(output, capacity, _TRUNCATE, "PE timestamp=0x%08lX image_size=%lu",
+            _snprintf_s(output, capacity, _TRUNCATE, "PE timestamp 0x%08lX, size %lu",
                 nt->FileHeader.TimeDateStamp, size);
             const auto directory = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG];
             if (!directory.VirtualAddress || directory.VirtualAddress >= size || directory.Size > size - directory.VirtualAddress) return;
@@ -434,7 +380,7 @@ namespace
                 GUID guid = {}; DWORD age = 0;
                 memcpy(&guid, data + 4, sizeof(guid)); memcpy(&age, data + 20, sizeof(age));
                 _snprintf_s(output, capacity, _TRUNCATE,
-                    "PDB={%08lX-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X} age=%lu",
+                    "PDB {%08lX-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X} age %lu",
                     guid.Data1, guid.Data2, guid.Data3, guid.Data4[0], guid.Data4[1],
                     guid.Data4[2], guid.Data4[3], guid.Data4[4], guid.Data4[5], guid.Data4[6], guid.Data4[7], age);
                 break;
@@ -443,49 +389,44 @@ namespace
         __except (EXCEPTION_EXECUTE_HANDLER) { copy_text(output, capacity, "<image metadata read failed>"); }
     }
 
-    void append_record_context(char* output, size_t capacity, size_t& used)
+    HMODULE module_from_address(const void* address, char* path, size_t pathCapacity, unsigned long long& offset)
     {
-        char process[MAX_PATH] = {};
-        GetModuleFileNameA(nullptr, process, DWORD(sizeof(process)));
-        append_format(output, capacity, used,
-            "Logger       : QUARK v2.0 / UTC\r\n"
-            "Incident ID  : %s\r\n"
-            "Executable   : %s\r\n"
-            "Build        : %s\r\n",
-            safe_text(g_incidentId), path_basename(process), safe_text(g_buildIdentity));
-        if (g_testFilename)
-            append_format(output, capacity, used, "SELFTEST     : SIMULATED FAILURE; the game did not crash\r\n");
-        if (!g_failureCode.valid) return;
-        const unsigned long code = static_cast<unsigned long>(g_failureCode.result);
-        const char* name = result_name(g_failureCode.result);
-        append_format(output, capacity, used, "HRESULT      : 0x%08lX (%s)\r\n", code, name);
-        if (!strcmp(name, "unmapped HRESULT"))
-        {
-            wchar_t wide[512] = {}; char decoded[1536] = {};
-            if (FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-                nullptr, code, 0, wide, DWORD(_countof(wide)), nullptr) &&
-                WideCharToMultiByte(CP_UTF8, 0, wide, -1, decoded, sizeof(decoded), nullptr, nullptr))
-                append_field(output, capacity, used, "System text", decoded);
-        }
-        if (g_failureCode.hasRemovedReason)
-            append_format(output, capacity, used, "Device reason: 0x%08lX (%s)\r\n",
-                static_cast<unsigned long>(g_failureCode.removedReason), result_name(g_failureCode.removedReason));
+        if (path && pathCapacity)
+            *path = 0;
+        offset = 0;
+        if (!address)
+            return nullptr;
+
+        MEMORY_BASIC_INFORMATION memory = {};
+        if (!VirtualQuery(address, &memory, sizeof(memory)) || memory.Type != MEM_IMAGE)
+            return nullptr;
+
+        HMODULE module = static_cast<HMODULE>(memory.AllocationBase);
+        if (!module)
+            return nullptr;
+
+        if (path && pathCapacity)
+            GetModuleFileNameA(module, path, DWORD(pathCapacity));
+        offset = static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(address) -
+            reinterpret_cast<uintptr_t>(module));
+        return module;
     }
 
-    void append_memory_facts(char* output, size_t capacity, size_t& used)
+    void format_address_location(const void* address, char* output, size_t capacity)
     {
-        MEMORYSTATUSEX memory = {}; memory.dwLength = sizeof(memory);
-        if (GlobalMemoryStatusEx(&memory))
-            append_format(output, capacity, used, "Memory       : RAM_available=%llu MB commit_available=%llu MB\r\n",
-                memory.ullAvailPhys / (1024ull * 1024ull), memory.ullAvailPageFile / (1024ull * 1024ull));
-        PROCESS_MEMORY_COUNTERS_EX counters = {};
-        if (GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters), sizeof(counters)))
-            append_format(output, capacity, used, "Private bytes: %llu MB\r\n",
-                static_cast<unsigned long long>(counters.PrivateUsage) / (1024ull * 1024ull));
-    }
+        if (!output || capacity == 0)
+            return;
+        *output = 0;
+        if (!address)
+            return;
 
-    HMODULE module_from_address(const void* address, char* path, size_t pathCapacity, unsigned long long& offset);
-    void format_address_location(const void* address, char* output, size_t capacity);
+        char modulePath[MAX_PATH] = {};
+        unsigned long long offset = 0;
+        if (module_from_address(address, modulePath, sizeof(modulePath), offset) && *modulePath)
+            _snprintf_s(output, capacity, _TRUNCATE, "%s+0x%llX", path_basename(modulePath), offset);
+        else
+            _snprintf_s(output, capacity, _TRUNCATE, "0x%p (not a loaded module)", address);
+    }
 
     bool ensure_subdirectory(const wchar_t* path)
     {
@@ -501,52 +442,90 @@ namespace
         if (!length || length >= _countof(appData))
             if (FAILED(SHGetFolderPathW(nullptr, CSIDL_APPDATA | CSIDL_FLAG_CREATE, nullptr, SHGFP_TYPE_CURRENT, appData))) return false;
         wchar_t engine[MAX_PATH] = {}, error[MAX_PATH] = {};
-        if (_snwprintf_s(engine, _countof(engine), _TRUNCATE, L"%s\\QUARK ENGINE", appData) < 0 || !ensure_subdirectory(engine)) return false;
+        if (_snwprintf_s(engine, _countof(engine), _TRUNCATE, L"%s\\QUARK-ENGINE", appData) < 0 || !ensure_subdirectory(engine)) return false;
         if (_snwprintf_s(error, _countof(error), _TRUNCATE, L"%s\\ERROR", engine) < 0 || !ensure_subdirectory(error)) return false;
         if (!WideCharToMultiByte(CP_UTF8, 0, error, -1, g_directory, int(sizeof(g_directory)), nullptr, nullptr)) return false;
         wcscpy_s(g_directoryWide, error);
         return true;
     }
 
-    LPCSTR category_name(Category category);
-
-    HANDLE open_category_file(Category category, DWORD flags, bool rotate)
+    LPCSTR category_name(Category category)
     {
-        if (!*g_directoryWide) return INVALID_HANDLE_VALUE;
-        wchar_t name[96] = {}, path[MAX_PATH] = {};
-        const char* stem = g_testFilename ? g_testFilename : category_name(category);
-        MultiByteToWideChar(CP_UTF8, 0, stem, -1, name, int(_countof(name)));
-        if (_snwprintf_s(path, _countof(path), _TRUNCATE, L"%s\\%s%s",
-            g_directoryWide, name, g_testFilename ? L"" : L"-LOG.log") < 0) return INVALID_HANDLE_VALUE;
-        if (rotate)
+        switch (category)
         {
-            WIN32_FILE_ATTRIBUTE_DATA attributes = {};
-            if (GetFileAttributesExW(path, GetFileExInfoStandard, &attributes))
-            {
-                ULARGE_INTEGER size = {}; size.HighPart = attributes.nFileSizeHigh; size.LowPart = attributes.nFileSizeLow;
-                if (size.QuadPart >= kMaxLogSize)
-                {
-                    wchar_t previous[MAX_PATH] = {};
-                    if (_snwprintf_s(previous, _countof(previous), _TRUNCATE, L"%s.previous", path) >= 0)
-                        MoveFileExW(path, previous, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
-                }
-            }
+        case Category::AI: return "AI";
+        case Category::Render: return "RENDER";
+        case Category::Physics: return "PHYSICS";
+        case Category::Sound: return "SOUND";
+        case Category::Network: return "NETWORK";
+        case Category::Memory: return "MEMORY";
+        case Category::Collision: return "COLLISION";
+        case Category::Core: return "CORE";
+        case Category::Game: return "GAME";
+        case Category::Engine: return "ENGINE";
+        case Category::Script: return "SCRIPT";
+        case Category::Crash: return "CRASH";
         }
-        return CreateFileW(path, FILE_APPEND_DATA,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_ALWAYS,
-            FILE_ATTRIBUTE_NORMAL | flags, nullptr);
+        return "ENGINE";
     }
 
-    bool is_third_party_source(LPCSTR file)
+    // One file per category and session: the first write of this process moves
+    // the previous session's file to .previous, so records need no timestamps.
+    HANDLE open_log_file(Category category, DWORD access)
     {
-        if (!file || !*file)
-            return false;
+        if (!*g_directoryWide) return INVALID_HANDLE_VALUE;
+        wchar_t name[96] = {}, path[MAX_PATH] = {}, previous[MAX_PATH] = {};
+        MultiByteToWideChar(CP_UTF8, 0, g_testFilename ? g_testFilename : category_name(category), -1, name, int(_countof(name)));
+        if (_snwprintf_s(path, _countof(path), _TRUNCATE, L"%s\\%s%s",
+                g_directoryWide, name, g_testFilename ? L"" : L"-LOG.log") < 0 ||
+            _snwprintf_s(previous, _countof(previous), _TRUNCATE, L"%s.previous", path) < 0)
+            return INVALID_HANDLE_VALUE;
 
-        return contains_i(file, "3rd party") ||
-            contains_i(file, "third_party") ||
-            contains_i(file, "\\luajit-") ||
-            contains_i(file, "/luajit-") ||
-            contains_i(file, "reshade");
+        const LONG bit = 1L << int(category);
+        bool rotate = !g_testFilename && !(InterlockedOr(&g_sessionFiles, bit) & bit);
+        WIN32_FILE_ATTRIBUTE_DATA attributes = {};
+        if (!rotate && GetFileAttributesExW(path, GetFileExInfoStandard, &attributes))
+            rotate = (ULONGLONG(attributes.nFileSizeHigh) << 32 | attributes.nFileSizeLow) >= kMaxLogSize;
+        if (rotate)
+            MoveFileExW(path, previous, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+
+        const auto create = [&]() { return CreateFileW(path, access, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr); };
+        HANDLE file = create();
+        if (file == INVALID_HANDLE_VALUE && GetLastError() == ERROR_PATH_NOT_FOUND)
+        {
+            // The folder was deleted while the game was running: create it again.
+            wchar_t parent[MAX_PATH] = {};
+            wcscpy_s(parent, g_directoryWide);
+            if (wchar_t* slash = wcsrchr(parent, L'\\'))
+                *slash = 0;
+            ensure_subdirectory(parent);
+            ensure_subdirectory(g_directoryWide);
+            file = create();
+        }
+        if (file == INVALID_HANDLE_VALUE)
+            return file;
+        LARGE_INTEGER size = {};
+        if (GetFileSizeEx(file, &size) && !size.QuadPart)
+        {
+            char header[768] = {}, process[MAX_PATH] = {};
+            GetModuleFileNameA(nullptr, process, DWORD(sizeof(process)));
+            _snprintf_s(header, sizeof(header), _TRUNCATE, "QUARK ENGINE error log 2.1 | %s | %s\r\n",
+                path_basename(process), safe_text(g_buildIdentity));
+            write_handle_text(file, header);
+        }
+        SetFilePointerEx(file, LARGE_INTEGER{}, nullptr, FILE_END);
+        return file;
+    }
+
+    // Lock-free append for paths that must not wait (busy logger, crash notes).
+    void append_text_record(Category category, LPCSTR text)
+    {
+        HANDLE file = open_log_file(category, FILE_APPEND_DATA);
+        if (file == INVALID_HANDLE_VALUE) return;
+        write_handle_text(file, text);
+        FlushFileBuffers(file);
+        CloseHandle(file);
     }
 
     bool contains_script_failure(
@@ -572,13 +551,17 @@ namespace
 
     bool contains_memory_failure(LPCSTR expression, LPCSTR description, LPCSTR argument0, LPCSTR argument1)
     {
-        return contains_i(expression, "out of memory") ||
-            contains_i(description, "out of memory") ||
-            contains_i(argument0, "out of memory") ||
-            contains_i(argument1, "out of memory") ||
-            contains_i(expression, "bad_alloc") ||
-            contains_i(description, "bad_alloc") ||
-            contains_i(argument0, "memory request");
+        LPCSTR values[] = { expression, description, argument0, argument1 };
+        for (LPCSTR value : values)
+        {
+            if (contains_i(value, "out of memory") ||
+                contains_i(value, "not enough memory") ||
+                contains_i(value, "memory exhausted") ||
+                contains_i(value, "memory request") ||
+                contains_i(value, "bad_alloc"))
+                return true;
+        }
+        return false;
     }
 
     Category classify_source(
@@ -633,262 +616,7 @@ namespace
             contains_i(file, "xrparticles"))
             return Category::Game;
 
-        if (contains_i(file, "xrengine"))
-            return Category::Engine;
-
         return Category::Engine;
-    }
-
-    LPCSTR category_name(Category category)
-    {
-        switch (category)
-        {
-        case Category::AI: return "AI";
-        case Category::Render: return "RENDER";
-        case Category::Physics: return "PHYSICS";
-        case Category::Sound: return "SOUND";
-        case Category::Network: return "NETWORK";
-        case Category::Memory: return "MEMORY";
-        case Category::Collision: return "COLLISION";
-        case Category::Core: return "CORE";
-        case Category::Game: return "GAME";
-        case Category::Engine: return "ENGINE";
-        case Category::Script: return "SCRIPT";
-        case Category::Fatal: return "FATAL";
-        case Category::Crash: return "CRASH";
-        }
-        return "ENGINE";
-    }
-
-    LPCSTR severity_name(Severity severity)
-    {
-        switch (severity)
-        {
-        case Severity::Error: return "ERROR";
-        case Severity::Fatal: return "FATAL";
-        case Severity::Crash: return "CRASH";
-        }
-        return "ERROR";
-    }
-
-    LPCSTR origin_name(Origin origin)
-    {
-        switch (origin)
-        {
-        case Origin::EngineNative: return "ENGINE_NATIVE";
-        case Origin::EngineNativeDuringScriptContent: return "ENGINE_NATIVE_DURING_SCRIPT_OR_CONTENT";
-        case Origin::ScriptContent: return "SCRIPT_OR_CONTENT";
-        case Origin::ThirdPartyNative: return "EXTERNAL_MODULE_CONTEXT";
-        case Origin::Unknown: return "UNKNOWN";
-        }
-        return "UNKNOWN";
-    }
-
-    void append_native_stack(char* record, size_t capacity, size_t& used)
-    {
-        void* frames[kFatalStackFrameCount] = {};
-        const USHORT frameCount = CaptureStackBackTrace(3, kFatalStackFrameCount, frames, nullptr);
-        if (!frameCount)
-            return;
-
-        append_format(record, capacity, used, "Native stack  :\r\n");
-        for (USHORT index = 0; index < frameCount; ++index)
-        {
-            MEMORY_BASIC_INFORMATION memory = {};
-            HMODULE module = nullptr;
-            char modulePath[MAX_PATH] = {};
-            unsigned long long offset = 0;
-
-            if (VirtualQuery(frames[index], &memory, sizeof(memory)))
-            {
-                module = static_cast<HMODULE>(memory.AllocationBase);
-                if (module)
-                {
-                    GetModuleFileNameA(module, modulePath, DWORD(sizeof(modulePath)));
-                    offset = static_cast<unsigned long long>(
-                        reinterpret_cast<uintptr_t>(frames[index]) - reinterpret_cast<uintptr_t>(module));
-                }
-            }
-
-            if (*modulePath)
-            {
-                append_format(record, capacity, used, "  #%02u %s+0x%llX\r\n",
-                    unsigned(index), path_basename(modulePath), offset);
-            }
-            else
-            {
-                append_format(record, capacity, used, "  #%02u [%p]\r\n", unsigned(index), frames[index]);
-            }
-        }
-    }
-
-    void write_emergency_record(
-        Category category,
-        Severity severity,
-        Origin origin,
-        LPCSTR expression,
-        LPCSTR description,
-        LPCSTR file,
-        int line,
-        LPCSTR function
-    )
-    {
-        if (!*g_directory)
-            return;
-
-        HANDLE fileHandle = open_category_file(category, 0, false);
-        if (fileHandle == INVALID_HANDLE_VALUE)
-            return;
-
-        SYSTEMTIME localTime = {};
-        GetSystemTime(&localTime);
-
-        char record[4096] = {};
-        char sourcePath[512] = {};
-        char stageSource[512] = {};
-        format_source_path(file, sourcePath, sizeof(sourcePath));
-        format_source_path(g_threadStage.file, stageSource, sizeof(stageSource));
-
-        size_t used = 0;
-        append_format(record, sizeof(record), used,
-            "------------------------------------------------------------\r\n"
-            "[%04u-%02u-%02u %02u:%02u:%02u.%03u] %s / %s\r\n",
-            localTime.wYear, localTime.wMonth, localTime.wDay,
-            localTime.wHour, localTime.wMinute, localTime.wSecond, localTime.wMilliseconds,
-            category_name(category), severity_name(severity));
-        append_record_context(record, sizeof(record), used);
-        append_format(record, sizeof(record), used, "Origin hint : %s\r\n", origin_name(origin));
-        append_format(record, sizeof(record), used,
-            "Context     : pid=%lu thread=%lu frame=%ld uptime=%llu ms\r\n",
-            GetCurrentProcessId(), GetCurrentThreadId(),
-            InterlockedCompareExchange(&g_frameNumber, 0, 0), process_uptime_ms());
-        append_format(record, sizeof(record), used,
-            "Capture      : minimal nonblocking record; extended diagnostics may follow with same ID\r\n");
-        if (*g_threadStage.stage)
-            append_format(record, sizeof(record), used, "Stage       : %s @ %s:%d (%s)\r\n",
-                g_threadStage.stage, stageSource, g_threadStage.line, safe_text(g_threadStage.function));
-        append_field(record, sizeof(record), used, "Expression", expression);
-        append_field(record, sizeof(record), used, "Message", description);
-        append_format(record, sizeof(record), used, "Location    : %s:%d (%s)\r\n\r\n",
-            sourcePath, line, safe_text(function));
-
-        // Coalesce the minimal record into one append, including concurrent
-        // secondary crashes, rather than interleaving many streamed chunks.
-        char safeRecord[8192] = {};
-        DiagnosticPrivacy::Buffer sanitized{safeRecord, sizeof(safeRecord)};
-        DiagnosticPrivacy::sanitize(record, sanitized, g_privateNames);
-        sanitized.finish();
-        DWORD bytesWritten = 0;
-        WriteFile(fileHandle, safeRecord, DWORD(strlen(safeRecord)), &bytesWritten, nullptr);
-        FlushFileBuffers(fileHandle);
-        CloseHandle(fileHandle);
-    }
-
-    void write_record(
-        Category category,
-        Severity severity,
-        Origin origin,
-        LPCSTR expression,
-        LPCSTR description,
-        LPCSTR argument0,
-        LPCSTR argument1,
-        LPCSTR file,
-        int line,
-        LPCSTR function,
-        LPCSTR module,
-        LPCSTR extraDetails,
-        bool includeNativeStack
-    )
-    {
-        g_lastWriteSucceeded = false;
-        if (!IsEnabled() || g_insideLogger)
-            return;
-
-        const DWORD preservedLastError = GetLastError();
-        g_insideLogger = true;
-
-        const bool lockAcquired = severity != Severity::Error ?
-            TryAcquireSRWLockExclusive(&g_writeLock) != FALSE :
-            (AcquireSRWLockExclusive(&g_writeLock), true);
-        if (!lockAcquired)
-        {
-            write_emergency_record(category, severity, origin, expression, description, file, line, function);
-            g_insideLogger = false;
-            SetLastError(preservedLastError);
-            return;
-        }
-
-        if (!ensure_directory_unlocked())
-        {
-            ReleaseSRWLockExclusive(&g_writeLock);
-            g_insideLogger = false;
-            SetLastError(preservedLastError);
-            return;
-        }
-
-        HANDLE fileHandle = open_category_file(category, 0, true);
-
-        if (fileHandle != INVALID_HANDLE_VALUE)
-        {
-            SYSTEMTIME localTime = {};
-            GetSystemTime(&localTime);
-
-            char sourcePath[512] = {};
-            char stageSource[512] = {};
-            char callbackLocation[512] = {};
-            format_source_path(file, sourcePath, sizeof(sourcePath));
-            format_source_path(g_threadStage.file, stageSource, sizeof(stageSource));
-            format_address_location(g_threadStage.callbackAddress, callbackLocation, sizeof(callbackLocation));
-
-            ZeroMemory(g_recordBuffer, sizeof(g_recordBuffer));
-            size_t used = 0;
-            append_format(g_recordBuffer, sizeof(g_recordBuffer), used, "------------------------------------------------------------\r\n");
-            append_format(g_recordBuffer, sizeof(g_recordBuffer), used,
-                "[%04u-%02u-%02u %02u:%02u:%02u.%03u] %s / %s\r\n",
-                localTime.wYear, localTime.wMonth, localTime.wDay,
-                localTime.wHour, localTime.wMinute, localTime.wSecond, localTime.wMilliseconds,
-                category_name(category), severity_name(severity));
-            append_record_context(g_recordBuffer, sizeof(g_recordBuffer), used);
-            if (category == Category::Memory || (g_failureCode.valid && static_cast<unsigned long>(g_failureCode.result) == 0x8007000E))
-                append_memory_facts(g_recordBuffer, sizeof(g_recordBuffer), used);
-            append_format(g_recordBuffer, sizeof(g_recordBuffer), used, "Origin hint : %s\r\n", origin_name(origin));
-            append_format(g_recordBuffer, sizeof(g_recordBuffer), used,
-                "Context     : pid=%lu thread=%lu frame=%ld uptime=%llu ms\r\n",
-                GetCurrentProcessId(), GetCurrentThreadId(),
-                InterlockedCompareExchange(&g_frameNumber, 0, 0), process_uptime_ms());
-            if (*g_threadStage.stage)
-            {
-                append_format(g_recordBuffer, sizeof(g_recordBuffer), used, "Stage       : %s @ %s:%d (%s)\r\n",
-                    g_threadStage.stage, stageSource, g_threadStage.line, safe_text(g_threadStage.function));
-                if (g_threadStage.callbackAddress)
-                    append_format(g_recordBuffer, sizeof(g_recordBuffer), used,
-                        "Callback    : %s\r\n", callbackLocation);
-            }
-            if (module && *module)
-                append_format(g_recordBuffer, sizeof(g_recordBuffer), used,
-                    "Module      : %s\r\n", path_basename(module));
-            append_format(g_recordBuffer, sizeof(g_recordBuffer), used, "Location    : %s:%d (%s)\r\n",
-                sourcePath, line, safe_text(function));
-            append_field(g_recordBuffer, sizeof(g_recordBuffer), used, "Expression", expression);
-            append_field(g_recordBuffer, sizeof(g_recordBuffer), used, "Message", description);
-            append_field(g_recordBuffer, sizeof(g_recordBuffer), used, "Details", argument0);
-            append_field(g_recordBuffer, sizeof(g_recordBuffer), used, "Context info", argument1);
-
-            if (extraDetails && *extraDetails)
-                append_format(g_recordBuffer, sizeof(g_recordBuffer), used, "Diagnostics:\r\n%s\r\n", extraDetails);
-            if (includeNativeStack)
-                append_native_stack(g_recordBuffer, sizeof(g_recordBuffer), used);
-            append_format(g_recordBuffer, sizeof(g_recordBuffer), used, "\r\n");
-
-            DWORD bytesWritten = 0;
-            g_lastWriteSucceeded = write_handle_text(fileHandle, g_recordBuffer);
-            if (!FlushFileBuffers(fileHandle)) g_lastWriteSucceeded = false;
-            CloseHandle(fileHandle);
-        }
-
-        ReleaseSRWLockExclusive(&g_writeLock);
-        g_insideLogger = false;
-        SetLastError(preservedLastError);
     }
 
     LPCSTR exception_name(DWORD code)
@@ -915,90 +643,31 @@ namespace
         case EXCEPTION_PRIV_INSTRUCTION: return "privileged instruction";
         case EXCEPTION_SINGLE_STEP: return "single step";
         case EXCEPTION_STACK_OVERFLOW: return "stack overflow";
-        case 0xE06D7363: return "unhandled MSVC C++ exception";
-        case 0xC0000017: return "virtual memory allocation failed";
-        case 0xC0000374: return "heap corruption detected";
-        case 0xC0000409: return "security/fast-fail termination";
+        case kNoMemory: return "out of memory (virtual memory allocation failed)";
+        case 0xC0000374: return "heap corruption (memory freed twice or written out of bounds)";
+        case 0xC0000409: return "stack buffer overrun / fast-fail";
         default: return "unhandled structured exception";
         }
     }
 
-    bool is_engine_module(HMODULE module, LPCSTR modulePath)
+    bool is_executable_protection(DWORD protection)
     {
-        if (!module)
-            return false;
-
-        if (module == GetModuleHandleA(nullptr))
-            return true;
-
-        return contains_i(modulePath, "xrcore") || contains_i(modulePath, "xrengine") ||
-            contains_i(modulePath, "xrgame") || contains_i(modulePath, "xrrender") ||
-            contains_i(modulePath, "xrphysics") || contains_i(modulePath, "xrcdb") ||
-            contains_i(modulePath, "xrsound") || contains_i(modulePath, "xrnetserver") ||
-            contains_i(modulePath, "xrserverentities") || contains_i(modulePath, "xrcpu_pipe") ||
-            contains_i(modulePath, "xrparticles");
+        const DWORD base = protection & 0xff;
+        return base == PAGE_EXECUTE || base == PAGE_EXECUTE_READ ||
+            base == PAGE_EXECUTE_READWRITE || base == PAGE_EXECUTE_WRITECOPY;
     }
 
-    HMODULE module_from_address(const void* address, char* path, size_t pathCapacity, unsigned long long& offset)
+    // Windows and CRT modules only transport a failure (RaiseException, heap checks):
+    // the record points at the first frame outside them.
+    bool is_system_module(LPCSTR path)
     {
-        if (path && pathCapacity)
-            *path = 0;
-        offset = 0;
-        if (!address)
-            return nullptr;
-
-        MEMORY_BASIC_INFORMATION memory = {};
-        if (!VirtualQuery(address, &memory, sizeof(memory)) || memory.Type != MEM_IMAGE)
-            return nullptr;
-
-        HMODULE module = static_cast<HMODULE>(memory.AllocationBase);
-        if (!module)
-            return nullptr;
-
-        if (path && pathCapacity)
-            GetModuleFileNameA(module, path, DWORD(pathCapacity));
-        offset = static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(address) -
-            reinterpret_cast<uintptr_t>(module));
-        return module;
-    }
-
-    void format_address_location(const void* address, char* output, size_t capacity)
-    {
-        if (!output || capacity == 0)
-            return;
-        *output = 0;
-        if (!address)
-            return;
-
-        char modulePath[MAX_PATH] = {};
-        unsigned long long offset = 0;
-        if (module_from_address(address, modulePath, sizeof(modulePath), offset) && *modulePath)
-            _snprintf_s(output, capacity, _TRUNCATE, "%s+0x%llX", path_basename(modulePath), offset);
-        else
-            _snprintf_s(output, capacity, _TRUNCATE, "%p", address);
-    }
-
-    void format_thread_name(char* output, size_t capacity)
-    {
-        if (!output || capacity == 0)
-            return;
-        *output = 0;
-
-        using get_thread_description_fn = HRESULT(WINAPI*)(HANDLE, PWSTR*);
-        HMODULE kernel = GetModuleHandleW(L"kernel32.dll");
-        if (!kernel)
-            return;
-        auto getThreadDescription = reinterpret_cast<get_thread_description_fn>(
-            GetProcAddress(kernel, "GetThreadDescription"));
-        if (!getThreadDescription)
-            return;
-
-        PWSTR description = nullptr;
-        if (SUCCEEDED(getThreadDescription(GetCurrentThread(), &description)) && description)
-        {
-            WideCharToMultiByte(CP_UTF8, 0, description, -1, output, int(capacity), nullptr, nullptr);
-            LocalFree(description);
-        }
+        static constexpr LPCSTR names[] = { "ntdll.dll", "kernelbase.dll", "kernel32.dll", "ucrtbase.dll",
+            "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll" };
+        LPCSTR name = path_basename(path);
+        for (LPCSTR candidate : names)
+            if (!_stricmp(name, candidate))
+                return true;
+        return false;
     }
 
     LPCSTR local_symbol_path()
@@ -1010,507 +679,461 @@ namespace
         return *path ? path : ".";
     }
 
-    class CrashStackWalker final : public StackWalker
+    void append_thread_context(char* output, size_t capacity, size_t& used)
+    {
+        append_format(output, capacity, used, "Thread    : %s\r\n", *g_threadName ? g_threadName : "unnamed");
+        if (!g_threadStage)
+            return;
+        append_format(output, capacity, used, "Stage     : %s", g_threadStage);
+        if (g_threadStageCallback)
+        {
+            char location[MAX_PATH + 32] = {};
+            format_address_location(g_threadStageCallback, location, sizeof(location));
+            append_format(output, capacity, used, " (callback %s)", location);
+        }
+        append_format(output, capacity, used, "\r\n");
+    }
+
+    void append_memory_facts(char* output, size_t capacity, size_t& used)
+    {
+        MEMORYSTATUSEX memory = {};
+        memory.dwLength = sizeof(memory);
+        if (!GlobalMemoryStatusEx(&memory))
+            return;
+        PROCESS_MEMORY_COUNTERS_EX counters = {};
+        const bool process = GetProcessMemoryInfo(GetCurrentProcess(),
+            reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters), sizeof(counters)) != FALSE;
+        append_format(output, capacity, used, "Memory    : RAM free %llu MB, commit free %llu MB, game private %llu MB\r\n",
+            memory.ullAvailPhys >> 20, memory.ullAvailPageFile >> 20,
+            process ? static_cast<unsigned long long>(counters.PrivateUsage) >> 20 : 0ull);
+    }
+
+    void append_failure_code(char* output, size_t capacity, size_t& used)
+    {
+        if (!g_failureCode.valid)
+            return;
+        const unsigned long code = static_cast<unsigned long>(g_failureCode.result);
+        LPCSTR name = result_name(g_failureCode.result);
+        char decoded[1024] = {};
+        wchar_t wide[512] = {};
+        if (!name && FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+                nullptr, code, 0, wide, DWORD(_countof(wide)), nullptr))
+            WideCharToMultiByte(CP_UTF8, 0, wide, -1, decoded, sizeof(decoded), nullptr, nullptr);
+        append_format(output, capacity, used, "HRESULT   : 0x%08lX (", code);
+        append_single_line_text(output, capacity, used, name ? name : *decoded ? decoded : "unknown");
+        append_format(output, capacity, used, ")\r\n");
+        if (g_failureCode.hasRemovedReason)
+        {
+            LPCSTR reason = result_name(g_failureCode.removedReason);
+            append_format(output, capacity, used, "Device    : removed, reason 0x%08lX (%s)\r\n",
+                static_cast<unsigned long>(g_failureCode.removedReason), reason ? reason : "unknown");
+        }
+    }
+
+    void append_lua_stack(char* output, size_t capacity, size_t& used)
+    {
+        if (!g_luaStackWriter || GetCurrentThreadId() != g_luaThread || used + 64 >= capacity)
+            return;
+        const size_t start = used;
+        append_format(output, capacity, used, "Lua stack:\r\n");
+        __try { g_luaStackWriter(output + used, capacity - used); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { output[used] = 0; }
+        const size_t added = strnlen(output + used, capacity - used - 1);
+        if (!added)
+        {
+            used = start;
+            output[used] = 0;
+            return;
+        }
+        used += added;
+        output[used] = 0;
+    }
+
+    class LogStackWalker final : public StackWalker
     {
     public:
-        CrashStackWalker(char* output, size_t capacity, size_t& used,
-            char* primarySource, size_t primarySourceCapacity,
-            char* primaryFunction, size_t primaryFunctionCapacity, DWORD& primaryLine)
+        LogStackWalker(char* output, size_t capacity, size_t& used, bool skipLogger)
             : StackWalker(StackWalker::RetrieveSymbol | StackWalker::RetrieveLine |
                 StackWalker::RetrieveModuleInfo,
                 local_symbol_path(), GetCurrentProcessId(), g_symbolProcess ? g_symbolProcess : GetCurrentProcess()),
-              output_(output), capacity_(capacity), used_(used),
-              primarySource_(primarySource), primarySourceCapacity_(primarySourceCapacity),
-              primaryFunction_(primaryFunction), primaryFunctionCapacity_(primaryFunctionCapacity),
-              primaryLine_(primaryLine)
+              output_(output), capacity_(capacity), used_(used), skipping_(skipLogger)
         {
         }
+
+        unsigned int frames() const { return frames_; }
+        LPCSTR first_frame() const { return first_; }
 
     protected:
         void OnCallstackEntry(CallstackEntryType entryType, CallstackEntry& entry) override
         {
-            if (entryType == lastEntry || entry.offset == 0 || frameIndex_ >= kDetailedStackFrameLimit)
+            if (entryType == lastEntry || entry.offset == 0 || frames_ >= kStackFrameLimit)
                 return;
 
-            LPCSTR moduleName = *entry.moduleName ? path_basename(entry.moduleName) : path_basename(entry.loadedImageName);
-            LPCSTR symbolName = *entry.undFullName ? entry.undFullName :
-                (*entry.undName ? entry.undName : (*entry.name ? entry.name : "<symbol unavailable>"));
-            const unsigned long long moduleOffset = entry.baseOfImage && entry.offset >= entry.baseOfImage ?
+            LPCSTR symbol = *entry.undName ? entry.undName : entry.name;
+            // A fatal record starts at the code that reported the error, not inside the reporter.
+            if (skipping_ && (!strncmp(symbol, "EngineErrorLogger::", 19) ||
+                !strncmp(symbol, "StackWalker::", 13) || !strncmp(symbol, "xrDebug::", 9)))
+                return;
+            skipping_ = false;
+
+            LPCSTR module = *entry.loadedImageName ? path_basename(entry.loadedImageName) : path_basename(entry.moduleName);
+            const unsigned long long rva = entry.baseOfImage && entry.offset >= entry.baseOfImage ?
                 static_cast<unsigned long long>(entry.offset - entry.baseOfImage) : 0;
-
-            append_format(output_, capacity_, used_, "  #%02u %s+0x%llX!%s+0x%llX",
-                frameIndex_, safe_text(moduleName), moduleOffset, safe_text(symbolName),
-                static_cast<unsigned long long>(entry.offsetFromSmybol));
-            if (*entry.lineFileName && entry.lineNumber)
+            char frame[1024] = {};
+            size_t used = 0;
+            if (*symbol)
             {
-                char sourcePath[1024] = {};
-                format_source_path(entry.lineFileName, sourcePath, sizeof(sourcePath));
-                append_format(output_, capacity_, used_, " (%s:%lu", sourcePath, entry.lineNumber);
-                if (entry.offsetFromLine)
-                    append_format(output_, capacity_, used_, "+0x%lX", entry.offsetFromLine);
-                append_format(output_, capacity_, used_, ")");
+                append_format(frame, sizeof(frame), used, "%.160s", symbol);
+                if (*entry.lineFileName && entry.lineNumber)
+                {
+                    char source[512] = {};
+                    format_source_path(entry.lineFileName, source, sizeof(source));
+                    append_format(frame, sizeof(frame), used, " (%s:%lu)", source, entry.lineNumber);
+                }
+                else // without a PDB this is the nearest export; the offset shows how near
+                    append_format(frame, sizeof(frame), used, "+0x%llX", static_cast<unsigned long long>(entry.offsetFromSmybol));
+                append_format(frame, sizeof(frame), used, " [%s+0x%llX]", module, rva);
             }
-            append_format(output_, capacity_, used_, "\r\n");
+            else
+                append_format(frame, sizeof(frame), used, "%s+0x%llX", module, rva);
 
-            if (!capturedPrimary_)
+            if (!frames_ || (systemFirst_ && !is_system_module(module)))
             {
-                capturedPrimary_ = true;
-                copy_text(primaryFunction_, primaryFunctionCapacity_, symbolName);
-                if (*entry.lineFileName)
-                    format_source_path(entry.lineFileName, primarySource_, primarySourceCapacity_);
-                primaryLine_ = entry.lineNumber;
+                copy_text(first_, sizeof(first_), frame);
+                systemFirst_ = is_system_module(module);
             }
-            ++frameIndex_;
-        }
-
-        void OnDbgHelpErr(LPCSTR operation, DWORD error, DWORD64 address) override
-        {
-            if (symbolErrors_++ < 8)
-                append_format(output_, capacity_, used_,
-                    "  [symbols] %s failed: Win32=%lu address=0x%llX (PDB may be absent/unmatched)\r\n",
-                    safe_text(operation), error, static_cast<unsigned long long>(address));
-        }
-
-        void OnLoadModule(LPCSTR, LPCSTR module, DWORD64, DWORD, DWORD result,
-            LPCSTR symbolType, LPCSTR, ULONGLONG) override
-        {
-            if (result && symbolErrors_++ < 8)
-                append_format(output_, capacity_, used_, "  [symbols] module=%s load_error=%lu type=%s\r\n",
-                    path_basename(module), result, safe_text(symbolType));
+            append_format(output_, capacity_, used_, "  #%02u %s\r\n", frames_++, frame);
         }
 
         void OnOutput(LPCSTR) override
         {
         }
 
-    public:
-        unsigned int frame_count() const
-        {
-            return frameIndex_;
-        }
-
     private:
         char* output_ = nullptr;
         size_t capacity_ = 0;
         size_t& used_;
-        char* primarySource_ = nullptr;
-        size_t primarySourceCapacity_ = 0;
-        char* primaryFunction_ = nullptr;
-        size_t primaryFunctionCapacity_ = 0;
-        DWORD& primaryLine_;
-        unsigned int frameIndex_ = 0;
-        bool capturedPrimary_ = false;
-        unsigned int symbolErrors_ = 0;
+        bool skipping_ = false;
+        bool systemFirst_ = false;
+        unsigned int frames_ = 0;
+        char first_[1024] = {}; // the first frame outside Windows/CRT modules
     };
 
-    bool walk_crash_stack(EXCEPTION_POINTERS* pointers, CrashWorkspace& workspace, size_t& used)
+    unsigned int walk_stack(const CONTEXT* context, bool skipLogger, char* output, size_t capacity, size_t& used,
+        char* first, size_t firstCapacity)
     {
-        CONTEXT context = *pointers->ContextRecord;
-        CrashStackWalker walker(workspace.stack, sizeof(workspace.stack), used,
-            workspace.primarySource, sizeof(workspace.primarySource),
-            workspace.primaryFunction, sizeof(workspace.primaryFunction), workspace.primaryLine);
-        if (!walker.ShowCallstack(GetCurrentThread(), &context))
-            append_format(workspace.stack, sizeof(workspace.stack), used,
-                "  Unwind incomplete; module+RVA and matching PDB are still usable.\r\n");
-        return walker.frame_count() != 0;
+        LogStackWalker walker(output, capacity, used, skipLogger);
+        if (context)
+        {
+            CONTEXT copy = *context; // StackWalk64 modifies the context it walks
+            walker.ShowCallstack(GetCurrentThread(), &copy);
+        }
+        else
+            walker.ShowCallstack();
+        if (first && walker.frames())
+            copy_text(first, firstCapacity, walker.first_frame());
+        return walker.frames();
     }
 
-        bool append_symbolized_crash_stack(EXCEPTION_POINTERS* pointers, CrashWorkspace& workspace)
+    // DbgHelp is serialized and never waited for: a crash must not block on it.
+    unsigned int append_symbolized_stack(const CONTEXT* context, bool skipLogger, char* output, size_t capacity,
+        size_t& used, char* first = nullptr, size_t firstCapacity = 0)
     {
-        size_t used = 0;
-        append_format(workspace.stack, sizeof(workspace.stack), used,
-            "Symbolized crash stack (faulting context):\r\n");
-
-        if (!pointers || !pointers->ContextRecord)
-        {
-            append_format(workspace.stack, sizeof(workspace.stack), used,
-                "  Context record is unavailable.\r\n");
-            return false;
-        }
-
         if (!TryBeginSymbolWork())
-        {
-            append_format(workspace.stack, sizeof(workspace.stack), used,
-                "  Symbols skipped: DbgHelp is busy (no blocking in crash handler).\r\n");
-            return false;
-        }
-        bool hasFrames = false;
-        __try { hasFrames = walk_crash_stack(pointers, workspace, used); }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            append_format(workspace.stack, sizeof(workspace.stack), used,
-                "  Symbolization failed inside DbgHelp; original crash checkpoint retained.\r\n");
-        }
+            return 0;
+        const size_t start = used;
+        unsigned int frames = 0;
+        __try { frames = walk_stack(context, skipLogger, output, capacity, used, first, firstCapacity); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { frames = 0; }
         EndSymbolWork();
-        return hasFrames;
-    }
-
-    bool is_executable_protection(DWORD protection)
-    {
-        const DWORD base = protection & 0xff;
-        return base == PAGE_EXECUTE || base == PAGE_EXECUTE_READ ||
-            base == PAGE_EXECUTE_READWRITE || base == PAGE_EXECUTE_WRITECOPY;
-    }
-
-    void append_stack_scan(EXCEPTION_POINTERS* pointers, CrashWorkspace& workspace)
-    {
-        size_t used = 0;
-        append_format(workspace.stackScan, sizeof(workspace.stackScan), used,
-            "Raw stack return-address candidates (fallback):\r\n");
-
-        if (!pointers || !pointers->ContextRecord)
+        if (!frames)
         {
-            append_format(workspace.stackScan, sizeof(workspace.stackScan), used, "  <context unavailable>\r\n");
-            return;
+            used = start;
+            output[used] = 0;
         }
+        return frames;
+    }
 
+    // Module+RVA frames straight from the unwind tables: no DbgHelp, no heap.
+    // They identify the code with the matching PDB if symbolization fails.
+    void append_raw_stack(CONTEXT& context, char* output, size_t capacity, size_t& used)
+    {
 #if defined(_M_X64)
-        const uintptr_t stackPointer = static_cast<uintptr_t>(pointers->ContextRecord->Rsp);
-#elif defined(_M_IX86)
-        const uintptr_t stackPointer = static_cast<uintptr_t>(pointers->ContextRecord->Esp);
-#else
-        const uintptr_t stackPointer = 0;
-#endif
-        if (!stackPointer)
-        {
-            append_format(workspace.stackScan, sizeof(workspace.stackScan), used, "  <stack pointer unavailable>\r\n");
-            return;
-        }
-
-        MEMORY_BASIC_INFORMATION stackMemory = {};
-        if (!VirtualQuery(reinterpret_cast<const void*>(stackPointer), &stackMemory, sizeof(stackMemory)) ||
-            stackMemory.State != MEM_COMMIT)
-        {
-            append_format(workspace.stackScan, sizeof(workspace.stackScan), used, "  <stack memory is not readable>\r\n");
-            return;
-        }
-
-        const uintptr_t regionEnd = reinterpret_cast<uintptr_t>(stackMemory.BaseAddress) + stackMemory.RegionSize;
-        const size_t availableWords = regionEnd > stackPointer ?
-            (regionEnd - stackPointer) / sizeof(uintptr_t) : 0;
-        const size_t wordsToScan = availableWords < 192 ? availableWords : 192;
-        unsigned int found = 0;
-
         __try
         {
-            // Copy through the OS rather than dereferencing memory outside C++
-            // object lifetimes (including ASan stack red zones). Never emit raw
-            // words: only module RVAs for executable image candidates.
-            uintptr_t words[192] = {};
-            SIZE_T copied = 0;
-            ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void*>(stackPointer),
-                words, wordsToScan * sizeof(uintptr_t), &copied);
-            for (size_t index = 0; index < copied / sizeof(uintptr_t) && found < 8; ++index)
+            for (unsigned int index = 0; index < kStackFrameLimit && context.Rip; ++index)
             {
-                const uintptr_t candidate = words[index];
-                if (!candidate)
-                    continue;
+                char location[MAX_PATH + 32] = {};
+                format_address_location(reinterpret_cast<const void*>(context.Rip), location, sizeof(location));
+                append_format(output, capacity, used, "  #%02u %s\r\n", index, location);
 
-                MEMORY_BASIC_INFORMATION candidateMemory = {};
-                if (!VirtualQuery(reinterpret_cast<const void*>(candidate), &candidateMemory, sizeof(candidateMemory)) ||
-                    candidateMemory.State != MEM_COMMIT || !is_executable_protection(candidateMemory.Protect))
-                    continue;
-
-                char modulePath[MAX_PATH] = {};
-                unsigned long long moduleOffset = 0;
-                module_from_address(reinterpret_cast<const void*>(candidate), modulePath, sizeof(modulePath), moduleOffset);
-                append_format(workspace.stackScan, sizeof(workspace.stackScan), used,
-                    "  RSP+0x%04llX -> %s+0x%llX\r\n",
-                    static_cast<unsigned long long>(index * sizeof(uintptr_t)),
-                    *modulePath ? path_basename(modulePath) : "<unknown module>", moduleOffset);
-                ++found;
+                const DWORD64 previousStack = context.Rsp;
+                DWORD64 imageBase = 0;
+                PRUNTIME_FUNCTION function = RtlLookupFunctionEntry(context.Rip, &imageBase, nullptr);
+                if (function)
+                {
+                    PVOID handlerData = nullptr;
+                    DWORD64 establisherFrame = 0;
+                    RtlVirtualUnwind(UNW_FLAG_NHANDLER, imageBase, context.Rip, function, &context,
+                        &handlerData, &establisherFrame, nullptr);
+                }
+                else
+                {
+                    // Leaf function: the return address is on top of the stack.
+                    context.Rip = *reinterpret_cast<const DWORD64*>(context.Rsp);
+                    context.Rsp += 8;
+                }
+                if (context.Rsp <= previousStack)
+                    break;
             }
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
-            append_format(workspace.stackScan, sizeof(workspace.stackScan), used,
-                "  <stack scan stopped by memory fault>\r\n");
         }
-
-        if (!found)
-            append_format(workspace.stackScan, sizeof(workspace.stackScan), used, "  <no executable candidates found>\r\n");
+#endif
     }
 
-    void append_instruction_bytes(const void* address, char* output, size_t capacity, size_t& used)
+    void append_machine_state(const EXCEPTION_POINTERS* pointers, char* output, size_t capacity, size_t& used)
     {
-        append_format(output, capacity, used, "Instruction bytes: ");
-        if (!address)
+#if defined(_M_X64)
+        if (pointers->ContextRecord)
         {
-            append_format(output, capacity, used, "<unavailable>\r\n");
-            return;
+            const CONTEXT& c = *pointers->ContextRecord;
+            append_format(output, capacity, used,
+                "Registers :\r\n"
+                "  RAX=%016llX RBX=%016llX RCX=%016llX RDX=%016llX\r\n"
+                "  RSI=%016llX RDI=%016llX RBP=%016llX RSP=%016llX\r\n"
+                "  R8 =%016llX R9 =%016llX R10=%016llX R11=%016llX\r\n"
+                "  R12=%016llX R13=%016llX R14=%016llX R15=%016llX\r\n",
+                c.Rax, c.Rbx, c.Rcx, c.Rdx, c.Rsi, c.Rdi, c.Rbp, c.Rsp,
+                c.R8, c.R9, c.R10, c.R11, c.R12, c.R13, c.R14, c.R15);
         }
-
+#endif
+        const void* address = pointers->ExceptionRecord->ExceptionAddress;
         MEMORY_BASIC_INFORMATION memory = {};
-        if (!VirtualQuery(address, &memory, sizeof(memory)) || memory.State != MEM_COMMIT ||
-            memory.Type != MEM_IMAGE || !is_executable_protection(memory.Protect))
-        {
-            append_format(output, capacity, used, "<unreadable>\r\n");
+        if (!address || !VirtualQuery(address, &memory, sizeof(memory)) || memory.State != MEM_COMMIT ||
+            !is_executable_protection(memory.Protect))
             return;
-        }
-
+        append_format(output, capacity, used, "Code      :");
         __try
         {
             const unsigned char* bytes = static_cast<const unsigned char*>(address);
-            for (unsigned int index = 0; index < 24; ++index)
-                append_format(output, capacity, used, "%02X ", bytes[index]);
-            append_format(output, capacity, used, "\r\n");
+            for (unsigned int index = 0; index < 16; ++index)
+                append_format(output, capacity, used, " %02X", bytes[index]);
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
-            append_format(output, capacity, used, "<read fault>\r\n");
         }
+        append_format(output, capacity, used, "\r\n");
     }
 
-    void append_exception_details(EXCEPTION_POINTERS* pointers, CrashWorkspace& workspace)
+    // ".?AVbad_alloc@std@@" -> "std::bad_alloc"; template types stay decorated.
+    void format_type_name(LPCSTR decorated, char* output, size_t capacity)
     {
+        copy_text(output, capacity, decorated);
+        if (strncmp(decorated, ".?A", 3) || !decorated[3] || strchr(decorated + 4, '?'))
+            return;
+        LPCSTR parts[8] = {};
+        int lengths[8] = {};
+        int count = 0;
+        for (LPCSTR part = decorated + 4; *part && *part != '@' && count < 8; ++count)
+        {
+            LPCSTR end = strchr(part, '@');
+            if (!end)
+                return;
+            parts[count] = part;
+            lengths[count] = int(end - part);
+            part = end + 1;
+        }
         size_t used = 0;
-        if (!pointers || !pointers->ExceptionRecord)
+        *output = 0;
+        for (int index = count - 1; index >= 0; --index)
+            append_format(output, capacity, used, "%s%.*s", index == count - 1 ? "" : "::", lengths[index], parts[index]);
+    }
+
+    void describe_cpp_exception(const EXCEPTION_RECORD& record, char* output, size_t capacity)
+    {
+        copy_text(output, capacity, "unhandled C++ exception");
+#if defined(_M_X64)
+        if (record.NumberParameters < 4)
+            return;
+        __try
+        {
+            // x64 MSVC throw: [1] object, [2] ThrowInfo, [3] image base. ThrowInfo
+            // and the catchable type array hold RVAs from that image base.
+            const uintptr_t base = record.ExceptionInformation[3];
+            const int* throwInfo = reinterpret_cast<const int*>(record.ExceptionInformation[2]);
+            const int* types = reinterpret_cast<const int*>(base + throwInfo[3]);
+            LPCSTR first = nullptr;
+            const std::exception* standard = nullptr;
+            for (int index = 0; index < types[0] && index < 32; ++index)
+            {
+                // CatchableType: properties, type descriptor RVA, mdisp, pdisp, vdisp
+                const int* type = reinterpret_cast<const int*>(base + types[1 + index]);
+                LPCSTR name = reinterpret_cast<LPCSTR>(base + type[1] + 2 * sizeof(void*));
+                if (!first)
+                    first = name;
+                if (!strcmp(name, ".?AVexception@std@@") && type[3] < 0)
+                    standard = reinterpret_cast<const std::exception*>(
+                        reinterpret_cast<const char*>(record.ExceptionInformation[1]) + type[2]);
+            }
+            char typeName[256] = {};
+            if (first)
+                format_type_name(first, typeName, sizeof(typeName));
+            size_t used = 0;
+            append_format(output, capacity, used, "unhandled C++ exception %s", *typeName ? typeName : "<unknown type>");
+            if (standard)
+            {
+                append_format(output, capacity, used, ": ");
+                append_single_line_text(output, capacity, used, standard->what());
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+        }
+#endif
+    }
+
+    void describe_exception(const EXCEPTION_RECORD& record, char* output, size_t capacity)
+    {
+        const DWORD code = record.ExceptionCode;
+        if (code == kCppException)
+        {
+            describe_cpp_exception(record, output, capacity);
+            return;
+        }
+        if (is_luajit_exception_code(code))
+        {
+            if ((code & 0xffu) == 4u)
+                copy_text(output, capacity, "Lua out of memory outside a protected call");
+            else
+                _snprintf_s(output, capacity, _TRUNCATE, "Lua error outside a protected call (status %lu)", code & 0xffu);
+            return;
+        }
+
+        size_t used = 0;
+        append_format(output, capacity, used, "%s (0x%08lX)", exception_name(code), code);
+        if ((code != EXCEPTION_ACCESS_VIOLATION && code != EXCEPTION_IN_PAGE_ERROR) || record.NumberParameters < 2)
             return;
 
-        EXCEPTION_RECORD* record = pointers->ExceptionRecord;
-        append_format(workspace.exceptionDetails, sizeof(workspace.exceptionDetails), used,
-            "  Code          : 0x%08lX\r\n"
-            "  Flags         : 0x%08lX\r\n"
-            "  Address       : %p\r\n"
-            "  Parameters    : %lu\r\n",
-            record->ExceptionCode, record->ExceptionFlags, record->ExceptionAddress,
-            record->NumberParameters);
-
-
-        if ((record->ExceptionCode == EXCEPTION_ACCESS_VIOLATION ||
-            record->ExceptionCode == EXCEPTION_IN_PAGE_ERROR) && record->NumberParameters >= 2)
+        const ULONG_PTR operation = record.ExceptionInformation[0];
+        const ULONG_PTR target = record.ExceptionInformation[1];
+        append_format(output, capacity, used, ", %s at 0x%llX",
+            operation == 0 ? "read" : operation == 1 ? "write" : operation == 8 ? "execute (DEP)" : "access",
+            static_cast<unsigned long long>(target));
+        MEMORY_BASIC_INFORMATION memory = {};
+        if (target < 0x10000)
+            append_format(output, capacity, used, " (null pointer)");
+        else if (VirtualQuery(reinterpret_cast<LPCVOID>(target), &memory, sizeof(memory)))
         {
-            const uintptr_t target = static_cast<uintptr_t>(record->ExceptionInformation[1]);
-            const ULONG_PTR operation = record->ExceptionInformation[0];
-            append_format(workspace.exceptionDetails, sizeof(workspace.exceptionDetails), used,
-                "  Access        : %s target=0x%llX\r\n",
-                operation == 0 ? "read" : operation == 1 ? "write" : operation == 8 ? "execute/DEP" : "unknown",
-                static_cast<unsigned long long>(target));
-            if (target < 0x10000)
-                append_format(workspace.exceptionDetails, sizeof(workspace.exceptionDetails), used,
-                    "  Observation   : target is below 64 KiB (near-null); object ownership is not established\r\n");
-            MEMORY_BASIC_INFORMATION memory = {};
-            if (VirtualQuery(reinterpret_cast<const void*>(target), &memory, sizeof(memory)))
-                append_format(workspace.exceptionDetails, sizeof(workspace.exceptionDetails), used,
-                    "  Target region : state=0x%lX protection=0x%lX type=0x%lX size=%llu bytes\r\n",
-                    memory.State, memory.Protect, memory.Type, static_cast<unsigned long long>(memory.RegionSize));
+            if (memory.State == MEM_FREE)
+                append_format(output, capacity, used, " (unallocated memory)");
+            else if (memory.State == MEM_RESERVE)
+                append_format(output, capacity, used, " (reserved, not committed memory)");
+            else if (memory.Protect & (PAGE_NOACCESS | PAGE_GUARD))
+                append_format(output, capacity, used, " (no-access page)");
         }
-
-        if (record->ExceptionCode == EXCEPTION_IN_PAGE_ERROR && record->NumberParameters >= 3)
-        {
-            append_format(workspace.exceptionDetails, sizeof(workspace.exceptionDetails), used,
-                "  In-page status: 0x%08llX\r\n",
-                static_cast<unsigned long long>(record->ExceptionInformation[2]));
-        }
-
-        if (pointers->ContextRecord)
-        {
-#if defined(_M_X64)
-            const CONTEXT& context = *pointers->ContextRecord;
-            append_format(workspace.exceptionDetails, sizeof(workspace.exceptionDetails), used,
-                "  RIP=%016llX RSP=%016llX RBP=%016llX\r\n"
-                "  RAX=%016llX RBX=%016llX RCX=%016llX RDX=%016llX\r\n"
-                "  RSI=%016llX RDI=%016llX R8=%016llX R9=%016llX\r\n"
-                "  R10=%016llX R11=%016llX R12=%016llX R13=%016llX R14=%016llX R15=%016llX\r\n",
-                context.Rip, context.Rsp, context.Rbp, context.Rax, context.Rbx,
-                context.Rcx, context.Rdx, context.Rsi, context.Rdi, context.R8,
-                context.R9, context.R10, context.R11, context.R12, context.R13,
-                context.R14, context.R15);
-#elif defined(_M_IX86)
-            const CONTEXT& context = *pointers->ContextRecord;
-            append_format(workspace.exceptionDetails, sizeof(workspace.exceptionDetails), used,
-                "  EIP           : 0x%08lX\r\n"
-                "  ESP           : 0x%08lX\r\n"
-                "  EBP           : 0x%08lX\r\n"
-                "  EAX           : 0x%08lX\r\n"
-                "  EBX           : 0x%08lX\r\n"
-                "  ECX           : 0x%08lX\r\n"
-                "  EDX           : 0x%08lX\r\n"
-                "  ESI           : 0x%08lX\r\n"
-                "  EDI           : 0x%08lX\r\n",
-                context.Eip, context.Esp, context.Ebp, context.Eax, context.Ebx,
-                context.Ecx, context.Edx, context.Esi, context.Edi);
-#endif
-        }
-        // Nested records are metadata only, bounded and protected by the outer SEH guard.
-        EXCEPTION_RECORD* nested = record->ExceptionRecord;
-        for (unsigned index = 0; nested && index < 4; ++index)
-        {
-            char location[256] = {};
-            format_address_location(nested->ExceptionAddress, location, sizeof(location));
-            append_format(workspace.exceptionDetails, sizeof(workspace.exceptionDetails), used,
-                "  Nested[%u]     : 0x%08lX flags=0x%lX at %s\r\n", index,
-                nested->ExceptionCode, nested->ExceptionFlags, safe_text(location));
-            if (nested == nested->ExceptionRecord || nested == record) break;
-            nested = nested->ExceptionRecord;
-        }
-        append_instruction_bytes(record->ExceptionAddress, workspace.exceptionDetails,
-            sizeof(workspace.exceptionDetails), used);
+        if (code == EXCEPTION_IN_PAGE_ERROR && record.NumberParameters >= 3)
+            append_format(output, capacity, used, ", I/O status 0x%08llX",
+                static_cast<unsigned long long>(record.ExceptionInformation[2]));
     }
 
-    void append_breadcrumb_history(CrashWorkspace& workspace)
+    void append_breadcrumbs(char* output, size_t capacity, size_t& used)
     {
-        size_t used = 0;
-        append_format(workspace.breadcrumbs, sizeof(workspace.breadcrumbs), used,
-            "Recent engine breadcrumbs (oldest to newest):\r\n");
-
         const LONG64 newest = InterlockedCompareExchange64(&g_breadcrumbSequence, 0, 0);
-        const LONG64 oldest = newest > 16 ? newest - 16 + 1 : 1;
-        unsigned int written = 0;
-
-        for (LONG64 sequence = oldest; sequence <= newest; ++sequence)
+        if (!newest)
+            return;
+        append_format(output, capacity, used, "Recent events (oldest first):\r\n");
+        for (LONG64 sequence = newest > kBreadcrumbsShown ? newest - kBreadcrumbsShown + 1 : 1; sequence <= newest; ++sequence)
         {
             BreadcrumbSlot& slot = g_breadcrumbs[(sequence - 1) % kBreadcrumbCount];
-            if (InterlockedCompareExchange(&slot.busy, 1, 0) != 0) continue;
-            if (slot.sequence != sequence) { InterlockedExchange(&slot.busy, 0); continue; }
-            const unsigned long long tick = slot.tick;
-            const DWORD threadId = slot.threadId;
-            const int line = slot.line;
-            char category[sizeof(slot.category)] = {};
+            if (InterlockedCompareExchange(&slot.busy, 1, 0) != 0)
+                continue;
             char message[sizeof(slot.message)] = {};
-            char file[sizeof(slot.file)] = {};
-            char function[sizeof(slot.function)] = {};
-            copy_text(category, sizeof(category), slot.category);
-            copy_text(message, sizeof(message), slot.message);
-            copy_text(file, sizeof(file), slot.file);
-            copy_text(function, sizeof(function), slot.function);
+            if (slot.sequence == sequence)
+                copy_text(message, sizeof(message), slot.message);
             InterlockedExchange(&slot.busy, 0);
-
-            const LONG64 start = InterlockedCompareExchange64(&g_processStartTick, 0, 0);
-            const unsigned long long relative = start && tick >= static_cast<unsigned long long>(start) ?
-                tick - static_cast<unsigned long long>(start) : 0;
-            append_format(workspace.breadcrumbs, sizeof(workspace.breadcrumbs), used,
-                "  +%10llu ms [T%lu] %-12s %s | %s:%d (%s)\r\n",
-                relative, threadId, safe_text(category), safe_text(message),
-                safe_text(file), line, safe_text(function));
-            ++written;
+            if (*message)
+                append_format(output, capacity, used, "  %s\r\n", message);
         }
-
-        if (!written)
-            append_format(workspace.breadcrumbs, sizeof(workspace.breadcrumbs), used, "  <none recorded>\r\n");
-        const LONG64 dropped = InterlockedCompareExchange64(&g_droppedBreadcrumbs, 0, 0);
-        if (dropped) append_format(workspace.breadcrumbs, sizeof(workspace.breadcrumbs), used,
-            "  History incomplete: %llu busy writes skipped\r\n", static_cast<unsigned long long>(dropped));
-
     }
 
-    void append_fault_module_identity(EXCEPTION_POINTERS* pointers, CrashWorkspace& workspace)
+    void append_record_head(char* output, size_t capacity, size_t& used, Category category, Severity severity,
+        LPCSTR expression, LPCSTR description, LPCSTR argument0, LPCSTR argument1, LPCSTR file, int line, LPCSTR function)
     {
-        if (!pointers || !pointers->ExceptionRecord) return;
-        char path[MAX_PATH] = {}, identity[512] = {}; unsigned long long offset = 0;
-        HMODULE module = module_from_address(pointers->ExceptionRecord->ExceptionAddress, path, sizeof(path), offset);
-        if (!module || module == GetModuleHandleA(nullptr)) return; // main build is already identified
-        format_image_identity(module, identity, sizeof(identity));
-        size_t used = 0;
-        append_format(workspace.modules, sizeof(workspace.modules), used, "Fault module  : %s / %s\r\n",
-            path_basename(path), identity);
+        char source[512] = {};
+        format_source_path(file, source, sizeof(source));
+        append_format(output, capacity, used, "\r\n==== %s [%s] ====\r\n",
+            severity == Severity::Fatal ? "FATAL" : "ERROR", category_name(category));
+        if (g_testFilename)
+            append_format(output, capacity, used, "Note      : simulated by 'engine_error_log test', nothing failed\r\n");
+        append_field(output, capacity, used, "Error", description);
+        append_field(output, capacity, used, "Expression", expression);
+        append_field(output, capacity, used, "Details", argument0);
+        append_field(output, capacity, used, "Details", argument1);
+        append_format(output, capacity, used, "Location  : %s:%d (%s)\r\n", source, line, safe_text(function));
+        append_failure_code(output, capacity, used);
+        append_thread_context(output, capacity, used);
     }
 
-    void make_crash_id(EXCEPTION_POINTERS* pointers, CrashWorkspace& workspace)
+    void write_record(Category category, Severity severity, LPCSTR expression, LPCSTR description,
+        LPCSTR argument0, LPCSTR argument1, LPCSTR file, int line, LPCSTR function, LPCSTR luaStack)
     {
-        copy_text(workspace.crashId, sizeof(workspace.crashId), g_incidentId);
-    }
-
-    void write_crash_record(
-        Category category,
-        Origin origin,
-        LPCSTR expression,
-        LPCSTR description,
-        CrashWorkspace& workspace)
-    {
-        if (g_insideLogger)
+        g_lastWriteSucceeded = false;
+        if (!IsEnabled() || g_insideLogger)
             return;
 
         const DWORD preservedLastError = GetLastError();
         g_insideLogger = true;
+        const bool fatal = severity == Severity::Fatal;
 
-        if (!TryAcquireSRWLockExclusive(&g_writeLock))
+        // A fatal error never waits: the lock owner may be the thread that failed.
+        if (fatal ? !TryAcquireSRWLockExclusive(&g_writeLock) : (AcquireSRWLockExclusive(&g_writeLock), false))
         {
-            write_emergency_record(category, Severity::Crash, origin,
-                expression, description,
-                *workspace.primarySource ? workspace.primarySource : workspace.faultModule,
-                static_cast<int>(workspace.primaryLine),
-                *workspace.primaryFunction ? workspace.primaryFunction : "UnhandledFilter");
-            g_insideLogger = false;
-            SetLastError(preservedLastError);
-            return;
-        }
-
-        if (!ensure_directory_unlocked())
-        {
-            ReleaseSRWLockExclusive(&g_writeLock);
-            g_insideLogger = false;
-            SetLastError(preservedLastError);
-            return;
-        }
-
-        HANDLE file = open_category_file(category, FILE_FLAG_WRITE_THROUGH, true);
-        if (file != INVALID_HANDLE_VALUE)
-        {
-            SYSTEMTIME localTime = {};
-            GetSystemTime(&localTime);
-
-            char processPath[MAX_PATH] = {};
-            GetModuleFileNameA(nullptr, processPath, DWORD(sizeof(processPath)));
-            char stageSource[512] = {};
-            char callbackLocation[512] = {};
-            format_source_path(g_threadStage.file, stageSource, sizeof(stageSource));
-            format_address_location(g_threadStage.callbackAddress, callbackLocation, sizeof(callbackLocation));
-
-            char header[12288] = {};
+            char record[4096] = {};
             size_t used = 0;
-            append_format(header, sizeof(header), used,
-                "============================================================\r\n"
-                "[%04u-%02u-%02u %02u:%02u:%02u.%03u] %s / CRASH\r\n"
-                "Origin hint   : %s\r\n"
-                "Process       : %s (pid=%lu)\r\n"
-                "Context       : thread=%lu frame=%ld uptime=%llu ms\r\n",
-                localTime.wYear, localTime.wMonth, localTime.wDay,
-                localTime.wHour, localTime.wMinute, localTime.wSecond, localTime.wMilliseconds,
-                category_name(category), origin_name(origin),
-                *processPath ? path_basename(processPath) : "<unknown>", GetCurrentProcessId(), GetCurrentThreadId(),
-                InterlockedCompareExchange(&g_frameNumber, 0, 0), process_uptime_ms());
-            append_record_context(header, sizeof(header), used);
-            append_field(header, sizeof(header), used, "Message", description);
-            append_format(header, sizeof(header), used,
-                "Fault location: %s\r\n",
-                safe_text(workspace.faultLocation));
+            append_record_head(record, sizeof(record), used, category, severity,
+                expression, description, argument0, argument1, file, line, function);
+            append_text_record(category, record);
+            g_insideLogger = false;
+            SetLastError(preservedLastError);
+            return;
+        }
 
-
-            if (*g_threadStage.stage)
+        if (ensure_directory_unlocked())
+        {
+            char* record = g_recordBuffer;
+            const size_t capacity = sizeof(g_recordBuffer);
+            size_t used = 0;
+            record[0] = 0;
+            append_record_head(record, capacity, used, category, severity,
+                expression, description, argument0, argument1, file, line, function);
+            if (fatal || category == Category::Memory)
+                append_memory_facts(record, capacity, used);
+            if (luaStack && *luaStack)
+                append_format(record, capacity, used, "Lua stack:\r\n%s", luaStack);
+            else if (fatal)
+                append_lua_stack(record, capacity, used);
+            if (fatal)
             {
-                append_format(header, sizeof(header), used,
-                    "Thread stage   : %s\r\n", g_threadStage.stage);
-                append_format(header, sizeof(header), used,
-                    "Stage source   : %s:%d (%s)\r\n",
-                    stageSource, g_threadStage.line,
-                    safe_text(g_threadStage.function));
-                if (g_threadStage.callbackAddress)
-                    append_format(header, sizeof(header), used,
-                        "Stage callback : %s\r\n", callbackLocation);
+                append_format(record, capacity, used, "Native stack:\r\n");
+                // DbgHelp allocates; under OOM the engine's new-handler would end the process first.
+                if (category == Category::Memory || !append_symbolized_stack(nullptr, true, record, capacity, used))
+                {
+                    CONTEXT context = {};
+                    RtlCaptureContext(&context);
+                    append_raw_stack(context, record, capacity, used);
+                }
+                append_breadcrumbs(record, capacity, used);
             }
-            append_format(header, sizeof(header), used,
-                "============================================================\r\n\r\n");
 
-            write_handle_text(file, header);
-            write_handle_text(file, "Exception and registers:\r\n");
-            write_handle_text(file, workspace.exceptionDetails);
-            write_handle_text(file, "\r\n");
-            write_handle_text(file, workspace.stack);
-            if (*workspace.stackScan)
+            HANDLE fileHandle = open_log_file(category, FILE_APPEND_DATA);
+            if (fileHandle != INVALID_HANDLE_VALUE)
             {
-                write_handle_text(file, "\r\n");
-                write_handle_text(file, workspace.stackScan);
+                g_lastWriteSucceeded = write_handle_text(fileHandle, record);
+                if (!FlushFileBuffers(fileHandle)) g_lastWriteSucceeded = false;
+                CloseHandle(fileHandle);
             }
-            write_handle_text(file, "\r\n");
-            write_handle_text(file, workspace.breadcrumbs);
-            write_handle_text(file, "\r\n");
-            write_handle_text(file, workspace.systemInfo);
-            write_handle_text(file, "\r\n");
-            write_handle_text(file, workspace.modules);
-            write_handle_text(file, "\r\n");
-            FlushFileBuffers(file);
-            CloseHandle(file);
         }
 
         ReleaseSRWLockExclusive(&g_writeLock);
@@ -1518,24 +1141,118 @@ namespace
         SetLastError(preservedLastError);
     }
 
-}
+    void compose_crash_record(CrashWorkspace& workspace, bool complete)
+    {
+        char* record = workspace.record;
+        const size_t capacity = sizeof(workspace.record);
+        size_t used = 0;
+        record[0] = 0;
+        append_format(record, capacity, used, "\r\n==== CRASH%s ====\r\n",
+            complete ? "" : " (the logger stopped before finishing this record)");
+        append_field(record, capacity, used, "Error", workspace.error);
+        append_field(record, capacity, used, "Where", workspace.where);
+        append_field(record, capacity, used, "Module", workspace.module);
+        append_thread_context(record, capacity, used);
+        if (complete)
+            append_memory_facts(record, capacity, used);
+        append_format(record, capacity, used, "%s", workspace.lua);
+        append_format(record, capacity, used, "Native stack:\r\n%s", *workspace.symbols ? workspace.symbols : workspace.stack);
+        if (!complete)
+            return;
+        append_format(record, capacity, used, "%s", workspace.machine);
+        append_breadcrumbs(record, capacity, used);
+    }
 
-ExternalContentScope::ExternalContentScope()
-{
-    ++g_externalContentDepth;
-}
+    void report_crash(EXCEPTION_POINTERS* pointers, CrashWorkspace& workspace)
+    {
+        ZeroMemory(&workspace, sizeof(workspace));
+        const EXCEPTION_RECORD& exception = *pointers->ExceptionRecord;
+        const DWORD code = exception.ExceptionCode;
+        describe_exception(exception, workspace.error, sizeof(workspace.error));
+        format_address_location(exception.ExceptionAddress, workspace.where, sizeof(workspace.where));
 
-ExternalContentScope::~ExternalContentScope()
-{
-    if (g_externalContentDepth)
-        --g_externalContentDepth;
+        char modulePath[MAX_PATH] = {};
+        unsigned long long offset = 0;
+        HMODULE module = module_from_address(exception.ExceptionAddress, modulePath, sizeof(modulePath), offset);
+        const bool systemFault = is_system_module(modulePath); // registers of RaiseException/heap checks say nothing
+        if (module && module != GetModuleHandleA(nullptr) && !systemFault)
+        {
+            char identity[512] = {};
+            format_image_identity(module, identity, sizeof(identity));
+            _snprintf_s(workspace.module, sizeof(workspace.module), _TRUNCATE, "%s, %s", path_basename(modulePath), identity);
+        }
+
+        size_t used = 0;
+        if (pointers->ContextRecord)
+        {
+            workspace.context = *pointers->ContextRecord;
+            append_raw_stack(workspace.context, workspace.stack, sizeof(workspace.stack), used);
+        }
+
+        // The original failure reaches the disk before DbgHelp loads any PDB.
+        compose_crash_record(workspace, false);
+        if (!ensure_directory_unlocked())
+            return;
+        HANDLE file = open_log_file(Category::Crash, GENERIC_WRITE);
+        if (file == INVALID_HANDLE_VALUE)
+            return;
+        const LARGE_INTEGER zero = {};
+        LARGE_INTEGER start = {}, end = {}, size = {};
+        SetFilePointerEx(file, zero, &start, FILE_CURRENT);
+        write_handle_text(file, workspace.record);
+        FlushFileBuffers(file);
+        SetFilePointerEx(file, zero, &end, FILE_CURRENT);
+
+        const bool constrained = code == EXCEPTION_STACK_OVERFLOW || code == kNoMemory ||
+            (is_luajit_exception_code(code) && (code & 0xffu) == 4u);
+        if (!constrained && pointers->ContextRecord)
+        {
+            used = 0;
+            append_symbolized_stack(pointers->ContextRecord, false, workspace.symbols, sizeof(workspace.symbols),
+                used, workspace.where, sizeof(workspace.where));
+        }
+        used = 0;
+        append_lua_stack(workspace.lua, sizeof(workspace.lua), used);
+        used = 0;
+        if (!systemFault)
+            append_machine_state(pointers, workspace.machine, sizeof(workspace.machine), used);
+        compose_crash_record(workspace, true);
+
+        // Replace the checkpoint, unless another thread appended after it.
+        if (GetFileSizeEx(file, &size) && size.QuadPart == end.QuadPart)
+            SetFilePointerEx(file, start, nullptr, FILE_BEGIN);
+        else
+            SetFilePointerEx(file, zero, nullptr, FILE_END);
+        write_handle_text(file, workspace.record);
+        SetEndOfFile(file);
+        FlushFileBuffers(file);
+        CloseHandle(file);
+    }
+
+    void report_simultaneous_crash(EXCEPTION_POINTERS* pointers)
+    {
+        char error[512] = {}, where[MAX_PATH + 32] = {}, record[2048] = {};
+        __try
+        {
+            describe_exception(*pointers->ExceptionRecord, error, sizeof(error));
+            format_address_location(pointers->ExceptionRecord->ExceptionAddress, where, sizeof(where));
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+        }
+        size_t used = 0;
+        append_format(record, sizeof(record), used, "\r\n==== CRASH (second thread, while another crash was being recorded) ====\r\n");
+        append_field(record, sizeof(record), used, "Error", error);
+        append_field(record, sizeof(record), used, "Where", where);
+        append_thread_context(record, sizeof(record), used);
+        append_text_record(Category::Crash, record);
+    }
 }
 
 void Initialize()
 {
     const DWORD lastError = GetLastError();
     InitOnceExecuteOnce(&g_privacyOnce, initialize_privacy, nullptr, nullptr);
-    process_uptime_ms();
     AcquireSRWLockExclusive(&g_writeLock);
     ensure_directory_unlocked();
     if (!*g_buildIdentity) format_image_identity(GetModuleHandleA(nullptr), g_buildIdentity, sizeof(g_buildIdentity));
@@ -1561,75 +1278,54 @@ LPCSTR GetDirectory()
     return *g_directory ? g_directory : "<unavailable>";
 }
 
-void SetThreadStage(LPCSTR stage, LPCSTR file, int line, LPCSTR function, const void* callbackAddress)
+void SetThreadStage(LPCSTR stage, const void* callbackAddress)
 {
-    if (!IsEnabled())
-        return;
     static thread_local bool stackReserved = false;
     if (!stackReserved)
     {
+        // Leave stack for the crash handler after an overflow on this thread.
         const DWORD lastError = GetLastError();
         ULONG reserve = 64u * 1024u;
-        stackReserved = SetThreadStackGuarantee(&reserve) != FALSE;
+        SetThreadStackGuarantee(&reserve);
+        stackReserved = true;
         SetLastError(lastError);
     }
-
-    // Hot job callbacks repeatedly publish the same literal source location.
-    // Keep the already-copied strings and update only volatile crash context.
-    if (stage == g_threadStageSourceStage && file == g_threadStageSourceFile &&
-        function == g_threadStageSourceFunction && line == g_threadStageSourceLine)
-    {
-        g_threadStage.callbackAddress = callbackAddress;
-        g_threadStage.changedTick = GetTickCount64();
-        return;
-    }
-
-    copy_text(g_threadStage.stage, sizeof(g_threadStage.stage), stage);
-    format_source_path(file, g_threadStage.file, sizeof(g_threadStage.file));
-    copy_text(g_threadStage.function, sizeof(g_threadStage.function), function);
-    g_threadStage.line = line;
-    g_threadStage.callbackAddress = callbackAddress;
-    g_threadStage.changedTick = GetTickCount64();
-    g_threadStageSourceStage = stage;
-    g_threadStageSourceFile = file;
-    g_threadStageSourceFunction = function;
-    g_threadStageSourceLine = line;
+    g_threadStage = stage;
+    g_threadStageCallback = callbackAddress;
 }
 
 void ClearThreadStage()
 {
-    ZeroMemory(&g_threadStage, sizeof(g_threadStage));
-    g_threadStageSourceStage = nullptr;
-    g_threadStageSourceFile = nullptr;
-    g_threadStageSourceFunction = nullptr;
-    g_threadStageSourceLine = 0;
+    g_threadStage = nullptr;
+    g_threadStageCallback = nullptr;
 }
 
-void SetFrameNumber(unsigned int frameNumber)
+void SetThreadName(LPCSTR name)
 {
-    InterlockedExchange(&g_frameNumber, static_cast<LONG>(frameNumber));
+    copy_text(g_threadName, sizeof(g_threadName), name);
 }
 
-    void AddBreadcrumb(LPCSTR category, LPCSTR message, LPCSTR file, int line, LPCSTR function)
+void AddBreadcrumb(LPCSTR message)
 {
-    if (!IsEnabled())
+    if (!IsEnabled() || !message)
         return;
 
     const LONG64 sequence = InterlockedIncrement64(&g_breadcrumbSequence);
     BreadcrumbSlot& slot = g_breadcrumbs[(sequence - 1) % kBreadcrumbCount];
     if (InterlockedCompareExchange(&slot.busy, 1, 0) != 0)
-    { InterlockedIncrement64(&g_droppedBreadcrumbs); return; }
-    if (slot.sequence > sequence)
-    { InterlockedExchange(&slot.busy, 0); InterlockedIncrement64(&g_droppedBreadcrumbs); return; }
-    slot.tick = GetTickCount64();
-    slot.threadId = GetCurrentThreadId();
-    copy_text(slot.category, sizeof(slot.category), category);
-    SanitizeText(message, slot.message, sizeof(slot.message));
-    format_source_path(file, slot.file, sizeof(slot.file));
-    copy_text(slot.function, sizeof(slot.function), function);
-    slot.line = line;
-    slot.sequence = sequence;
+        return;
+    if (slot.sequence < sequence)
+    {
+        SanitizeText(message, slot.message, sizeof(slot.message));
+        slot.sequence = sequence;
+    }
     InterlockedExchange(&slot.busy, 0);
+}
+
+void SetLuaStackWriter(LuaStackWriter writer)
+{
+    g_luaThread = GetCurrentThreadId();
+    g_luaStackWriter = writer;
 }
 
 void Report(
@@ -1646,196 +1342,39 @@ void Report(
     if (!IsEnabled())
         return;
 
-    begin_incident();
-    const bool memoryFailure = contains_memory_failure(expression, description, argument0, argument1);
-    const bool scriptContent = contains_script_failure(expression, description, argument0, argument1);
-    const bool externalContentContext = g_externalContentDepth != 0;
-    const bool thirdPartySource = is_third_party_source(file);
+    Category category = classify_source(file, expression, description, argument0, argument1);
+    if (contains_script_failure(expression, description, argument0, argument1))
+        category = contains_memory_failure(expression, description, argument0, argument1) ? Category::Memory : Category::Script;
 
-    Origin origin = Origin::EngineNative;
-    Category primaryCategory = classify_source(file, expression, description, argument0, argument1);
-
-    if (scriptContent)
-    {
-        origin = Origin::ScriptContent;
-        primaryCategory = memoryFailure ? Category::Memory : Category::Script;
-    }
-    else if (externalContentContext)
-    {
-        origin = Origin::EngineNativeDuringScriptContent;
-    }
-    else if (thirdPartySource)
-    {
-        origin = Origin::ThirdPartyNative;
-    }
+    write_record(category, severity, expression, description, argument0, argument1, file, line, function, nullptr);
 
     if (severity == Severity::Fatal)
-        AddBreadcrumb("fatal", safe_text(description), file, line, function);
-
-    write_record(primaryCategory, severity, origin, expression, description,
-        argument0, argument1, file, line, function, nullptr, nullptr,
-        severity == Severity::Fatal);
-}
-
-void report_unhandled_impl(EXCEPTION_POINTERS* pointers, CrashWorkspace& workspace)
-{
-    ZeroMemory(&workspace, sizeof(workspace));
-    const void* exceptionAddress = pointers->ExceptionRecord->ExceptionAddress;
-    unsigned long long moduleOffset = 0;
-    HMODULE module = module_from_address(exceptionAddress, workspace.faultModule,
-        sizeof(workspace.faultModule), moduleOffset);
-
-    const DWORD code = pointers->ExceptionRecord->ExceptionCode;
-    const bool luaJitException = is_luajit_exception_code(code);
-    const bool engineModule = is_engine_module(module, workspace.faultModule);
-    Origin origin = Origin::Unknown;
-    if (luaJitException)
-        origin = Origin::ScriptContent;
-    else if (engineModule)
-        origin = g_externalContentDepth ? Origin::EngineNativeDuringScriptContent : Origin::EngineNative;
-    else if (module)
-        origin = Origin::ThirdPartyNative;
-    else if (g_externalContentDepth)
-        origin = Origin::ScriptContent;
-
-    char expression[256] = {};
-    _snprintf_s(expression, sizeof(expression), _TRUNCATE,
-        "SEH 0x%08lX at %p", code, exceptionAddress);
-
-    char description[512] = {};
-    if (luaJitException)
     {
-        const DWORD luaErrorCode = code & 0xffu;
-        _snprintf_s(description, sizeof(description), _TRUNCATE,
-            luaErrorCode == 4u ? "LuaJIT memory error escaped protected call" :
-            "LuaJIT error escaped protected call (code=%lu)", luaErrorCode);
+        char source[512] = {}, event[160] = {};
+        format_source_path(file, source, sizeof(source));
+        _snprintf_s(event, sizeof(event), _TRUNCATE, "fatal error at %s:%d", source, line);
+        AddBreadcrumb(event);
     }
-    else if ((code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_IN_PAGE_ERROR) &&
-        pointers->ExceptionRecord->NumberParameters >= 2)
-    {
-        LPCSTR operation = pointers->ExceptionRecord->ExceptionInformation[0] == 8 ? "execute/DEP" : "unknown";
-        if (pointers->ExceptionRecord->ExceptionInformation[0] == 0)
-            operation = "read";
-        else if (pointers->ExceptionRecord->ExceptionInformation[0] == 1)
-            operation = "write";
-
-        _snprintf_s(description, sizeof(description), _TRUNCATE,
-            "%s while attempting to %s address %p", exception_name(code), operation,
-            reinterpret_cast<void*>(pointers->ExceptionRecord->ExceptionInformation[1]));
-    }
-    else
-    {
-        _snprintf_s(description, sizeof(description), _TRUNCATE, "%s", exception_name(code));
-    }
-
-    _snprintf_s(workspace.faultLocation, sizeof(workspace.faultLocation), _TRUNCATE,
-        "%s+0x%llX [%p]", *workspace.faultModule ? path_basename(workspace.faultModule) : "<unknown>",
-        moduleOffset, exceptionAddress);
-
-    make_crash_id(pointers, workspace);
-    // Save the original failure before allocating symbol helpers or loading PDBs.
-    write_emergency_record(Category::Crash, Severity::Crash, origin, expression, description,
-        workspace.faultLocation, 0, "original exception checkpoint (before symbolization)");
-    append_exception_details(pointers, workspace);
-    const bool constrained = code == EXCEPTION_STACK_OVERFLOW || code == 0xC0000017 ||
-        (luaJitException && (code & 0xffu) == 4u);
-    const bool hasSymbolizedStack = !constrained && append_symbolized_crash_stack(pointers, workspace);
-    if (constrained) copy_text(workspace.stack, sizeof(workspace.stack),
-        "Symbols skipped for stack-overflow/OOM; original context and module RVAs retained.\r\n");
-    if (!hasSymbolizedStack)
-        append_stack_scan(pointers, workspace);
-    append_breadcrumb_history(workspace);
-    append_fault_module_identity(pointers, workspace);
-
-    if (*workspace.primaryFunction)
-    {
-        if (*workspace.primarySource)
-        {
-            _snprintf_s(workspace.faultLocation, sizeof(workspace.faultLocation), _TRUNCATE,
-                "%s+0x%llX!%s [%p] at %s:%lu",
-                *workspace.faultModule ? path_basename(workspace.faultModule) : "<unknown>",
-                moduleOffset, workspace.primaryFunction, exceptionAddress,
-                workspace.primarySource, workspace.primaryLine);
-        }
-        else
-        {
-            _snprintf_s(workspace.faultLocation, sizeof(workspace.faultLocation), _TRUNCATE,
-                "%s+0x%llX!%s [%p]",
-                *workspace.faultModule ? path_basename(workspace.faultModule) : "<unknown>",
-                moduleOffset, workspace.primaryFunction, exceptionAddress);
-        }
-    }
-
-    Category crashCategory = Category::Crash;
-    const bool luaJitMemoryFailure = luaJitException && (code & 0xffu) == 4u;
-    if (luaJitMemoryFailure)
-    {
-        crashCategory = Category::Memory;
-    }
-    else if (origin == Origin::ScriptContent)
-    {
-        crashCategory = Category::Script;
-    }
-    else if (engineModule && *workspace.primarySource)
-    {
-        crashCategory = classify_source(workspace.primarySource,
-            expression, description, nullptr, nullptr);
-    }
-    else if (engineModule && *g_threadStage.stage)
-    {
-        crashCategory = classify_source(g_threadStage.stage,
-            expression, description, nullptr, nullptr);
-    }
-    else if (engineModule)
-    {
-        crashCategory = classify_source(workspace.faultModule,
-            expression, description, nullptr, nullptr);
-    }
-
-    if (crashCategory == Category::Memory)
-    {
-        size_t used = 0;
-        append_memory_facts(workspace.systemInfo, sizeof(workspace.systemInfo), used);
-    }
-    write_crash_record(crashCategory, origin, expression, description, workspace);
-
 }
 
 void ReportUnhandledException(void* exceptionPointers)
 {
-    if (!IsEnabled() || !exceptionPointers || g_insideCrashHandler) return;
+    auto pointers = static_cast<EXCEPTION_POINTERS*>(exceptionPointers);
+    if (!IsEnabled() || !pointers || !pointers->ExceptionRecord || g_insideCrashHandler) return;
     const DWORD lastError = GetLastError();
     g_insideCrashHandler = true;
-    begin_incident();
     if (InterlockedCompareExchange(&g_crashWorkspaceInUse, 1, 0) != 0)
-    {
-        __try
-        {
-            auto pointers = static_cast<EXCEPTION_POINTERS*>(exceptionPointers);
-            char expression[160] = {}, location[256] = {};
-            const auto record = pointers->ExceptionRecord;
-            _snprintf_s(expression, sizeof(expression), _TRUNCATE, "simultaneous SEH 0x%08lX",
-                record ? record->ExceptionCode : 0);
-            if (record) format_address_location(record->ExceptionAddress, location, sizeof(location));
-            write_emergency_record(Category::Crash, Severity::Crash, Origin::Unknown, expression,
-                "workspace busy; original code/location retained without waiting",
-                location, 0, "simultaneous exception checkpoint");
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            write_emergency_record(Category::Crash, Severity::Crash, Origin::Unknown,
-                "simultaneous exception", "workspace busy and exception metadata unreadable",
-                __FILE__, __LINE__, __FUNCTION__);
-        }
-    }
+        report_simultaneous_crash(pointers);
     else
     {
-        __try { report_unhandled_impl(static_cast<EXCEPTION_POINTERS*>(exceptionPointers), g_crashWorkspace); }
+        const DWORD code = pointers->ExceptionRecord->ExceptionCode;
+        __try { report_crash(pointers, g_crashWorkspace); }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
-            write_emergency_record(Category::Crash, Severity::Crash, Origin::Unknown,
-                "logger secondary fault", "extended diagnostics failed; consult original exception checkpoint",
-                __FILE__, __LINE__, __FUNCTION__);
+            char note[256] = {};
+            _snprintf_s(note, sizeof(note), _TRUNCATE,
+                "\r\n==== CRASH 0x%08lX: the logger failed while recording it; a record above may be incomplete ====\r\n", code);
+            append_text_record(Category::Crash, note);
         }
         InterlockedExchange(&g_crashWorkspaceInUse, 0);
     }
@@ -1843,6 +1382,26 @@ void ReportUnhandledException(void* exceptionPointers)
     SetLastError(lastError);
 }
 
+void OpenLogFolder()
+{
+    static volatile LONG opened = 0;
+    if (!*g_directoryWide || InterlockedExchange(&opened, 1))
+        return;
+    // A new process, not ShellExecute: no COM or shell extensions inside a failed process.
+    wchar_t windows[MAX_PATH] = {}, explorer[MAX_PATH] = {}, command[MAX_PATH * 2] = {};
+    if (!GetWindowsDirectoryW(windows, MAX_PATH) ||
+        _snwprintf_s(explorer, _countof(explorer), _TRUNCATE, L"%s\\explorer.exe", windows) < 0 ||
+        _snwprintf_s(command, _countof(command), _TRUNCATE, L"\"%s\" \"%s\"", explorer, g_directoryWide) < 0)
+        return;
+    STARTUPINFOW startup = {};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process = {};
+    if (CreateProcessW(explorer, command, nullptr, nullptr, FALSE, 0, nullptr, nullptr, &startup, &process))
+    {
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+    }
+}
 
 bool TryBeginSymbolWork() { return TryAcquireSRWLockExclusive(&g_symbolLock) != FALSE; }
 void EndSymbolWork() { ReleaseSRWLockExclusive(&g_symbolLock); }
@@ -1873,11 +1432,9 @@ void ReportRenderFailure(long result, long removedReason, LPCSTR expression, LPC
 {
     if (!IsEnabled()) return;
     const DWORD lastError = GetLastError();
-    begin_incident();
     FailureCodeScope code(result, removedReason, true);
-    write_record(Category::Render, Severity::Error, Origin::Unknown, expression,
-        "DX11 API failed",
-        nullptr, nullptr, file, line, function, nullptr, nullptr, false);
+    write_record(Category::Render, Severity::Error, expression, "DX11 API failed",
+        nullptr, nullptr, file, line, function, nullptr);
     SetLastError(lastError);
 }
 
@@ -1885,10 +1442,9 @@ bool ShouldReportScriptFailure(int status, bool recoveredModuleLoad, LPCSTR mess
 {
     if (status == 0 || status == 1) return false; // success / yield
     if (!recoveredModuleLoad || (status != 2 && status != 3)) return true;
-    // Never infer ownership from a filename or the SCRIPT_OR_CONTENT hint.
-    // Keep unknown error values and native OOM messages converted to LUA_ERRRUN.
-    return !message || !*message || contains_memory_failure(nullptr, message, nullptr, nullptr) ||
-        contains_i(message, "not enough memory") || contains_i(message, "memory exhausted");
+    // Never infer ownership from a filename. Keep unknown error values and
+    // native OOM messages converted to LUA_ERRRUN.
+    return !message || !*message || contains_memory_failure(nullptr, message, nullptr, nullptr);
 }
 
 void ReportScriptFailure(int status, LPCSTR script, LPCSTR message, LPCSTR traceback,
@@ -1896,19 +1452,17 @@ void ReportScriptFailure(int status, LPCSTR script, LPCSTR message, LPCSTR trace
 {
     if (!IsEnabled() || !ShouldReportScriptFailure(status, recoveredModuleLoad, message)) return;
     const DWORD lastError = GetLastError();
-    begin_incident();
-    const bool memoryFailure = status == 4 || contains_memory_failure(nullptr, message, nullptr, nullptr) ||
-        contains_i(message, "not enough memory") || contains_i(message, "memory exhausted");
-    char details[1024] = {};
-    _snprintf_s(details, sizeof(details), _TRUNCATE, "Lua status=%d; chunk=%s", status, path_basename(script));
+    const bool memoryFailure = status == 4 || contains_memory_failure(nullptr, message, nullptr, nullptr);
+    char details[512] = {};
+    if (script && *script)
+        _snprintf_s(details, sizeof(details), _TRUNCATE, "chunk %s", path_basename(script));
     LPCSTR expression = "Lua script error";
     if (memoryFailure) expression = "Lua memory allocation failed";
     else if (status == 2) expression = "Lua runtime error";
     else if (status == 3) expression = "Lua chunk compilation failed";
-    write_record(memoryFailure ? Category::Memory : Category::Script, Severity::Error,
-        Origin::ScriptContent, expression,
+    write_record(memoryFailure ? Category::Memory : Category::Script, Severity::Error, expression,
         message ? message : "Lua error value is not a string (not coerced during diagnostics)", details, nullptr,
-        file, line, function, nullptr, traceback, false);
+        file, line, function, traceback);
     SetLastError(lastError);
 }
 
@@ -1916,23 +1470,12 @@ bool WriteSelfTest()
 {
     if (!IsEnabled() || g_insideLogger || g_testFilename) return false;
     Initialize();
-    g_testFilename = "RENDER-LOG-SELFTEST-v2.log";
+    g_testFilename = "RENDER-LOG-SELFTEST.log";
     ReportRenderFailure(static_cast<long>(0x887A0005u), static_cast<long>(0x887A0006u),
         "SIMULATED ID3D11Device/CreateTexture2D; texture=gamedata/textures/ui/selftest.dds; "
         "install=Z:\\Private Test User\\Private GAMMA Install\\bin\\engine.exe; token=dummy-secret",
         "Layers/xrRenderDX10/diagnostic_selftest.cpp", 42, "EngineErrorLogger::WriteSelfTest");
     g_testFilename = nullptr;
     return g_lastWriteSucceeded;
-}
-
-void __cdecl ReportExplicit(LPCSTR file, int line, LPCSTR function, LPCSTR format, ...)
-{
-    char message[4096] = {};
-    va_list args;
-    va_start(args, format);
-    _vsnprintf_s(message, sizeof(message), _TRUNCATE, format, args);
-    va_end(args);
-
-    Report(Severity::Error, nullptr, message, nullptr, nullptr, file, line, function);
 }
 }

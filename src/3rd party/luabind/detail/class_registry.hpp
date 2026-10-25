@@ -80,6 +80,16 @@ namespace luabind { namespace detail
 		CLASS_REGISTRY m_classes;
 #pragma warning(pop)
 
+		// find_class() runs for every C++ value pushed to Lua and the map compares
+		// type_info names. Found classes are remembered by type_info address;
+		// classes are never removed while the registry lives.
+		struct find_cache_entry
+		{
+			LUABIND_TYPE_INFO info;
+			class_rep* crep;
+		};
+		mutable find_cache_entry m_find_cache[64] = {};
+
 		// this is a lua reference that points to the lua table
 		// that is to be used as meta table for all C++ class 
 		// instances. It is a kind of v-table.

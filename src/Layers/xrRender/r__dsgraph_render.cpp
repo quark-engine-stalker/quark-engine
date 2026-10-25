@@ -25,11 +25,14 @@ ICF float calcLOD(float ssa/*fDistSq*/, float R)
 	return _sqrt(clampr((ssa - r_ssaGLOD_end) / (r_ssaGLOD_start - r_ssaGLOD_end), 0.f, 1.f));
 }
 
+// The comparators below are closures rather than functions: std::sort inlines a
+// closure, while a function pointer costs an indirect call per comparison.
+
 // NORMAL
-IC bool cmp_normal_items(const _NormalItem& N1, const _NormalItem& N2)
+const auto cmp_normal_items = [](const _NormalItem& N1, const _NormalItem& N2)
 {
 	return (N1.ssa > N2.ssa);
-}
+};
 
 void __fastcall mapNormal_Render(mapNormalItems& N, bool items_sorted)
 {
@@ -45,10 +48,10 @@ void __fastcall mapNormal_Render(mapNormalItems& N, bool items_sorted)
 }
 
 // Matrix
-IC bool cmp_matrix_items(const _MatrixItem& N1, const _MatrixItem& N2)
+const auto cmp_matrix_items = [](const _MatrixItem& N1, const _MatrixItem& N2)
 {
 	return (N1.ssa > N2.ssa);
-}
+};
 
 void __fastcall mapMatrix_Render(mapMatrixItems& N, R_constant* material_constant, bool items_sorted)
 {
@@ -133,36 +136,36 @@ void __fastcall water_node(mapSorted_Node* N)
 	V->Render(calcLOD(N->key, V->vis.sphere.R));
 }
 
-IC bool cmp_vs_nrm(mapNormalVS::TNode* N1, mapNormalVS::TNode* N2)
+const auto cmp_vs_nrm = [](mapNormalVS::TNode* N1, mapNormalVS::TNode* N2)
 {
 	return (N1->val.ssa > N2->val.ssa);
-}
+};
 
-IC bool cmp_vs_mat(mapMatrixVS::TNode* N1, mapMatrixVS::TNode* N2)
+const auto cmp_vs_mat = [](mapMatrixVS::TNode* N1, mapMatrixVS::TNode* N2)
 {
 	return (N1->val.ssa > N2->val.ssa);
-}
+};
 
-IC bool cmp_ps_nrm(mapNormalPS::TNode* N1, mapNormalPS::TNode* N2)
+const auto cmp_ps_nrm = [](mapNormalPS::TNode* N1, mapNormalPS::TNode* N2)
 {
 	return (N1->val.mapCS.ssa > N2->val.mapCS.ssa);
-}
+};
 
-IC bool cmp_ps_mat(mapMatrixPS::TNode* N1, mapMatrixPS::TNode* N2)
+const auto cmp_ps_mat = [](mapMatrixPS::TNode* N1, mapMatrixPS::TNode* N2)
 {
 	return (N1->val.mapCS.ssa > N2->val.mapCS.ssa);
-}
+};
 
-IC bool cmp_gs_nrm(mapNormalGS::TNode* N1, mapNormalGS::TNode* N2) { return (N1->val.ssa > N2->val.ssa); }
-IC bool cmp_gs_mat(mapMatrixGS::TNode* N1, mapMatrixGS::TNode* N2) { return (N1->val.ssa > N2->val.ssa); }
+const auto cmp_gs_nrm = [](mapNormalGS::TNode* N1, mapNormalGS::TNode* N2) { return (N1->val.ssa > N2->val.ssa); };
+const auto cmp_gs_mat = [](mapMatrixGS::TNode* N1, mapMatrixGS::TNode* N2) { return (N1->val.ssa > N2->val.ssa); };
 
-IC bool cmp_cs_nrm(mapNormalCS::TNode* N1, mapNormalCS::TNode* N2) { return (N1->val.ssa > N2->val.ssa); }
-IC bool cmp_cs_mat(mapMatrixCS::TNode* N1, mapMatrixCS::TNode* N2) { return (N1->val.ssa > N2->val.ssa); }
+const auto cmp_cs_nrm = [](mapNormalCS::TNode* N1, mapNormalCS::TNode* N2) { return (N1->val.ssa > N2->val.ssa); };
+const auto cmp_cs_mat = [](mapMatrixCS::TNode* N1, mapMatrixCS::TNode* N2) { return (N1->val.ssa > N2->val.ssa); };
 
-IC bool cmp_states_nrm(mapNormalStates::TNode* N1, mapNormalStates::TNode* N2) { return (N1->val.ssa > N2->val.ssa); }
-IC bool cmp_states_mat(mapMatrixStates::TNode* N1, mapMatrixStates::TNode* N2) { return (N1->val.ssa > N2->val.ssa); }
+const auto cmp_states_nrm = [](mapNormalStates::TNode* N1, mapNormalStates::TNode* N2) { return (N1->val.ssa > N2->val.ssa); };
+const auto cmp_states_mat = [](mapMatrixStates::TNode* N1, mapMatrixStates::TNode* N2) { return (N1->val.ssa > N2->val.ssa); };
 
-IC bool cmp_textures_lex2_nrm(mapNormalTextures::TNode* N1, mapNormalTextures::TNode* N2)
+const auto cmp_textures_lex2_nrm = [](mapNormalTextures::TNode* N1, mapNormalTextures::TNode* N2)
 {
 	STextureList* t1 = N1->key;
 	STextureList* t2 = N2->key;
@@ -170,9 +173,9 @@ IC bool cmp_textures_lex2_nrm(mapNormalTextures::TNode* N1, mapNormalTextures::T
 	if ((*t1)[0] > (*t2)[0]) return false;
 	if ((*t1)[1] < (*t2)[1]) return true;
 	else return false;
-}
+};
 
-IC bool cmp_textures_lex2_mat(mapMatrixTextures::TNode* N1, mapMatrixTextures::TNode* N2)
+const auto cmp_textures_lex2_mat = [](mapMatrixTextures::TNode* N1, mapMatrixTextures::TNode* N2)
 {
 	STextureList* t1 = N1->key;
 	STextureList* t2 = N2->key;
@@ -180,9 +183,9 @@ IC bool cmp_textures_lex2_mat(mapMatrixTextures::TNode* N1, mapMatrixTextures::T
 	if ((*t1)[0] > (*t2)[0]) return false;
 	if ((*t1)[1] < (*t2)[1]) return true;
 	else return false;
-}
+};
 
-IC bool cmp_textures_lex3_nrm(mapNormalTextures::TNode* N1, mapNormalTextures::TNode* N2)
+const auto cmp_textures_lex3_nrm = [](mapNormalTextures::TNode* N1, mapNormalTextures::TNode* N2)
 {
 	STextureList* t1 = N1->key;
 	STextureList* t2 = N2->key;
@@ -192,9 +195,9 @@ IC bool cmp_textures_lex3_nrm(mapNormalTextures::TNode* N1, mapNormalTextures::T
 	if ((*t1)[1] > (*t2)[1]) return false;
 	if ((*t1)[2] < (*t2)[2]) return true;
 	else return false;
-}
+};
 
-IC bool cmp_textures_lex3_mat(mapMatrixTextures::TNode* N1, mapMatrixTextures::TNode* N2)
+const auto cmp_textures_lex3_mat = [](mapMatrixTextures::TNode* N1, mapMatrixTextures::TNode* N2)
 {
 	STextureList* t1 = N1->key;
 	STextureList* t2 = N2->key;
@@ -204,31 +207,31 @@ IC bool cmp_textures_lex3_mat(mapMatrixTextures::TNode* N1, mapMatrixTextures::T
 	if ((*t1)[1] > (*t2)[1]) return false;
 	if ((*t1)[2] < (*t2)[2]) return true;
 	else return false;
-}
+};
 
-IC bool cmp_textures_lexN_nrm(mapNormalTextures::TNode* N1, mapNormalTextures::TNode* N2)
+const auto cmp_textures_lexN_nrm = [](mapNormalTextures::TNode* N1, mapNormalTextures::TNode* N2)
 {
 	STextureList* t1 = N1->key;
 	STextureList* t2 = N2->key;
 	return std::lexicographical_compare(t1->begin(), t1->end(), t2->begin(), t2->end());
-}
+};
 
-IC bool cmp_textures_lexN_mat(mapMatrixTextures::TNode* N1, mapMatrixTextures::TNode* N2)
+const auto cmp_textures_lexN_mat = [](mapMatrixTextures::TNode* N1, mapMatrixTextures::TNode* N2)
 {
 	STextureList* t1 = N1->key;
 	STextureList* t2 = N2->key;
 	return std::lexicographical_compare(t1->begin(), t1->end(), t2->begin(), t2->end());
-}
+};
 
-IC bool cmp_textures_ssa_nrm(mapNormalTextures::TNode* N1, mapNormalTextures::TNode* N2)
+const auto cmp_textures_ssa_nrm = [](mapNormalTextures::TNode* N1, mapNormalTextures::TNode* N2)
 {
 	return (N1->val.ssa > N2->val.ssa);
-}
+};
 
-IC bool cmp_textures_ssa_mat(mapMatrixTextures::TNode* N1, mapMatrixTextures::TNode* N2)
+const auto cmp_textures_ssa_mat = [](mapMatrixTextures::TNode* N1, mapMatrixTextures::TNode* N2)
 {
 	return (N1->val.ssa > N2->val.ssa);
-}
+};
 
 void sort_tlist_nrm
 (
@@ -331,6 +334,14 @@ namespace
 constexpr u32 opaque_sort_min_items = 4096;
 constexpr size_t opaque_sort_large_leaf = R_dsgraph_structure::opaque_sort_large_leaf_size;
 
+// Depth-only passes (shadow maps, z-prefill, rain) keep the nearest fragment, which does
+// not depend on draw order. Submission order leaves the mesh parts of one object adjacent,
+// so the following parts reuse its uploaded bones and transforms instead of re-flushing.
+IC bool keep_matrix_submission_order(u32 priority)
+{
+	return priority == 0 && RImplementation.phase == CRender::PHASE_SMAP;
+}
+
 template <typename VSMap>
 void collect_opaque_sort_ranges(VSMap& vs,
 	xr_frame_vector<R_dsgraph_structure::OpaqueSortRange>& ranges,
@@ -398,8 +409,9 @@ bool R_dsgraph_structure::r_dsgraph_prepare_opaque_sort(u32 priority)
 	{
 		collect_opaque_sort_ranges(mapNormalPasses[priority][pass],
 			m_opaque_sort_ranges, large_leaves, large_items);
-		collect_opaque_sort_ranges(mapMatrixPasses[priority][pass],
-			m_opaque_sort_ranges, large_leaves, large_items);
+		if (!keep_matrix_submission_order(priority))
+			collect_opaque_sort_ranges(mapMatrixPasses[priority][pass],
+				m_opaque_sort_ranges, large_leaves, large_items);
 	}
 	if (large_leaves < 4 || large_items < opaque_sort_min_items)
 	{
@@ -534,6 +546,7 @@ void R_dsgraph_structure::r_dsgraph_render_graph(u32 _priority, bool _clear)
 	// Perform sorting based on ScreenSpaceArea
 	// Sorting by SSA and changes minimizations
 	// Render several passes
+	const bool matrix_items_ordered = keep_matrix_submission_order(_priority);
 	for (u32 iPass = 0; iPass < SHADER_PASSES_MAX; ++iPass)
 	{
 		//mapMatrixVS&	vs				= mapMatrix	[_priority];
@@ -601,7 +614,8 @@ void R_dsgraph_structure::r_dsgraph_render_graph(u32 _priority, bool _clear)
 							// graph node has no items to draw.
 							if (items.empty())
 								RImplementation.apply_lmaterial(material_constant);
-							mapMatrix_Render(items, material_constant, items_sorted && items.size() >= opaque_sort_large_leaf);
+							mapMatrix_Render(items, material_constant, matrix_items_ordered ||
+								(items_sorted && items.size() >= opaque_sort_large_leaf));
 						}
 						matTextures.clear();
 						matTexturesTemp.clear();
@@ -909,16 +923,16 @@ void R_dsgraph_structure::r_dsgraph_render_distort()
 //////////////////////////////////////////////////////////////////////////
 // sub-space rendering - shortcut to render with frustum extracted from matrix
 void R_dsgraph_structure::r_dsgraph_render_subspace(IRender_Sector* _sector, Fmatrix& mCombined, Fvector& _cop,
-                                                    BOOL _dynamic, BOOL _precise_portals)
+                                                    BOOL _dynamic, BOOL _precise_portals, BOOL _static)
 {
 	CFrustum temp;
 	temp.CreateFromMatrix(mCombined, FRUSTUM_P_ALL & (~FRUSTUM_P_NEAR));
-	r_dsgraph_render_subspace(_sector, &temp, mCombined, _cop, _dynamic, _precise_portals);
+	r_dsgraph_render_subspace(_sector, &temp, mCombined, _cop, _dynamic, _precise_portals, _static);
 }
 
 // sub-space rendering - main procedure
 void R_dsgraph_structure::r_dsgraph_render_subspace(IRender_Sector* _sector, CFrustum* _frustum, Fmatrix& mCombined,
-	                                                Fvector& _cop, BOOL _dynamic, BOOL _precise_portals)
+	                                                Fvector& _cop, BOOL _dynamic, BOOL _precise_portals, BOOL _static)
 {
 	// A spatial can temporarily have no sector near portals, outside static level
 	// geometry or during level teardown. Release builds do not execute VERIFY, so
@@ -957,6 +971,7 @@ void R_dsgraph_structure::r_dsgraph_render_subspace(IRender_Sector* _sector, CFr
 	// Visibility has already been produced by the portal traversal. Submit one
 	// sector hierarchy against the union of its frustums instead of rebuilding
 	// dsgraph once for every portal path.
+	if (_static)
 	{
 
 		for (u32 s_it = 0; s_it < PortalTraverser.r_sectors.size(); ++s_it)

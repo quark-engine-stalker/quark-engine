@@ -32,6 +32,14 @@ public:
 	R_feedback* val_feedback; // feedback for geometry being rendered
 	u32 val_feedback_breakp; // breakpoint
 	xr_vector<Fbox3,render_alloc<Fbox3>>* val_recorder; // coarse structure recorder
+	// Static casters of a light shadow face recorded for the shadow cache: trees (wind
+	// in the vertex shader) are listed for drawing every frame instead of inserted.
+	struct ShadowStatic
+	{
+		xr_vector<dxRender_Visual*>* trees;
+		bool volatile_content = false; // animated level models, particles: do not cache
+	};
+	ShadowStatic* val_shadow_static = nullptr;
 	u32 phase;
 	u32 marker;
 	bool pmask [2];
@@ -335,9 +343,9 @@ public:
 	void r_dsgraph_render_wmarks();
 	void r_dsgraph_render_distort();
 	void r_dsgraph_render_subspace(IRender_Sector* _sector, CFrustum* _frustum, Fmatrix& mCombined, Fvector& _cop,
-	                               BOOL _dynamic, BOOL _precise_portals = FALSE);
+	                               BOOL _dynamic, BOOL _precise_portals = FALSE, BOOL _static = TRUE);
 	void r_dsgraph_render_subspace(IRender_Sector* _sector, Fmatrix& mCombined, Fvector& _cop, BOOL _dynamic,
-	                               BOOL _precise_portals = FALSE);
+	                               BOOL _precise_portals = FALSE, BOOL _static = TRUE);
 	void r_dsgraph_render_R1_box(IRender_Sector* _sector, Fbox& _bb, int _element);
 
 	void r_dsgraph_render_landscape(u32 pass, bool _clear);

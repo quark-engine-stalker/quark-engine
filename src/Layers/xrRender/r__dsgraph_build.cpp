@@ -200,6 +200,8 @@ void R_dsgraph_structure::r_dsgraph_insert_dynamic(dxRender_Visual* pVisual, Fve
 	ShaderElement* sh = RImplementation.rimp_select_sh_dynamic(pVisual, distSQ);
 	if (0 == sh) return;
 	if (!pmask[sh->flags.iPriority / 2]) return;
+	if (val_shadow_static)
+		val_shadow_static->volatile_content = true;
 
 	// Create common node
 	// NOTE: Invisible elements exist only in R1
@@ -452,6 +454,18 @@ void R_dsgraph_structure::r_dsgraph_insert_static(dxRender_Visual* pVisual)
 	// looking up and validating the cached packet, which is wasted work for the
 	// disabled half of shadow/sun submissions.
 	if (!pmask[shader_priority]) return;
+	if (val_shadow_static)
+	{
+		// Trees sway in the vertex shader and skinned level models animate: a cached
+		// shadow of them would freeze.
+		if (pVisual->Type == MT_TREE_ST || pVisual->Type == MT_TREE_PM)
+		{
+			val_shadow_static->trees->push_back(pVisual);
+			return;
+		}
+		if (pVisual->Type == MT_SKELETON_GEOMDEF_ST || pVisual->Type == MT_SKELETON_GEOMDEF_PM)
+			val_shadow_static->volatile_content = true;
+	}
 
 	// Water rendering
 	if (sh->flags.isWater && RImplementation.o.ssfx_water)
@@ -1236,6 +1250,146 @@ void CRender::add_Static(dxRender_Visual* pVisual, u32 planes)
 			r_dsgraph_insert_static(pVisual);
 		}
 		break;
+	}
+}
+
+// Worker-side twin of add_Static()/add_leafs_Static(): the same culling decisions under
+// the given frustum, but what they would put into dsgraph is recorded, in the same order,
+// for replay_Static() on the main thread. Skeletons (bones, callbacks) and particle
+// groups (dynamic children) are recorded as calls of the original functions.
+void CRender::record_Static(dxRender_Visual* pVisual, const CFrustum& view, u32 planes, xr_vector<StaticOp>& out)
+{
+	Flags16& flags = pVisual->dcast_RenderVisual()->flags;
+
+	if (phase != PHASE_NORMAL && !!flags.test(IRenderVisualFlags::eNoShadow))
+		return;
+
+	if (!!!flags.test(IRenderVisualFlags::eIgnoreOptimization) && !IsValuableToRender(pVisual, true, phase == 1, Fidentity))
+		return;
+
+	const u32 planes_in = planes;
+	vis_data& vis = pVisual->vis;
+	const EFC_Visible VIS = view.testSAABB(vis.sphere.P, vis.sphere.R, vis.box.data(), planes);
+	if (VIS == fcvNone)
+		return;
+
+	if (!HOM.visible(vis))
+		return;
+
+	switch (pVisual->Type)
+	{
+	case MT_PARTICLE_GROUP:
+	case MT_SKELETON_ANIM:
+	case MT_SKELETON_RIGID:
+		{
+			StaticOp op = {StaticOp::add_static, planes_in, pVisual, &view};
+			out.push_back(op);
+		}
+		return;
+	case MT_HIERRARHY:
+		for (IRenderVisual* child : ((FHierrarhyVisual*)pVisual)->children)
+		{
+			if (VIS == fcvPartial)
+				record_Static((dxRender_Visual*)child, view, planes, out);
+			else
+				record_leafs_Static((dxRender_Visual*)child, view, out);
+		}
+		return;
+	case MT_LOD:
+		record_lod(pVisual, view, out);
+		return;
+	default:
+		{
+			StaticOp op = {StaticOp::insert, 0, pVisual};
+			out.push_back(op);
+		}
+		return;
+	}
+}
+
+void CRender::record_leafs_Static(dxRender_Visual* pVisual, const CFrustum& view, xr_vector<StaticOp>& out)
+{
+	if (!HOM.visible(pVisual->vis))
+		return;
+
+	Flags16& flags = pVisual->dcast_RenderVisual()->flags;
+
+	if (phase != PHASE_NORMAL && !!flags.test(IRenderVisualFlags::eNoShadow))
+		return;
+
+	if (!!!flags.test(IRenderVisualFlags::eIgnoreOptimization) && !IsValuableToRender(pVisual, true, phase == 1, Fidentity))
+		return;
+
+	switch (pVisual->Type)
+	{
+	case MT_PARTICLE_GROUP:
+	case MT_SKELETON_ANIM:
+	case MT_SKELETON_RIGID:
+		{
+			StaticOp op = {StaticOp::add_leafs, 0, pVisual, &view};
+			out.push_back(op);
+		}
+		return;
+	case MT_HIERRARHY:
+		for (IRenderVisual* child : ((FHierrarhyVisual*)pVisual)->children)
+			record_leafs_Static((dxRender_Visual*)child, view, out);
+		return;
+	case MT_LOD:
+		record_lod(pVisual, view, out);
+		return;
+	default:
+		{
+			StaticOp op = {StaticOp::insert, 0, pVisual};
+			out.push_back(op);
+		}
+		return;
+	}
+}
+
+void CRender::record_lod(dxRender_Visual* pVisual, const CFrustum& view, xr_vector<StaticOp>& out)
+{
+	FLOD* pV = (FLOD*)pVisual;
+	float D;
+	float ssa = CalcSSA(D, pV->vis.sphere.P, pV);
+	ssa *= pV->lod_factor;
+	if (ssa < r_ssaLOD_A)
+	{
+		if (ssa < r_ssaDISCARD) return;
+		StaticOp op = {StaticOp::lod, 0, pVisual, nullptr, D, ssa};
+		out.push_back(op);
+	}
+	if (ssa > r_ssaLOD_B || phase == PHASE_SMAP)
+	{
+		for (IRenderVisual* child : pV->children)
+			record_leafs_Static((dxRender_Visual*)child, view, out);
+	}
+}
+
+void CRender::replay_Static(const xr_vector<StaticOp>& ops)
+{
+	for (const StaticOp& op : ops)
+	{
+		switch (op.kind)
+		{
+		case StaticOp::insert:
+			r_dsgraph_insert_static(op.visual);
+			break;
+		case StaticOp::lod:
+			{
+				mapLOD_Node* N = mapLOD.insertInAnyWay(op.distance);
+				N->val.ssa = op.ssa;
+				N->val.pVisual = op.visual;
+			}
+			break;
+		case StaticOp::add_static:
+			set_Frustum(const_cast<CFrustum*>(op.view));
+			add_Static(op.visual, op.planes);
+			break;
+		case StaticOp::add_leafs:
+			set_Frustum(const_cast<CFrustum*>(op.view));
+			add_leafs_Static(op.visual);
+			break;
+		}
 	}
 }
 

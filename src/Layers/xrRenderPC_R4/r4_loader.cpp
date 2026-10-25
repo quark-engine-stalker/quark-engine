@@ -147,6 +147,7 @@ void CRender::level_Unload()
 	// released; otherwise a subsequent save load can reuse stale static packets
 	// for buildings, fences and other non-detail geometry.
 	r_dsgraph_static_packet_cache_clear();
+	smap_cache_invalidate(); // cached light faces list level trees
 
 	// Drain runtime preparation before level archives/resources are released.
 	Models->FinishLevelPrefetch();
@@ -230,6 +231,8 @@ void CRender::level_Unload()
 	m_sunStaticCasters.clear_and_free();
 	m_sunStaticFallback.clear_and_free();
 	m_sunLodCasters.clear_and_free();
+	m_shadowFaces.clear_and_free();
+	m_shadowFacesUsed = 0;
 	m_sunSpatialGather.clear_and_free();
 	m_sunDynamicCasters.clear_and_free();
 	for (SunCascadePrepared& prepared : m_sunPrepared)

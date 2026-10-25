@@ -12,6 +12,7 @@
 #include <mmsystem.h>
 
 #include "profiler.h"
+#include "engine_error_logger.h"
 
 // Initialized on startup
 XRCORE_API Fmatrix Fidentity;
@@ -348,6 +349,7 @@ struct THREAD_NAME
 
 void thread_name(const char* name)
 {
+	EngineErrorLogger::SetThreadName(name);
 	THREAD_NAME tn;
 	tn.dwType = 0x1000;
 	tn.szName = name;

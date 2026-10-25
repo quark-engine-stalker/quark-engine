@@ -220,6 +220,8 @@ private:
 	dx10ConstantBuffer& GetCBuffer(R_constant* C, BufferType BType, u32& buffer_index);
 
 	u16 m_dirty_masks[BT_Count];
+	// Bytes of each bound buffer that the current constant table reads.
+	u32 m_used_size[BT_Count][R_constant_table::MaxCBuffers];
 	bool m_any_dirty;
 };
 #endif	//	dx10r_constants_cacheH

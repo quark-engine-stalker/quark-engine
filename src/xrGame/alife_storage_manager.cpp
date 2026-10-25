@@ -23,6 +23,7 @@
 #include "../xrEngine/igame_persistent.h"
 #include "../xrCore/job_system.h"
 #include "autosave_manager.h"
+#include "../xrCore/engine_error_logger.h"
 //Alundaio
 #ifdef ENGINE_LUA_ALIFE_STORAGE_MANAGER_CALLBACKS
 #include "pch_script.h"
@@ -370,6 +371,12 @@ bool CALifeStorageManager::save(LPCSTR save_name_no_check, bool update_name)
 		{
 			committed_save_name[name_length - extension_length] = 0;
 		}
+	}
+
+	{
+		char event[160];
+		_snprintf_s(event, sizeof(event), _TRUNCATE, "saving game: %s", committed_save_name);
+		QUARK_DIAGNOSTIC_BREADCRUMB(event);
 	}
 
 #ifdef ENGINE_LUA_ALIFE_STORAGE_MANAGER_CALLBACKS

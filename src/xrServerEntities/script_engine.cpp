@@ -349,7 +349,7 @@ bool lua_record_ensure_directory(LPSTR result, const size_t result_size)
 	{
 		char engine_directory[MAX_PATH] = {};
 		if (_snprintf_s(engine_directory, sizeof(engine_directory), _TRUNCATE,
-			"%s\\QUARK ENGINE", app_data) < 0)
+			"%s\\QUARK-ENGINE", app_data) < 0)
 			return false;
 		if (!CreateDirectoryA(engine_directory, nullptr) && GetLastError() != ERROR_ALREADY_EXISTS)
 			return false;
@@ -772,8 +772,6 @@ CScriptEngine::CScriptEngine()
 	m_lua_profile_epoch = 1;
 	m_lua_hotspot_profiler = xr_new<SLuaHotspotProfilerState>();
 	m_lua_record_state = xr_new<SLuaRecordState>();
-	m_last_no_file_length = 0;
-	*m_last_no_file = 0;
 
 #ifdef DEBUG
 	::luabind::detail::set_pcall_profile_callbacks(&luabind_profile_begin, &luabind_profile_end);
@@ -1379,7 +1377,25 @@ void CScriptEngine::end_lua_to_cpp_profile_call(void* raw_context)
 	--lua_to_cpp_profile_context_depth;
 }
 
-void CScriptEngine::dump_lua_hotspots(const u32 limit) const
+namespace
+{
+void profile_emit_line(void (*emit)(void*, const char*), void* ctx, const char* format, ...)
+{
+	char line[768];
+	va_list args;
+	va_start(args, format);
+	vsnprintf(line, sizeof(line), format, args);
+	line[sizeof(line) - 1] = 0;
+	va_end(args);
+
+	if (emit)
+		emit(ctx, line);
+	else
+		Msg("%s", line);
+}
+}
+
+void CScriptEngine::dump_lua_hotspots(const u32 limit, void (*emit)(void*, const char*), void* ctx) const
 {
 	if (!m_lua_hotspot_profiler)
 		return;
@@ -1401,7 +1417,7 @@ void CScriptEngine::dump_lua_hotspots(const u32 limit) const
 	});
 
 	const u32 row_count = _min(limit, static_cast<u32>(rows.size()));
-	Msg("[Lua hotspots] enabled=%s threshold=%u us functions=%u showing=%u",
+	profile_emit_line(emit, ctx, "[Lua hotspots] enabled=%s threshold=%u us functions=%u showing=%u",
 		m_lua_hotspot_profiler->enabled ? "yes" : "no",
 		m_lua_hotspot_profiler->threshold_us,
 		static_cast<u32>(rows.size()),
@@ -1418,7 +1434,7 @@ void CScriptEngine::dump_lua_hotspots(const u32 limit) const
 			static_cast<double>(row.entry.total_ticks) * 1000000.0 /
 			(static_cast<double>(CPU::qpc_freq) * static_cast<double>(row.entry.calls)) : 0.0;
 
-		Msg("[Lua hotspots] %2u. %-64s calls=%llu total=%.3f ms avg=%.2f us max=%.3f ms "
+		profile_emit_line(emit, ctx, "[Lua hotspots] %2u. %-64s calls=%llu total=%.3f ms avg=%.2f us max=%.3f ms "
 			"errors=%llu alloc=%llu realloc=%llu free=%llu allocated=%.2f KB freed=%.2f KB",
 			index + 1,
 			row.name.c_str(),
@@ -1999,8 +2015,7 @@ void CScriptEngine::unload()
 {
 	invalidate_script_functors();
 	lua_settop(lua(), m_stack_level);
-	m_last_no_file_length = 0;
-	*m_last_no_file = 0;
+	m_missing_scripts.clear();
 }
 
 int CScriptEngine::lua_panic(lua_State* L)
@@ -2096,7 +2111,7 @@ void CScriptEngine::lua_error(lua_State* L)
 		return;
 	}
 	ai().script_engine().print_stack();
-	print_output(L, "", LUA_ERRRUN);
+	print_output(L, "", LUA_ERRRUN, false, !XRAY_EXCEPTIONS);
 	ai().script_engine().on_error(L);
 
 	// demonized: print first line with lua error
@@ -2160,7 +2175,7 @@ int CScriptEngine::lua_pcall_failed(lua_State* L)
 	}
 
 	ai().script_engine().print_stack();
-	print_output(L, "", LUA_ERRRUN);
+	print_output(L, "", LUA_ERRRUN, false, !XRAY_EXCEPTIONS);
 	ai().script_engine().on_error(L);
 
 	// demonized: print first line with lua error
@@ -2187,7 +2202,7 @@ int CScriptEngine::lua_pcall_failed(lua_State* L)
 
 void lua_cast_failed(lua_State* L, LUABIND_TYPE_INFO info)
 {
-	CScriptEngine::print_output(L, "", LUA_ERRRUN);
+	CScriptEngine::print_output(L, "", LUA_ERRRUN, false, true);
 
 	Debug.fatal(DEBUG_INFO, "LUA error: cannot cast lua value to %s", info->name());
 }
@@ -2429,8 +2444,7 @@ void CScriptEngine::load_common_scripts()
 
 void CScriptEngine::process_file_if_exists(LPCSTR file_name, bool warn_if_not_exist)
 {
-	u32 string_length = xr_strlen(file_name);
-	if (!warn_if_not_exist && no_file_exists(file_name, string_length))
+	if (!warn_if_not_exist && no_file_exists(file_name))
 		return;
 
 	string_path S, S1;
@@ -2449,7 +2463,7 @@ void CScriptEngine::process_file_if_exists(LPCSTR file_name, bool warn_if_not_ex
                 m_stack_is_ready	= true;
             }
 #endif
-			add_no_file(file_name, string_length);
+			add_no_file(file_name);
 			return;
 		}
 		//#ifndef MASTER_GOLD
@@ -2559,18 +2573,17 @@ void CScriptEngine::restartDebugger				()
 }
 #endif // #if defined(USE_DEBUGGER) && !defined(USE_LUA_STUDIO)
 
-bool CScriptEngine::no_file_exists(LPCSTR file_name, u32 string_length)
+bool CScriptEngine::no_file_exists(LPCSTR file_name)
 {
-	if (m_last_no_file_length != string_length)
-		return (false);
-
-	return (!memcmp(m_last_no_file, file_name, string_length * sizeof(char)));
+	return m_missing_scripts.find(shared_str(file_name)) != m_missing_scripts.end();
 }
 
-void CScriptEngine::add_no_file(LPCSTR file_name, u32 string_length)
+void CScriptEngine::add_no_file(LPCSTR file_name)
 {
-	m_last_no_file_length = string_length;
-	CopyMemory(m_last_no_file, file_name, (string_length + 1)*sizeof(char));
+	// Bound the set if a script probes globals with generated names.
+	if (m_missing_scripts.size() >= 4096)
+		m_missing_scripts.clear();
+	m_missing_scripts.emplace(file_name);
 }
 
 void CScriptEngine::collect_all_garbage()

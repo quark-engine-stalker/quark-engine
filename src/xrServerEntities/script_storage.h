@@ -115,7 +115,7 @@ public:
 	int error_log(LPCSTR caFormat, ...);
 	static int __cdecl script_log(ELuaMessageType message, LPCSTR caFormat, ...);
 	static bool print_output(lua_State* L, LPCSTR caScriptName, int iErorCode = 0,
-	    bool recoveredModuleLoad = false);
+	    bool recoveredModuleLoad = false, bool fatalFollows = false);
 	static void print_error(lua_State* L, int iErrorCode);
 	virtual void on_error(lua_State* L) = 0;
     void DebuggerAttach();

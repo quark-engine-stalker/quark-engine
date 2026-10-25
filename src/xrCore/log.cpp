@@ -151,8 +151,9 @@ void AddOne(const char* split)
     OutputDebugString(t.c_str());
     OutputDebugString("\n");
 #endif
-    if (split && split[0] == '!')
-        EngineErrorLogger::AddBreadcrumb("session/warning", t.c_str(), __FILE__, __LINE__, __FUNCTION__);
+    // "! [LUA]" lines dump a Lua stack whose error is repeated as "! [SCRIPT ERROR]".
+    if (split && split[0] == '!' && strncmp(split, "! [LUA]", 7) && !(LastLogLine == t.c_str()))
+        EngineErrorLogger::AddBreadcrumb(t.c_str());
 	if (logTimestamps)
 	{
 		std::string c;

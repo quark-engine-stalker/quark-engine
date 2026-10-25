@@ -204,6 +204,9 @@
     <ClInclude Include="xrSheduler.h">
       <Filter>Interfaces\Sheduler</Filter>
     </ClInclude>
+    <ClInclude Include="frame_stats.h">
+      <Filter>RenderRef\Execution &amp; 3D\Device</Filter>
+    </ClInclude>
     <ClInclude Include="IRenderable.h">
       <Filter>Interfaces\Render</Filter>
     </ClInclude>
@@ -725,6 +728,9 @@
       <Filter>Engine\text_editor\edit_actions</Filter>
     </ClCompile>
     <ClCompile Include="device.cpp">
+      <Filter>RenderRef\Execution &amp; 3D\Device</Filter>
+    </ClCompile>
+    <ClCompile Include="frame_stats.cpp">
       <Filter>RenderRef\Execution &amp; 3D\Device</Filter>
     </ClCompile>
     <ClCompile Include="AIAsyncPrepare.cpp">

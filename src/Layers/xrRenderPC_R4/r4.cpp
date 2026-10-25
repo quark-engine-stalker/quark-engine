@@ -855,6 +855,8 @@ void CRender::reset_begin()
 	}
 	//-AVO
 
+	// The shadow cache page is recreated with the render target.
+	smap_cache_invalidate();
 	xr_delete(Target);
 	HWOCC.occq_destroy();
 	//_RELEASE					(q_sync_point[1]);
@@ -1102,6 +1104,43 @@ void CRender::add_Visual(IRenderVisual* V)
 	add_leafs_Dynamic((dxRender_Visual*)V);
 }
 void CRender::add_Geometry(IRenderVisual* V) { add_Static((dxRender_Visual*)V, View->getMask()); }
+
+namespace
+{
+struct SRenderParallelBatch
+{
+	CRender* render;
+	void (CRender::*work)(u32);
+	u32 count;
+	// Claimed by every lane; keep it off the line of the read-only fields.
+	__declspec(align(64)) volatile LONG next;
+};
+
+void render_parallel_lane(void* raw)
+{
+	SRenderParallelBatch& batch = *static_cast<SRenderParallelBatch*>(raw);
+	for (;;)
+	{
+		const LONG index = InterlockedIncrement(&batch.next) - 1;
+		if (index < 0 || static_cast<u32>(index) >= batch.count)
+			return;
+		(batch.render->*batch.work)(static_cast<u32>(index));
+	}
+}
+}
+
+void CRender::run_parallel(u32 count, void (CRender::*work)(u32))
+{
+	SRenderParallelBatch batch = {this, work, count, 0};
+	xr_jobs::task_group group;
+	// The main thread waits for the batch anyway, so it takes items as well. Lanes are
+	// capped by physical cores like the particle render jobs.
+	const u32 lanes = _min(count, _min(_max(1u, u32(CPU::ID.n_cores)), xr_jobs::available_thread_count()));
+	if (lanes > 1)
+		xr_jobs::submit_many(&render_parallel_lane, &batch, lanes - 1, &group, xr_jobs::priority::high);
+	render_parallel_lane(&batch);
+	xr_jobs::wait(group);
+}
 
 // demonized: add user defined rotation to wallmark
 void CRender::add_StaticWallmark(ref_shader& S, const Fvector& P, float s, CDB::TRI* T, Fvector* verts, float ttl, bool ignore_opt, bool random_rotation)

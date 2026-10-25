@@ -213,5 +213,13 @@ BOOL R_constant_table::equal(R_constant_table& C)
 		if (!table[it]->equal(&*C.table[it])) return FALSE;
 	}
 
+	// Shaders with the same constants may still read different parts of a buffer.
+	if (m_CBTable.size() != C.m_CBTable.size()) return FALSE;
+	for (u32 it = 0; it < m_CBTable.size(); it++)
+	{
+		if (m_CBTable[it].first != C.m_CBTable[it].first || m_CBTable[it].used_size != C.m_CBTable[it].used_size)
+			return FALSE;
+	}
+
 	return TRUE;
 }

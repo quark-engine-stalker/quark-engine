@@ -189,8 +189,19 @@ void FTreeVisual::Render(float LOD)
 	RCache.tree.set_wave(tvs.wave); // wave
 	RCache.tree.set_wind(tvs.wind); // wind
 
-	RCache.set_c(c_prev_wave, prev_tvs.wave);
-	RCache.set_c(c_prev_wind, prev_tvs.wind);
+	R_tree& tree = RCache.tree;
+	if (!tree.named_resolved)
+	{
+		tree.c_prev_wave = RCache.get_c(c_prev_wave);
+		tree.c_prev_wind = RCache.get_c(c_prev_wind);
+		tree.c_benders_setup = RCache.get_c(c_c_BendersSetup);
+		tree.c_benders_pos = RCache.get_c(c_c_BendersPos);
+		tree.c_benders_prev_pos = RCache.get_c(c_c_PrevBendersPos);
+		tree.named_resolved = true;
+	}
+
+	RCache.set_c(tree.c_prev_wave, prev_tvs.wave);
+	RCache.set_c(tree.c_prev_wind, prev_tvs.wind);
 
 	s *= 1.3333f;
 	RCache.tree.set_c_scale(s * c_scale.rgb.x, s * c_scale.rgb.y, s * c_scale.rgb.z, s * c_scale.hemi); // scale
@@ -201,15 +212,15 @@ void FTreeVisual::Render(float LOD)
 	if (tvs.bender_count)
 	{
 		// Inter grass Settings
-		RCache.set_c(c_c_BendersSetup, ps_ssfx_int_grass_params_1);
+		RCache.set_c(tree.c_benders_setup, ps_ssfx_int_grass_params_1);
 
 		const u32 bender_bytes = tvs.bender_count * sizeof(Fvector4);
 		constexpr u32 direction_offset = 16u * sizeof(Fvector4);
-		RCache.set_ConstantData(c_c_BendersPos, 0, tvs.current_benders, bender_bytes);
-		RCache.set_ConstantData(c_c_BendersPos, direction_offset,
+		RCache.set_ConstantData(tree.c_benders_pos, 0, tvs.current_benders, bender_bytes);
+		RCache.set_ConstantData(tree.c_benders_pos, direction_offset,
 			tvs.current_benders + 16, bender_bytes);
-		RCache.set_ConstantData(c_c_PrevBendersPos, 0, tvs.previous_benders, bender_bytes);
-		RCache.set_ConstantData(c_c_PrevBendersPos, direction_offset,
+		RCache.set_ConstantData(tree.c_benders_prev_pos, 0, tvs.previous_benders, bender_bytes);
+		RCache.set_ConstantData(tree.c_benders_prev_pos, direction_offset,
 			tvs.previous_benders + 16, bender_bytes);
 	}
 }

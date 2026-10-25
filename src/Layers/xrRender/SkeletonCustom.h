@@ -154,8 +154,28 @@ protected:
 	// not update this value, so an object cannot keep itself permanently active.
 	std::atomic<u32> UCalc_ExactRequestFrame;
 
+	// Main-thread-only cache of the bone-callback scan used by CanQueueBonesOnWorker().
+	// A stale answer is harmless: a stale "true" is re-validated by the worker under the
+	// skeleton lock, a stale "false" only delays parallel evaluation by a few frames.
+	mutable u32 UCalc_WorkerHintExpire;
+	mutable bool UCalc_WorkerHint;
+	// What blocked the last scan (diagnostics only): callback address and type.
+	mutable const void* UCalc_WorkerHintFn;
+	mutable u32 UCalc_WorkerHintType;
+
+	// Set by a worker that finished the pose but skipped Update_Callback; consumed by
+	// FinishBonesOnMain() on the main thread after the batch barrier (which orders the
+	// write before the read). Never touched concurrently.
+	bool UCalc_CallbackOwed;
+
+	// Lock order: UCalc_Mutex, then UCalc_Mutex2. Job workers never block on either:
+	// they use try-locks and leave a busy skeleton to the lazy main-thread path.
 	xrCriticalSection UCalc_Mutex;
 	xrCriticalSection UCalc_Mutex2;
+
+	// True if every installed bone callback is registered as worker-safe. On false the
+	// optional outputs describe the first blocking callback.
+	bool BoneCallbacksWorkerSafe(const void** blocker_fn = nullptr, u32* blocker_type = nullptr) const;
 
 	Flags64 visimask;
 	Flags64 hidden_bones;
@@ -171,7 +191,7 @@ protected:
 	// traversal in this helper to avoid re-entering the same critical section
 	// for every bone of an already locked skeleton.
 	void Bone_CalculateImpl(CBoneData* bd, Fmatrix* parent);
-	void CalculateBonesInternal(BOOL bForceExact);
+	void CalculateBonesInternal(BOOL bForceExact, bool on_worker = false);
 	void Visibility_Invalidate() { Update_Visibility = TRUE; };
 	void Visibility_Update();
 
@@ -299,6 +319,9 @@ public:
 	virtual bool CanCalculateBonesOnWorker() const;
 	virtual void CalculateBonesOnWorker(BOOL bForceExact = TRUE);
 	virtual u32 LastExactBonesRequestFrame() const;
+	virtual bool CanQueueBonesOnWorker() const;
+	virtual void PrepareBonesOnMain();
+	virtual bool FinishBonesOnMain();
 	void CalculateBones_Invalidate();
 
 	void Callback(UpdateCallback C, void* Param)

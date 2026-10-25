@@ -77,24 +77,6 @@ void CMapLocation::NotifyChanged()
 		Level().MapManager().MarkLocationsDirty();
 }
 
-void CMapLocation::EnablePointer()
-{
-	if (!m_flags.test(ePointerEnabled))
-	{
-		m_flags.set(ePointerEnabled, TRUE);
-		NotifyChanged();
-	}
-}
-
-void CMapLocation::DisablePointer()
-{
-	if (m_flags.test(ePointerEnabled))
-	{
-		m_flags.set(ePointerEnabled, FALSE);
-		NotifyChanged();
-	}
-}
-
 void CMapLocation::EnableSpot()
 {
 	if (!m_flags.test(eSpotEnabled))
@@ -109,15 +91,6 @@ void CMapLocation::DisableSpot()
 	if (m_flags.test(eSpotEnabled))
 	{
 		m_flags.set(eSpotEnabled, FALSE);
-		NotifyChanged();
-	}
-}
-
-void CMapLocation::SetSerializable(bool value)
-{
-	if (!!m_flags.test(eSerailizable) != value)
-	{
-		m_flags.set(eSerailizable, value);
 		NotifyChanged();
 	}
 }
@@ -664,25 +637,17 @@ void CMapLocation::load(IReader& stream)
 
 	stream.r_stringZ(str);
 	m_owner_task_id = str.c_str();
-	NotifyChanged();
 }
 
 void CMapLocation::SetHint(const shared_str& hint)
 {
-	const bool old_hint_enabled = !!m_flags.test(eHintEnabled);
-	const shared_str old_hint = m_hint;
-
 	if (hint == "disable_hint")
 	{
 		m_flags.set(eHintEnabled, FALSE);
 		m_hint = "";
-		if (old_hint_enabled || old_hint.size())
-			NotifyChanged();
 		return;
 	}
 	m_hint = hint;
-	if (old_hint != m_hint)
-		NotifyChanged();
 };
 
 LPCSTR CMapLocation::GetHint()

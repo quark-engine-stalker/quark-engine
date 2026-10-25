@@ -6,6 +6,7 @@
 R_constants::R_constants() : m_any_dirty(false)
 {
 	ZeroMemory(m_dirty_masks, sizeof(m_dirty_masks));
+	memset(m_used_size, 0xFF, sizeof(m_used_size)); // whole buffer until a table is set
 }
 
 void R_constants::invalidate(const R_constant_table& table)
@@ -32,6 +33,14 @@ void R_constants::invalidate(const R_constant_table& table)
 			continue;
 		}
 
+		// A buffer last uploaded for a shader that reads less is re-uploaded by flush_cache.
+		// One buffer can be bound to several stages, and a write marks only one of them:
+		// each binding uploads what the most demanding stage reads.
+		u32 used_size = 0;
+		for (const auto& record : table.m_CBTable)
+			if (record.second == it->second)
+				used_size = _max(used_size, record.used_size);
+		m_used_size[type][buffer_index] = used_size;
 		m_dirty_masks[type] |= static_cast<u16>(1u << buffer_index);
 		m_any_dirty = true;
 	}
@@ -119,7 +128,7 @@ void R_constants::flush_cache()
 		for (u32 index = 0; mask && index < CBackend::MaxCBuffers; ++index, mask >>= 1)
 		{
 			if ((mask & 1u) && stage_buffers[stage][index])
-				stage_buffers[stage][index]->Flush();
+				stage_buffers[stage][index]->Flush(m_used_size[stage][index]);
 		}
 		m_dirty_masks[stage] = 0;
 	}

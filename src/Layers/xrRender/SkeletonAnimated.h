@@ -88,6 +88,7 @@ public:
 
 	virtual void OnCalculateBones();
 	virtual bool CanCalculateBonesOnWorker() const;
+	virtual bool CanQueueBonesOnWorker() const;
 public:
 #ifdef _EDITOR
 public:

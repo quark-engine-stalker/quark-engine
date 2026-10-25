@@ -24,14 +24,30 @@ public:
 	float m_fMaxDist;
 	float m_fMaxAIDist;
 	u32 m_uGameType;
+
+	// What LoadWave reads from the ogg; i_create_all_sources keeps it in a disk cache
+	struct header
+	{
+		u32 bytes_total;
+		float time_total;
+		float base_volume;
+		float min_dist;
+		float max_dist;
+		float max_ai_dist;
+		u32 game_type;
+		u32 channels;
+	};
 private:
 	void i_decompress_fr(OggVorbis_File* ovf, char* dest, u32 size);
 	bool LoadWave(LPCSTR name);
+	void set_format(u16 channels);
 public:
 	CSoundRender_Source();
 	~CSoundRender_Source();
 
 	void load(LPCSTR name);
+	void load(LPCSTR name, LPCSTR path, const header& h);
+	header get_header() const;
 	void unload();
 	void decompress(u32 line, OggVorbis_File* ovf);
 

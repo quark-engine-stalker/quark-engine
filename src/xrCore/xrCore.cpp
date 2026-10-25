@@ -7,6 +7,7 @@
 #include <objbase.h>
 #include "xrCore.h"
 #include "engine_error_logger.h"
+#include "cpu_placement.h"
 
 #pragma comment(lib,"winmm.lib")
 
@@ -100,6 +101,7 @@ void xrCore::_initialize(LPCSTR _ApplicationName, LogCallback cb, BOOL init_fs, 
 
 		InitLog();
 		_initialize_cpu();
+		cpu_placement::initialize();
 
 		// Debug._initialize ();
 

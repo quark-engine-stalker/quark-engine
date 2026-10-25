@@ -264,7 +264,50 @@ public:
 	xr_vector<fastdelegate::FastDelegate0<>> seqRenderPrepParallelWork;
 	xr_vector<u32> seqRenderPrepParallelUnits;
 	xr_vector<u32> seqRenderPrepParallelWorkUnits;
+	// Optional main-thread phase of each entry. It runs serially on the frame-owning
+	// thread, after all UpdateCL calls and immediately before the entries' parallel
+	// phase, i.e. at the point where the lazy path would have run it. Entries stay
+	// index-aligned with seqRenderPrepParallel / seqRenderPrepParallelWork.
+	xr_vector<fastdelegate::FastDelegate0<>> seqRenderPrepMain;
+	xr_vector<fastdelegate::FastDelegate0<>> seqRenderPrepMainWork;
+	// Optional post-phase of each entry: runs serially on the frame-owning thread right
+	// after the workers have finished (barrier passed), for gameplay callbacks that must
+	// observe the finished result but may not run on a worker. Index-aligned as well.
+	xr_vector<fastdelegate::FastDelegate0<>> seqRenderPrepPost;
+	xr_vector<fastdelegate::FastDelegate0<>> seqRenderPrepPostWork;
+	xr_vector<fastdelegate::FastDelegate0<>> seqRenderPrepSortedPost;
+	// Scratch for heaviest-first ordering of a batch (frame-owning thread only).
+	xr_vector<u32> seqRenderPrepOrder;
+	xr_vector<fastdelegate::FastDelegate0<>> seqRenderPrepSorted;
+	xr_vector<fastdelegate::FastDelegate0<>> seqRenderPrepSortedMain;
+	xr_vector<u32> seqRenderPrepSortedUnits;
 	xrCriticalSection seqRenderPrepParallelLock;
+
+	// Skeleton worker diagnostics. Only rare events are counted so the counters never
+	// become a contended cache line on the hot path.
+	struct SSkeletonJobStats
+	{
+		volatile LONG executed;
+		volatile LONG busy;
+		volatile LONG rejected;
+		volatile LONG already; // pose was computed this frame before the worker came (wasted job)
+		// Written only by the frame-owning thread (queueing and the render-prep barrier),
+		// so plain integers are enough.
+		u32 queued; // skeletons put into the render-prep queue
+		u32 skip_hidden; // not queued: not requested by the renderer in the previous frame
+		u32 skip_unsafe; // not queued: an unregistered bone/update callback is installed
+		u32 batches; // batches that ran on workers
+		u32 discarded; // batches dropped (too few skeletons/bones) and left to the lazy path
+		u32 post_callbacks; // Update_Callbacks (IK, attachments...) run on the main thread after a batch
+		// Phase timing of batches that ran on workers, in QueryPerformanceCounter ticks
+		// (frame-owning thread only). Summed over all batches; divide by `batches`.
+		u64 ticks_main; // serial main phase (animation tracks, blend PlayCallbacks)
+		u64 ticks_work; // the frame thread's own share of the parallel phase
+		u64 ticks_wait; // frame thread idle at the barrier waiting for workers
+		u64 ticks_post; // serial post phase (Update_Callback: IK, attachments, script)
+		u64 ticks_total_max; // longest single batch, all phases
+	};
+	SSkeletonJobStats SkeletonJobStats;
 	xr_vector<fastdelegate::FastDelegate0<>> seqParallel;
 	xr_vector<LPCSTR> seqParallelNames;
 	xr_vector<EFrameParallelLane> seqParallelLanes;
@@ -386,6 +429,21 @@ public:
 		Timer.Start();
 		m_bNearer = FALSE;
 		isRendering = FALSE;
+		SkeletonJobStats.executed = 0;
+		SkeletonJobStats.busy = 0;
+		SkeletonJobStats.rejected = 0;
+		SkeletonJobStats.already = 0;
+		SkeletonJobStats.queued = 0;
+		SkeletonJobStats.skip_hidden = 0;
+		SkeletonJobStats.skip_unsafe = 0;
+		SkeletonJobStats.batches = 0;
+		SkeletonJobStats.discarded = 0;
+		SkeletonJobStats.post_callbacks = 0;
+		SkeletonJobStats.ticks_main = 0;
+		SkeletonJobStats.ticks_work = 0;
+		SkeletonJobStats.ticks_wait = 0;
+		SkeletonJobStats.ticks_post = 0;
+		SkeletonJobStats.ticks_total_max = 0;
 		mt_bMustExit = FALSE;
 		mt_frame_submitted = FALSE;
 		mt_scheduler_deferred_pending = FALSE;
@@ -682,11 +740,17 @@ public:
 			*active = fastdelegate::FastDelegate0<>();
 	}
 
-	ICF void add_to_seq_render_prep_parallel(const fastdelegate::FastDelegate0<>& delegate, u32 work_units)
+	// main_phase (optional) runs serially on the frame-owning thread right before the
+	// parallel phase; it is the only place where the entry may enter gameplay code.
+	ICF void add_to_seq_render_prep_parallel(const fastdelegate::FastDelegate0<>& delegate, u32 work_units,
+		const fastdelegate::FastDelegate0<>& main_phase = fastdelegate::FastDelegate0<>(),
+		const fastdelegate::FastDelegate0<>& post_phase = fastdelegate::FastDelegate0<>())
 	{
 		xrCriticalSectionGuard guard(seqRenderPrepParallelLock);
 		seqRenderPrepParallel.push_back(delegate);
 		seqRenderPrepParallelUnits.push_back(work_units);
+		seqRenderPrepMain.push_back(main_phase);
+		seqRenderPrepPost.push_back(post_phase);
 	}
 
 	ICF void remove_from_seq_render_prep_parallel(const fastdelegate::FastDelegate0<>& delegate)
@@ -700,6 +764,10 @@ public:
 			seqRenderPrepParallel.erase(queued);
 			if (index < seqRenderPrepParallelUnits.size())
 				seqRenderPrepParallelUnits.erase(seqRenderPrepParallelUnits.begin() + index);
+			if (index < seqRenderPrepMain.size())
+				seqRenderPrepMain.erase(seqRenderPrepMain.begin() + index);
+			if (index < seqRenderPrepPost.size())
+				seqRenderPrepPost.erase(seqRenderPrepPost.begin() + index);
 		}
 
 		xr_vector<fastdelegate::FastDelegate0<>>::iterator active = std::find(
@@ -710,6 +778,10 @@ public:
 			*active = fastdelegate::FastDelegate0<>();
 			if (index < seqRenderPrepParallelWorkUnits.size())
 				seqRenderPrepParallelWorkUnits[index] = 0;
+			if (index < seqRenderPrepMainWork.size())
+				seqRenderPrepMainWork[index] = fastdelegate::FastDelegate0<>();
+			if (index < seqRenderPrepPostWork.size())
+				seqRenderPrepPostWork[index] = fastdelegate::FastDelegate0<>();
 		}
 	}
 

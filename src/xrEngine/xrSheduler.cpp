@@ -1,6 +1,8 @@
 #include "stdafx.h"
+#include <algorithm>
 #include "xrSheduler.h"
 #include "xr_object.h"
+#include "frame_stats.h"
 #include "Feel_Vision.h"
 
 //#define DEBUG_SCHEDULER
@@ -118,6 +120,8 @@ u32 CSheduler::ResolveCostClass(ISheduled* object, const shared_str& scheduled_n
 
 	ClassCostStats stats = {};
 	stats.name = class_name;
+	if (CObject* clsid_object = fast_dynamic_cast<CObject*>(object))
+		stats.clsid = clsid_object->CLS_ID;
 	const u32 index = static_cast<u32>(m_class_costs.size());
 	m_class_costs.push_back(stats);
 	m_class_cost_index.try_emplace(class_name, index);
@@ -166,6 +170,10 @@ u16 CSheduler::UpdateClassCost(u32 class_index, u32 actual_cost_us, u32 slow_thr
 		return 0;
 
 	ClassCostStats& stats = m_class_costs[class_index];
+	stats.total_us += actual_cost_us;
+	++stats.calls;
+	if (actual_cost_us > stats.max_us)
+		stats.max_us = actual_cost_us;
 	stats.last_cost_us = actual_cost_us;
 	stats.ewma_cost_us = stats.ewma_cost_us
 		? static_cast<u32>((static_cast<u64>(stats.ewma_cost_us) * 7ull + actual_cost_us) / 8ull)
@@ -181,6 +189,103 @@ u16 CSheduler::UpdateClassCost(u32 class_index, u32 actual_cost_us, u32 slow_thr
 		--stats.slow_hits;
 	}
 	return stats.slow_hits;
+}
+
+void CSheduler::ResetClassCosts()
+{
+	xrSRWLockGuard guard(m_class_cost_lock);
+	for (ClassCostStats& stats : m_class_costs)
+	{
+		stats.total_us = 0;
+		stats.calls = 0;
+		stats.max_us = 0;
+	}
+}
+
+void CSheduler::DumpClassCosts(const u32 top, const double seconds, SFrameReportSink& sink)
+{
+	struct Row
+	{
+		char name[48];
+		u64 total_us;
+		u32 calls;
+		u32 max_us;
+		u32 members;
+	};
+
+	xr_vector<Row> by_class;
+	xr_vector<Row> by_section;
+	{
+		xrSRWLockGuard guard(m_class_cost_lock);
+		for (const ClassCostStats& stats : m_class_costs)
+		{
+			if (!stats.calls)
+				continue;
+
+			Row section = {};
+			xr_strcpy(section.name, sizeof(section.name), stats.name.c_str() ? stats.name.c_str() : "<unknown>");
+			section.total_us = stats.total_us;
+			section.calls = stats.calls;
+			section.max_us = stats.max_us;
+			section.members = 1;
+			by_section.push_back(section);
+
+			char class_name[16] = "other";
+			if (stats.clsid)
+				CLSID2TEXT(stats.clsid, class_name);
+			bool merged = false;
+			for (Row& row : by_class)
+			{
+				if (!xr_strcmp(row.name, class_name))
+				{
+					row.total_us += stats.total_us;
+					row.calls += stats.calls;
+					row.max_us = _max(row.max_us, stats.max_us);
+					++row.members;
+					merged = true;
+					break;
+				}
+			}
+			if (!merged)
+			{
+				Row row = {};
+				xr_strcpy(row.name, sizeof(row.name), class_name);
+				row.total_us = stats.total_us;
+				row.calls = stats.calls;
+				row.max_us = stats.max_us;
+				row.members = 1;
+				by_class.push_back(row);
+			}
+		}
+	}
+
+	if (by_class.empty())
+	{
+		sink.line("[frame_stats] scheduler: no samples (scheduler_class_prediction must be 1)");
+		return;
+	}
+
+	const auto heavier = [](const Row& a, const Row& b) { return a.total_us > b.total_us; };
+	std::sort(by_class.begin(), by_class.end(), heavier);
+	std::sort(by_section.begin(), by_section.end(), heavier);
+
+	const double window = seconds > 0.001 ? seconds : 1.0;
+	sink.line("[frame_stats] shedule_Update by class (per second): %-10s %8s %8s %9s %9s", "class", "ms/s", "calls/s", "avg us", "max us");
+	for (u32 index = 0; index < by_class.size() && index < top; ++index)
+	{
+		const Row& row = by_class[index];
+		sink.line("[frame_stats]   %-10s %8.2f %8.1f %9.1f %9u  (%u sections)", row.name,
+			double(row.total_us) / 1000.0 / window, double(row.calls) / window,
+			double(row.total_us) / double(row.calls), row.max_us, row.members);
+	}
+	sink.line("[frame_stats] shedule_Update by section (per second): %-26s %8s %8s %9s", "section", "ms/s", "calls/s", "avg us");
+	for (u32 index = 0; index < by_section.size() && index < top; ++index)
+	{
+		const Row& row = by_section[index];
+		sink.line("[frame_stats]   %-26s %8.2f %8.1f %9.1f", row.name,
+			double(row.total_us) / 1000.0 / window, double(row.calls) / window,
+			double(row.total_us) / double(row.calls));
+	}
 }
 
 void CSheduler::BeginCurrentStep(ISheduled* object)

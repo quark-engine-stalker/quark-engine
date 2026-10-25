@@ -1,5 +1,6 @@
 #include "pch_script.h"
 #include "UIWindow.h"
+#include "UIWindowScriptOwnership.h"
 #include "UIFrameWindow.h"
 #include "UIFrameLineWnd.h"
 #include "UIDialogWnd.h"
@@ -163,9 +164,9 @@ void CUIWindow::script_register(lua_State* L)
 
 		class_<CUIWindow>("CUIWindow")
 		.def(constructor<>())
-		.def("AttachChild", &CUIWindow::AttachChild)
+		.def("AttachChild", &CUIWindow::AttachChild, ui_script_ownership::attach_child_policy())
 		.def("DetachChild", &CUIWindow::DetachChild)
-		.def("SetAutoDelete", &CUIWindow::SetAutoDelete)
+		.def("SetAutoDelete", &ui_script_ownership::set_auto_delete, ui_script_ownership::set_auto_delete_policy())
 		.def("IsAutoDelete", &CUIWindow::IsAutoDelete)
 
 		.def("IsCursorOverWindow", &CUIWindow::CursorOverWindow)

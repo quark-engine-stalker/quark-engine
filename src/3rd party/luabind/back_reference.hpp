@@ -25,6 +25,8 @@
 #include <luabind/lua_include.hpp>
 #include <luabind/wrapper_base.hpp>
 
+#include <cstddef>
+#include <cstdint>
 #include <type_traits>
 
 namespace luabind {
@@ -36,17 +38,41 @@ namespace luabind {
 
     namespace detail {
 
+    // Opt-in for polymorphic T without virtual bases anywhere in the hierarchies of
+    // its dynamic types: then T's vfptr is at offset 0 and the T* -> wrap_base* offset
+    // depends only on that vfptr, so dynamic_cast is done once per vtable.
+    template<class T>
+    struct cache_wrap_base_cast : std::false_type {};
+
     template<class T>
     struct extract_wrap_base
-    {     
+    {
        static wrap_base const* extract(T const* ptr)
         {
-            return dynamic_cast<wrap_base const*>(get_pointer(*ptr));
+            return extract(const_cast<T*>(ptr));
         }
 
         static wrap_base* extract(T* ptr)
         {
-            return dynamic_cast<wrap_base*>(get_pointer(*ptr));
+            if constexpr (!cache_wrap_base_cast<T>::value)
+                return dynamic_cast<wrap_base*>(get_pointer(*ptr));
+            else
+            {
+                // Lua thread only, like every push to Lua. A collision just recomputes.
+                struct slot { const void* vtable; std::ptrdiff_t offset; };
+                static constexpr std::ptrdiff_t not_wrapped = PTRDIFF_MIN;
+                static slot slots[256];
+
+                const void* vtable = *reinterpret_cast<const void* const*>(ptr);
+                slot& s = slots[(reinterpret_cast<std::uintptr_t>(vtable) >> 4) & 255];
+                if (s.vtable != vtable)
+                {
+                    wrap_base* wrapped = dynamic_cast<wrap_base*>(ptr);
+                    s.offset = wrapped ? reinterpret_cast<char*>(wrapped) - reinterpret_cast<char*>(ptr) : not_wrapped;
+                    s.vtable = vtable;
+                }
+                return s.offset == not_wrapped ? nullptr : reinterpret_cast<wrap_base*>(reinterpret_cast<char*>(ptr) + s.offset);
+            }
         }
     };
 

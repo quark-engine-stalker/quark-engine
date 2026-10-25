@@ -156,6 +156,8 @@ void CLevel::g_sv_Spawn(CSE_Abstract* E)
 	}
 	else
 	{
+		// until now a save started from a script net_spawn must skip this half-built object
+		O->setReady(TRUE);
 #ifdef DEBUG_MEMORY_MANAGER
 		mem_alloc_gather_stats	(!!psAI_Flags.test(aiDebugOnFrameAllocs));
 #endif // DEBUG_MEMORY_MANAGER

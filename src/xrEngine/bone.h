@@ -21,6 +21,31 @@ typedef void _BCL BoneCallbackFunction(CBoneInstance* P);
 typedef BoneCallbackFunction* BoneCallback;
 //typedef void (* BoneCallback) (CBoneInstance* P);
 
+// A bone callback may run on a job-system worker while the main thread waits at the
+// render-preparation barrier only if it has been explicitly registered here. The
+// registrant guarantees that the callback is a pure function of data owned by its
+// object: it must not enter Lua, allocate game objects, start or stop animations,
+// take locks of other objects or write state that other threads read. Every
+// unregistered callback keeps the original main-thread-only behaviour.
+ENGINE_API void bone_callback_mark_worker_safe(BoneCallback callback);
+ENGINE_API bool bone_callback_is_worker_safe(BoneCallback callback);
+// Runtime kill-switch for the whitelist (console: mt_skeleton_callbacks).
+extern ENGINE_API int g_bone_worker_callbacks;
+
+// Diagnostics: which callbacks keep skeletons off the worker queue. Frame-owning thread
+// only (called while queueing); the table is tiny and overflow is silently ignored.
+constexpr u32 bone_blocker_update_callback = 0xFFFFFFF1u; // CKinematics::Update_Callback
+constexpr u32 bone_blocker_tracks_callback = 0xFFFFFFF2u; // update-tracks callback
+struct SBoneCallbackBlocker
+{
+	const void* fn;
+	u32 type; // EBoneCallbackType value or one of the bone_blocker_* constants
+	u32 count;
+};
+ENGINE_API void bone_callback_note_blocker(const void* fn, u32 type);
+ENGINE_API u32 bone_callback_get_blockers(SBoneCallbackBlocker* out, u32 max_count);
+ENGINE_API void bone_callback_reset_blockers();
+
 //*** Bone Instance *******************************************************************************
 #pragma pack(push,8)
 class ENGINE_API CBoneInstance

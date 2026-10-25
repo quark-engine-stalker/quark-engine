@@ -1,4 +1,5 @@
 #include "pch_script.h"
+#include "../xrEngine/frame_stats.h"
 #include "sound_collection_storage.h"
 #include <iterator>
 #include "xrEngine/FDemoRecord.h"
@@ -1116,6 +1117,7 @@ void CLevel::OnFrame()
 	}
 	Device.Statistic->TEST0.End();
 	// Client receive
+	SFrameScope stats_events_scope(fsUpdEvents);
 	if (net_isDisconnected())
 	{
 		if (OnClient() && GameID() != eGameIDSingle)
@@ -1163,6 +1165,7 @@ void CLevel::OnFrame()
 	}
 #endif
 
+	stats_events_scope.stop();
 	{
 
 		if (m_bNeed_CrPr)
@@ -1284,11 +1287,11 @@ void CLevel::OnFrame()
 	}
 	if (!g_dedicated_server)
 	{
-
+		SFrameScope stats_scope(fsUpdScript);
 		ai().script_engine().script_process(ScriptEngine::eScriptProcessorLevel)->update();
 	}
 	{
-
+		SFrameScope stats_scope(fsUpdPhysics);
 		{
 
 			m_ph_commander->update();

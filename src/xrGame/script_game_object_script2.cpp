@@ -34,6 +34,12 @@ using namespace luabind;
 
 extern CScriptActionPlanner* script_action_planner(CScriptGameObject* obj);
 
+// A handle kept after net_Destroy() has no object; its id must not be 0 (the actor).
+static u16 script_object_id(const CScriptGameObject* obj)
+{
+	return obj ? obj->ID() : u16(-1);
+}
+
 class_<CScriptGameObject> script_register_game_object1(class_<CScriptGameObject> &&instance)
 {
 	return std::move(instance)
@@ -97,7 +103,7 @@ class_<CScriptGameObject> script_register_game_object1(class_<CScriptGameObject>
 		.def("position", &CScriptGameObject::Position)
 		.def("direction", &CScriptGameObject::Direction)
 		.def("clsid", SAFE_WRAP(&CScriptGameObject::clsid))
-		.def("id", &CScriptGameObject::ID)
+		.def("id", &script_object_id)
 		.def("story_id", &CScriptGameObject::story_id)
 		.def("section", SAFE_WRAP(&CScriptGameObject::Section))
 		.def("name", SAFE_WRAP(&CScriptGameObject::Name))

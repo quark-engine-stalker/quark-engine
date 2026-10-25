@@ -2,8 +2,10 @@
 #include "../xrCDB/frustum.h"
 #include "xr_ioconsole.h"
 #include "xr_input.h"
+#include "frame_stats.h"
 #include "../xrCore/profiler.h"
 #include "../xrCore/engine_error_logger.h"
+#include "../xrCore/cpu_placement.h"
 
 #pragma warning(disable:4995)
 // mmsystem.h
@@ -23,6 +25,7 @@
 
 #include "render.h"
 #include <chrono>
+#include <algorithm>
 
 // must be defined before include of FS_impl.h
 #define INCLUDE_FROM_ENGINE
@@ -527,20 +530,51 @@ void CRenderDevice::ProcessRenderPrepParallelWork()
 		xrCriticalSectionGuard guard(seqRenderPrepParallelLock);
 		R_ASSERT(seqRenderPrepParallelWork.empty());
 		R_ASSERT(seqRenderPrepParallelWorkUnits.empty());
+		R_ASSERT(seqRenderPrepMainWork.empty());
+		R_ASSERT(seqRenderPrepPostWork.empty());
 		R_ASSERT(seqRenderPrepParallel.size() == seqRenderPrepParallelUnits.size());
+		R_ASSERT(seqRenderPrepParallel.size() == seqRenderPrepMain.size());
+		R_ASSERT(seqRenderPrepParallel.size() == seqRenderPrepPost.size());
 		if (!seqRenderPrepParallel.empty())
 		{
 			seqRenderPrepParallelWork.swap(seqRenderPrepParallel);
 			seqRenderPrepParallelWorkUnits.swap(seqRenderPrepParallelUnits);
+			seqRenderPrepMainWork.swap(seqRenderPrepMain);
+			seqRenderPrepPostWork.swap(seqRenderPrepPost);
 		}
 	}
 
 	if (seqRenderPrepParallelWork.empty())
 		return;
 
-	u32 active_count = 0;
-	u32 work_units = 0;
+	// Hand the in-flight storage back and re-open the queue for the next frame.
+	// Registrations made during the batch stay queued and are intentionally not
+	// pulled into the active batch. Preserve the allocations between frames.
+	auto finish_batch = [this]()
 	{
+		xrCriticalSectionGuard guard(seqRenderPrepParallelLock);
+		seqRenderPrepParallelWork.clear_not_free();
+		seqRenderPrepParallelWorkUnits.clear_not_free();
+		seqRenderPrepMainWork.clear_not_free();
+		seqRenderPrepPostWork.clear_not_free();
+		seqRenderPrepSortedPost.clear_not_free();
+		seqRenderPrepSorted.clear_not_free();
+		seqRenderPrepSortedMain.clear_not_free();
+		seqRenderPrepSortedUnits.clear_not_free();
+		seqRenderPrepOrder.clear_not_free();
+		if (seqRenderPrepParallel.empty())
+		{
+			seqRenderPrepParallelWork.swap(seqRenderPrepParallel);
+			seqRenderPrepParallelWorkUnits.swap(seqRenderPrepParallelUnits);
+			seqRenderPrepMainWork.swap(seqRenderPrepMain);
+			seqRenderPrepPostWork.swap(seqRenderPrepPost);
+		}
+	};
+
+	auto count_active = [this](u32& active_count, u32& work_units)
+	{
+		active_count = 0;
+		work_units = 0;
 		xrCriticalSectionGuard guard(seqRenderPrepParallelLock);
 		R_ASSERT(seqRenderPrepParallelWork.size() == seqRenderPrepParallelWorkUnits.size());
 		for (u32 index = 0; index < seqRenderPrepParallelWork.size(); ++index)
@@ -550,52 +584,155 @@ void CRenderDevice::ProcessRenderPrepParallelWork()
 			++active_count;
 			work_units += seqRenderPrepParallelWorkUnits[index];
 		}
-	}
+	};
+
+	u32 active_count = 0;
+	u32 work_units = 0;
+	count_active(active_count, work_units);
 
 	// Four medium skeletons are enough to amortize one batched wake-up and
 	// barrier. Below either threshold, leave calculation to the renderer's lazy
-	// path: this avoids turning a light frame into synchronization overhead.
+	// path: this avoids turning a light frame into synchronization overhead. The
+	// main-thread phase is skipped as well, so a discarded batch changes nothing.
 	constexpr u32 min_parallel_callbacks = 4;
 	constexpr u32 min_parallel_work_units = 192;
 	if (xr_jobs::worker_count() == 0 || active_count < min_parallel_callbacks ||
 		work_units < min_parallel_work_units)
 	{
-		xrCriticalSectionGuard guard(seqRenderPrepParallelLock);
-		seqRenderPrepParallelWork.clear_not_free();
-		seqRenderPrepParallelWorkUnits.clear_not_free();
-		if (seqRenderPrepParallel.empty())
-		{
-			seqRenderPrepParallelWork.swap(seqRenderPrepParallel);
-			seqRenderPrepParallelWorkUnits.swap(seqRenderPrepParallelUnits);
-		}
+		++SkeletonJobStats.discarded;
+		finish_batch();
 		return;
+	}
+
+	auto qpc_now = []() -> u64
+	{
+		LARGE_INTEGER t;
+		QueryPerformanceCounter(&t);
+		return u64(t.QuadPart);
+	};
+	const u64 t_begin = qpc_now();
+
+	// Main-thread phase. It runs serially, after every UpdateCL of this frame, and is
+	// the only place where an entry may enter gameplay code (animation callbacks).
+	// No worker is running yet, so a callback that destroys another queued object
+	// simply empties that entry through remove_from_seq_render_prep_parallel().
+	for (u32 index = 0;; ++index)
+	{
+		fastdelegate::FastDelegate0<> main_phase;
+		{
+			xrCriticalSectionGuard guard(seqRenderPrepParallelLock);
+			if (index >= seqRenderPrepMainWork.size())
+				break;
+			if (seqRenderPrepParallelWork[index])
+				main_phase = seqRenderPrepMainWork[index];
+		}
+		if (main_phase)
+			main_phase();
+	}
+
+	const u64 t_main_end = qpc_now();
+	count_active(active_count, work_units);
+	if (!active_count)
+	{
+		finish_batch();
+		return;
+	}
+	++SkeletonJobStats.batches;
+
+	// Heaviest entries first. Workers claim entries through one shared cursor, so
+	// handing out the largest skeletons first keeps the tail of the batch short
+	// (longest-processing-time scheduling) instead of leaving one worker alone with
+	// a big skeleton while the others idle at the barrier. Inactive entries are
+	// dropped here. The sorted lists replace the in-flight lists in place, so
+	// lifecycle removal keeps working on the same storage the workers traverse.
+	{
+		xrCriticalSectionGuard guard(seqRenderPrepParallelLock);
+		const u32 total = static_cast<u32>(seqRenderPrepParallelWork.size());
+		seqRenderPrepOrder.clear_not_free();
+		seqRenderPrepOrder.reserve(total);
+		for (u32 index = 0; index < total; ++index)
+		{
+			if (seqRenderPrepParallelWork[index])
+				seqRenderPrepOrder.push_back(index);
+		}
+
+		const xr_vector<u32>& units = seqRenderPrepParallelWorkUnits;
+		std::stable_sort(seqRenderPrepOrder.begin(), seqRenderPrepOrder.end(),
+			[&units](u32 a, u32 b) { return units[a] > units[b]; });
+
+		seqRenderPrepSorted.clear_not_free();
+		seqRenderPrepSortedMain.clear_not_free();
+		seqRenderPrepSortedPost.clear_not_free();
+		seqRenderPrepSortedUnits.clear_not_free();
+		seqRenderPrepSorted.reserve(seqRenderPrepOrder.size());
+		seqRenderPrepSortedMain.reserve(seqRenderPrepOrder.size());
+		seqRenderPrepSortedPost.reserve(seqRenderPrepOrder.size());
+		seqRenderPrepSortedUnits.reserve(seqRenderPrepOrder.size());
+		for (u32 index : seqRenderPrepOrder)
+		{
+			seqRenderPrepSorted.push_back(seqRenderPrepParallelWork[index]);
+			seqRenderPrepSortedMain.push_back(seqRenderPrepMainWork[index]);
+			seqRenderPrepSortedPost.push_back(seqRenderPrepPostWork[index]);
+			seqRenderPrepSortedUnits.push_back(seqRenderPrepParallelWorkUnits[index]);
+		}
+		seqRenderPrepParallelWork.swap(seqRenderPrepSorted);
+		seqRenderPrepMainWork.swap(seqRenderPrepSortedMain);
+		seqRenderPrepPostWork.swap(seqRenderPrepSortedPost);
+		seqRenderPrepParallelWorkUnits.swap(seqRenderPrepSortedUnits);
 	}
 
 	SParallelDelegateBatch context = {
 		&seqRenderPrepParallelWork, &seqRenderPrepParallelLock,
 		0};
 	xr_jobs::task_group group;
-	const u32 lane_count = _max(1u, _min(
-		active_count, xr_jobs::available_thread_count()));
-	xr_jobs::submit_many(
-		&process_parallel_delegate_batch,
-		&context,
-		lane_count - 1,
-		&group,
-		xr_jobs::priority::high);
-	process_parallel_delegate_batch(&context);
-	xr_jobs::wait(group);
 
-	xrCriticalSectionGuard guard(seqRenderPrepParallelLock);
-	seqRenderPrepParallelWork.clear_not_free();
-	seqRenderPrepParallelWorkUnits.clear_not_free();
-	// Preserve the allocation for the next frame. Registrations made during the
-	// batch stay queued and are intentionally not pulled into the active batch.
-	if (seqRenderPrepParallel.empty())
+	// Never wake more threads than there is work for: a lane needs at least
+	// min_units_per_lane bone units to pay for its wake-up and cache warm-up.
+	constexpr u32 min_units_per_lane = 96;
+	const u32 lane_cap = _min(active_count, xr_jobs::available_thread_count());
+	const u32 lane_count = _max(1u, _min(lane_cap, work_units / min_units_per_lane));
+	if (lane_count > 1)
 	{
-		seqRenderPrepParallelWork.swap(seqRenderPrepParallel);
-		seqRenderPrepParallelWorkUnits.swap(seqRenderPrepParallelUnits);
+		xr_jobs::submit_many(
+			&process_parallel_delegate_batch,
+			&context,
+			lane_count - 1,
+			&group,
+			xr_jobs::priority::high);
 	}
+	const u64 t_work_begin = qpc_now();
+	process_parallel_delegate_batch(&context);
+	const u64 t_work_end = qpc_now();
+	xr_jobs::wait(group);
+	const u64 t_wait_end = qpc_now();
+
+	// Post-phase. Every worker is finished (the barrier orders their writes before
+	// these reads), so gameplay callbacks that were owed by the workers (IK, attached
+	// items, script visual callbacks) run here, serially, on the finished poses. An
+	// entry emptied by a callback that destroyed another queued object is skipped.
+	for (u32 index = 0;; ++index)
+	{
+		fastdelegate::FastDelegate0<> post_phase;
+		{
+			xrCriticalSectionGuard guard(seqRenderPrepParallelLock);
+			if (index >= seqRenderPrepPostWork.size())
+				break;
+			if (seqRenderPrepParallelWork[index])
+				post_phase = seqRenderPrepPostWork[index];
+		}
+		if (post_phase)
+			post_phase();
+	}
+
+	const u64 t_end = qpc_now();
+	SkeletonJobStats.ticks_main += t_main_end - t_begin;
+	SkeletonJobStats.ticks_work += t_work_end - t_work_begin;
+	SkeletonJobStats.ticks_wait += t_wait_end - t_work_end;
+	SkeletonJobStats.ticks_post += t_end - t_wait_end;
+	if (t_end - t_begin > SkeletonJobStats.ticks_total_max)
+		SkeletonJobStats.ticks_total_max = t_end - t_begin;
+
+	finish_batch();
 }
 
 void CRenderDevice::UpdateLuaGCCycleFeedback(u32 memory_after_kb)
@@ -1553,6 +1690,11 @@ void CRenderDevice::on_idle()
 		return;
 	}
 
+	cpu_placement::note_main_frame();
+
+	// Times the engine body of every rendered frame (frame_stats command).
+	SFrameBody frame_stats_body;
+
 	if (!Device.dwPrecacheFrame && !g_SASH.IsBenchmarkRunning() && g_bLoaded)
 	{
 		PROF_EVENT("Start xrSASH Benchmark");
@@ -1563,7 +1705,10 @@ void CRenderDevice::on_idle()
 		LuaProfileFrameBegin();
 
 	QUARK_DIAGNOSTIC_STAGE("main/frame/update");
-	FrameMove();
+	{
+		SFrameScope stats_scope(fsUpdate);
+		FrameMove();
+	}
 
 	// Precache
 	if (dwPrecacheFrame)
@@ -1620,7 +1765,10 @@ void CRenderDevice::on_idle()
 
 	QUARK_DIAGNOSTIC_STAGE("main/render/preparation");
 	START_PROFILE("Process render preparation");
-	ProcessRenderPrepParallelWork();
+	{
+		SFrameScope stats_scope(fsRenderPrep);
+		ProcessRenderPrepParallelWork();
+	}
 	STOP_PROFILE;
 
 	Device.LuaGCCount = 0;
@@ -1657,7 +1805,10 @@ void CRenderDevice::on_idle()
 		// so an indivisible phase or arbitrary callback cannot delay frame submission.
 		QUARK_DIAGNOSTIC_STAGE("main/lua/gc");
 		const u64 gc_started_ticks = CPU::QPC();
-		ProcessLuaGCWork(false);
+		{
+			SFrameScope stats_scope(fsLuaGcPre);
+			ProcessLuaGCWork(false);
+		}
 		Device.LuaGCWaitUS = qpc_ticks_to_us(CPU::QPC() - gc_started_ticks);
 		lua_gc_phase_deferred = Device.LuaGCNativeCycleActive &&
 			is_lua_gc_deferred_state(Device.LuaGCNativeState);
@@ -1667,7 +1818,10 @@ void CRenderDevice::on_idle()
 
 	QUARK_DIAGNOSTIC_STAGE("main/jobs/submit");
 	START_PROFILE("Submit frame parallel work");
-	SubmitFrameParallelWork();
+	{
+		SFrameScope stats_scope(fsJobsSubmit);
+		SubmitFrameParallelWork();
+	}
 	STOP_PROFILE;
 
 #ifdef ECO_RENDER // ECO_RENDER START
@@ -1685,6 +1839,7 @@ void CRenderDevice::on_idle()
 		else
 			rr = refresh_rate;
 
+		SFrameScope stats_scope(fsFrameWait);
 		WaitForFrameInterval(rr);
 	}
 #endif // ECO_RENDER END
@@ -1694,13 +1849,20 @@ void CRenderDevice::on_idle()
 	Statistic->RenderTOTAL_Real.Begin();
 
 	QUARK_DIAGNOSTIC_STAGE("main/render/device-begin");
-	const bool frame_began = b_is_Active && Begin();
+	bool frame_began = false;
+	{
+		SFrameScope stats_scope(fsRenderBegin);
+		frame_began = b_is_Active && Begin();
+	}
 	if (frame_began)
 	{
 		QUARK_DIAGNOSTIC_STAGE("main/render/seqRender");
 
 		START_PROFILE("Process seqRender");
-		seqRender.Process(rp_Render);
+		{
+			SFrameScope stats_scope(fsRenderScene);
+			seqRender.Process(rp_Render);
+		}
 		STOP_PROFILE;
 
 		if (psDeviceFlags.test(rsCameraPos) || psDeviceFlags.test(rsStatistic) || Statistic->errors.size())
@@ -1711,7 +1873,10 @@ void CRenderDevice::on_idle()
 
 		QUARK_DIAGNOSTIC_STAGE("main/render/present");
 
-		End();
+		{
+			SFrameScope stats_scope(fsRenderPresent);
+			End();
+		}
 
 	}
 	Statistic->RenderTOTAL_Real.End();
@@ -1722,7 +1887,10 @@ void CRenderDevice::on_idle()
 
 	QUARK_DIAGNOSTIC_STAGE("main/jobs/wait");
 	START_PROFILE("Wait frame parallel work");
-	WaitFrameParallelWork();
+	{
+		SFrameScope stats_scope(fsJobsWait);
+		WaitFrameParallelWork();
+	}
 	STOP_PROFILE;
 
 	// An allocation on a gameplay worker may reach atomic/finalize after the
@@ -1743,6 +1911,7 @@ void CRenderDevice::on_idle()
 		// execution can hide part of atomic/finalizer work.
 		QUARK_DIAGNOSTIC_STAGE("main/lua/gc-deferred");
 		const u64 gc_deferred_started_ticks = CPU::QPC();
+		SFrameScope stats_scope(fsLuaGcPost);
 		ProcessLuaGCWork(true);
 		Device.LuaGCDeferredWaitUS = qpc_ticks_to_us(CPU::QPC() - gc_deferred_started_ticks);
 		Device.LuaGCWaitUS += Device.LuaGCDeferredWaitUS;
@@ -1889,7 +2058,7 @@ void CRenderDevice::Run()
 	g_bLoaded = FALSE;
 	Log("Starting engine...");
 	thread_name("X-RAY Primary thread");
-	QUARK_DIAGNOSTIC_BREADCRUMB("lifecycle", "render device run started");
+	QUARK_DIAGNOSTIC_BREADCRUMB("main loop started");
 	QUARK_DIAGNOSTIC_STAGE("main/run/startup");
 	// Startup timers and calculate timer delta
 	dwTimeGlobal = 0;
@@ -1917,12 +2086,31 @@ void CRenderDevice::Run()
 	seqAppEnd.Process(rp_AppEnd);
 	WaitFrameParallelWork();
 	InterlockedExchange(&mt_bMustExit, TRUE);
-	QUARK_DIAGNOSTIC_BREADCRUMB("lifecycle", "render device run stopped");
+	QUARK_DIAGNOSTIC_BREADCRUMB("main loop stopped, shutting down");
 	QUARK_DIAGNOSTIC_CLEAR_STAGE();
 }
 
 u32 app_inactive_time = 0;
 u32 app_inactive_time_start = 0;
+
+namespace
+{
+// seqFrame client timing for frame_stats: the type is taken before the call because an
+// OnFrame() may destroy its own object (level teardown).
+void __fastcall rp_frame_timed(void* object)
+{
+	if (!g_frame_stats.enabled)
+	{
+		rp_Frame(object);
+		return;
+	}
+
+	const std::type_info& type = typeid(*static_cast<pureFrame*>(object));
+	const u64 started = CPU::QPC();
+	rp_Frame(object);
+	g_frame_stats.note_client(type, CPU::QPC() - started);
+}
+}
 
 void CRenderDevice::FrameMove()
 {
@@ -1933,7 +2121,6 @@ void CRenderDevice::FrameMove()
 
 	dwFrame++;
 	Core.dwFrame = dwFrame;
-	EngineErrorLogger::SetFrameNumber(dwFrame);
 	dwTimeContinual = TimerMM.GetElapsed_ms() - app_inactive_time;
 	if (psDeviceFlags.test(rsConstantFPS))
 	{
@@ -1977,7 +2164,7 @@ void CRenderDevice::FrameMove()
 	// TODO: HACK to test loading screen.
 	//if(!g_bLoaded)
 	START_PROFILE("Process seqFrame");
-	Device.seqFrame.Process(rp_Frame);
+	Device.seqFrame.Process(rp_frame_timed);
 	STOP_PROFILE;
 	g_bLoaded = TRUE;
 	//else

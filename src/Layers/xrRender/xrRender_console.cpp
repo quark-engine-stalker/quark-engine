@@ -158,6 +158,7 @@ int ps_r__portal_traverse_optimized = 1;
 int ps_r__static_multifrustum = 1;
 int ps_r__visibility_submission = 1;
 int ps_r__forward_visibility_reuse = 1;
+int ps_r__light_shadow_cache = 1; // the cache page is created with the render target (vid_restart to enable)
 int ps_r__ssaDISCARD_gradient = 1;
 float ps_r__ssaDISCARD_exp = 0.5f;
 float ps_r__ssaDISCARD_fade_k = 4.0f;
@@ -1111,6 +1112,9 @@ void xrRender_initconsole()
 	CMD4(CCC_Integer, "r__static_multifrustum", &ps_r__static_multifrustum, 0, 1);
 	CMD4(CCC_Integer, "r__visibility_submission", &ps_r__visibility_submission, 0, 1);
 	CMD4(CCC_Integer, "r__forward_visibility_reuse", &ps_r__forward_visibility_reuse, 0, 1);
+	CMD4(CCC_Integer, "r__light_shadow_cache", &ps_r__light_shadow_cache, 0, 1);
+	extern int ps_frustum_simd; // temporary A/B switch, xrCDB/Frustum.cpp
+	CMD4(CCC_Integer, "r__frustum_simd", &ps_frustum_simd, 0, 1);
 	CMD4(CCC_Integer, "r__ssa_discard_gradient", &ps_r__ssaDISCARD_gradient, 0, 1);
 	CMD4(CCC_Float, "r__ssa_discard_exp", &ps_r__ssaDISCARD_exp, 0.1f, 3.0f);
 	CMD4(CCC_Float, "r__ssa_discard_fade_k", &ps_r__ssaDISCARD_fade_k, 1.0f, 4.0f);

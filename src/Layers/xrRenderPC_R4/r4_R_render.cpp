@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "../../xrEngine/frame_stats.h"
 #include "../../xrEngine/igame_persistent.h"
 #include "../xrRender/FBasicVisual.h"
 #include "../../xrEngine/customhud.h"
@@ -451,6 +452,7 @@ void CRender::Render()
 	// Msg						("sstatic: %s, sun: %s",o.sunstatic?;"true":"false", bSUN?"true":"false");
 
 	{
+		SFrameScope stats_scope(fsRendMain);
 
 		// HOM
 		ViewBase.CreateFromMatrix(Device.mFullTransform, FRUSTUM_P_LRTB + FRUSTUM_P_FAR);
@@ -467,6 +469,7 @@ void CRender::Render()
 	{
 
 		PIX_EVENT(DEFER_Z_FILL);
+		SFrameScope stats_zfill_scope(fsRendMain);
 		Device.Statistic->RenderCALC.Begin();
 		float z_distance = ps_r2_zfill;
 		Fmatrix m_zfill, m_project;
@@ -487,6 +490,7 @@ void CRender::Render()
 		RCache.set_ColorWriteEnable(FALSE);
 		r_dsgraph_render_graph(0);
 		RCache.set_ColorWriteEnable();
+		stats_zfill_scope.stop();
 	}
 	else
 	{
@@ -523,6 +527,7 @@ void CRender::Render()
 	//******* Main calc - DEFERRER RENDERER
 	// Main calc
 	{
+		SFrameScope stats_scope(fsRendMain);
 
 		Device.Statistic->RenderCALC.Begin();
 		r_pmask(true, false, true); // enable priority "0",+ capture wmarks
@@ -576,6 +581,7 @@ void CRender::Render()
 	if (ps_r2_ls_flags.test(R2FLAG_EXP_SPLIT_SCENE)) split_the_scene_to_minimize_wait = TRUE;
 
 	//******* Main render :: PART-0	-- first
+	SFrameScope stats_geom_scope(fsRendGeom);
 	if (!split_the_scene_to_minimize_wait)
 	{
 
@@ -630,6 +636,7 @@ void CRender::Render()
 			Target->disable_aniso();
 		}
 	}
+	stats_geom_scope.stop();
 
 	//  Redotix99: for 3D Shader Based Scopes 	
 	if (scope_3D_fake_enabled)
@@ -642,6 +649,7 @@ void CRender::Render()
 	}
 
 	//******* Occlusion testing of volume-limited light-sources
+	SFrameScope stats_lightvis_scope(fsRendLightVis);
 	Target->phase_occq();
 	LP_normal.clear();
 	LP_pending.clear();
@@ -690,6 +698,7 @@ void CRender::Render()
 	}
 	LP_normal.sort();
 	LP_pending.sort();
+	stats_lightvis_scope.stop();
 
 	//******* Main render :: PART-1 (second)
 	if (split_the_scene_to_minimize_wait)
@@ -828,6 +837,7 @@ void CRender::Render()
 	{
 
 		PIX_EVENT(DEFER_SUN);
+		SFrameScope stats_scope(fsRendSun);
 		RImplementation.stats.l_visible ++;
 		if (!ps_r2_ls_flags_ext.is(R2FLAGEXT_SUN_OLD))
 			render_sun_cascades();
@@ -876,6 +886,7 @@ void CRender::Render()
 		PIX_EVENT(DEFER_LIGHT_NO_OCCQ);
 		Target->phase_accumulator();
 		HOM.Disable();
+		SFrameScope stats_scope(fsRendLights);
 		render_lights(LP_normal);
 	}
 
@@ -883,6 +894,7 @@ void CRender::Render()
 	{
 
 		PIX_EVENT(DEFER_LIGHT_OCCQ);
+		SFrameScope stats_scope(fsRendLights);
 		render_lights(LP_pending);
 	}
 
@@ -896,6 +908,7 @@ void CRender::Render()
 	{
 
 		PIX_EVENT(DEFER_LIGHT_COMBINE);
+		SFrameScope stats_scope(fsRendCombine);
 		Target->phase_combine();
 	}
 

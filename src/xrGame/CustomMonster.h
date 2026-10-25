@@ -49,7 +49,6 @@ private:
 private:
 	u32 m_client_update_delta;
 	u32 m_last_client_update_time;
-	u32 m_skeleton_job_frame;
 
 protected:
 
@@ -275,8 +274,6 @@ public:
 
 public:
 	void __stdcall update_sound_player();
-	void __stdcall calculate_bones_parallel();
-	void queue_skeleton_update();
 	virtual void on_restrictions_change();
 
 	virtual bool should_wait_to_use_corspe_visual() { return true; }

@@ -186,6 +186,7 @@
     <ClInclude Include="xrLevel.h" />
     <ClInclude Include="xrSASH.h" />
     <ClInclude Include="xrSheduler.h" />
+    <ClInclude Include="frame_stats.h" />
     <ClInclude Include="xrTheora_Stream.h" />
     <ClInclude Include="xrTheora_Surface.h" />
     <ClInclude Include="xrTheora_Surface_mmx.h" />
@@ -214,6 +215,7 @@
     <ClCompile Include="CustomHUD.cpp" />
     <ClCompile Include="defines.cpp" />
     <ClCompile Include="device.cpp" />
+    <ClCompile Include="frame_stats.cpp" />
     <ClCompile Include="AIAsyncPrepare.cpp" />
     <ClCompile Include="GIFResource.cpp" />
     <ClCompile Include="MonitorList.cpp" />

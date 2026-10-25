@@ -34,6 +34,8 @@
 #include "../xrengine/xr_collide_form.h"
 #include "script_attachment_manager.h"
 #include "player_hud.h"
+#include "mt_config.h"
+#include "../xrCore/job_system.h"
 extern MagicBox3 MagicMinBox(int iQuantity, const Fvector* akPoint);
 
 #pragma warning(push)
@@ -62,6 +64,7 @@ CGameObject::CGameObject()
 
 	m_callbacks = xr_new<CALLBACK_MAP>();
 	m_anim_mov_ctrl = 0;
+	m_skeleton_job_frame = u32(-1);
 }
 
 CGameObject::~CGameObject()
@@ -99,6 +102,7 @@ void CGameObject::Load(LPCSTR section)
 void CGameObject::reinit()
 {
 	m_visual_callback.clear();
+	m_skeleton_job_frame = u32(-1);
 	if (!g_dedicated_server)
 		ai_location().reinit();
 
@@ -119,6 +123,9 @@ void CGameObject::net_Destroy()
 #endif
 
 	VERIFY(m_spawned);
+
+	Device.remove_from_seq_render_prep_parallel(
+		fastdelegate::FastDelegate0<>(this, &CGameObject::calculate_bones_parallel));
 
 	::luabind::functor<void> funct;
 	if (ai().script_engine().functor("_G.CGameObject_NetDestroy", funct))
@@ -1308,11 +1315,114 @@ void CGameObject::UpdateCL()
 			pair.second->Update();
 	}
 
+	queue_skeleton_update();
+
 	if (H_Parent())
 		return;
 
 	on_matrix_change(m_previous_matrix);
 	m_previous_matrix = XFORM();
+}
+
+void CGameObject::calculate_bones_parallel()
+{
+	if (getDestroy() || !Visual())
+		return;
+
+	IKinematics* kinematics = smart_cast<IKinematics*>(Visual());
+	if (kinematics)
+		kinematics->CalculateBonesOnWorker(TRUE);
+}
+
+// Main-thread half of the skeleton job. Runs serially at the render-preparation
+// barrier (after every UpdateCL of the frame, before the workers start), which is the
+// point where the lazy renderer path would advance this skeleton's animation tracks.
+// Blend PlayCallbacks therefore fire on the main thread exactly when they always did,
+// and the worker only evaluates bone matrices.
+void CGameObject::prepare_bones_main()
+{
+	if (getDestroy() || !Visual())
+		return;
+
+	on_prepare_bones_main();
+
+	IKinematics* kinematics = smart_cast<IKinematics*>(Visual());
+	if (kinematics)
+		kinematics->PrepareBonesOnMain();
+}
+
+// Post-phase of the skeleton job, main thread, after the batch barrier. Runs the
+// skeleton's Update_Callback (IK limbs, attached items, script visual callbacks) that the
+// worker deliberately skipped because it is gameplay code.
+void CGameObject::finish_bones_main()
+{
+	if (getDestroy() || !Visual())
+		return;
+
+	IKinematics* kinematics = smart_cast<IKinematics*>(Visual());
+	if (kinematics)
+		kinematics->FinishBonesOnMain();
+}
+
+void CGameObject::queue_skeleton_update()
+{
+	if (!g_mt_config.test(mtSkeletonJobs))
+	{
+		return;
+	}
+	if (xr_jobs::worker_count() == 0)
+	{
+		return;
+	}
+	if (getDestroy() || !Visual())
+	{
+		return;
+	}
+	if (m_skeleton_job_frame == Device.dwFrame)
+	{
+		return;
+	}
+	if (Device.dwFrame == 0)
+	{
+		return;
+	}
+
+	IKinematics* kinematics = smart_cast<IKinematics*>(Visual());
+	if (!kinematics)
+	{
+		return;
+	}
+
+	const u32 bone_count = kinematics->LL_BoneCount();
+	if (!bone_count)
+	{
+		return;
+	}
+
+	const u32 last_exact_frame = kinematics->LastExactBonesRequestFrame();
+	if (last_exact_frame == u32(-1) || last_exact_frame != Device.dwFrame - 1)
+	{
+		++Device.SkeletonJobStats.skip_hidden;
+		return;
+	}
+
+	// Cheap, cached structural pre-filter. Blend callbacks no longer disqualify a
+	// skeleton here because prepare_bones_main() consumes them on the main thread, and
+	// the Update_Callback runs in finish_bones_main() after the batch; the
+	// worker re-validates everything under the skeleton's lock before it computes.
+	if (!kinematics->CanQueueBonesOnWorker())
+	{
+		++Device.SkeletonJobStats.skip_unsafe;
+		return;
+	}
+
+	++Device.SkeletonJobStats.queued;
+	m_skeleton_job_frame = Device.dwFrame;
+	Device.add_to_seq_render_prep_parallel(
+		fastdelegate::FastDelegate0<>(this, &CGameObject::calculate_bones_parallel),
+		bone_count,
+		fastdelegate::FastDelegate0<>(this, &CGameObject::prepare_bones_main),
+		fastdelegate::FastDelegate0<>(this, &CGameObject::finish_bones_main));
 }
 
 void CGameObject::on_matrix_change(const Fmatrix& previous)

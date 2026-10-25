@@ -45,7 +45,7 @@ Your CPU must support **AVX2**. You must also install or update the [Microsoft V
 3. Launch the game through MO2 (Mod Organizer). Select and launch **Anomaly Launcher**, enable the **Support for AVX CPU** and **Delete Shader Cache** options, then start the game. This is required to recompile the shaders.
 4. If the game crashes while loading a save, copy the `gamedata` folder from the latest GitHub archive into the Anomaly root directory, replacing existing files. Then start a new game. **Make a backup first, just in case.**
 5. It is recommended to keep the graphics settings at their default values.
-6. If you encounter any errors, send us the logs from `AppData\Roaming\QUARK ENGINE\ERROR` via Discord. These files help us identify the cause of crashes and further improve the engine.
+6. If you encounter any errors, send us the logs from `AppData\Roaming\QUARK-ENGINE\ERROR` via Discord. These files help us identify the cause of crashes and further improve the engine.
 
 <p align="center">
   <img src="docs/assets/install-replace.png" alt="Replacing files" width="655">
@@ -77,7 +77,6 @@ The primary build configuration is **`DX11-AVX | x64`**. For details and the MSB
 | Project overview and installation | [README](README.md) | [README](README.ru.md) |
 | Building from source | [Building](BUILDING.md) | [Сборка](BUILDING.ru.md) |
 | Version history | [Changelog](CHANGELOG.md) | [История изменений](CHANGELOG.ru.md) |
-| Release description template | [Release template](docs/release-template.md) | [Шаблон релиза](docs/release-template.ru.md) |
 
 ## Community and Project Authors
 

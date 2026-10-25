@@ -23,6 +23,7 @@
 #include <luabind/iterator_policy.hpp>
 #include <luabind/iterator_pair_policy.hpp>
 #include <luabind/detail/convert_to_lua.hpp>
+#include <luabind/detail/class_registry.hpp>
 #include <luabind/detail/pcall.hpp>
 
 using namespace luabind;
@@ -81,6 +82,31 @@ int script_alife_object_fast_lua(lua_State* L)
 
 	lua_insert(L, 1);
 	lua_call(L, argument_count, LUA_MULTRET);
+	return lua_gettop(L);
+}
+
+// sim:object(id): GAMMA scripts call it for every id from 1 to 65534 (task targets,
+// news). Same result as the (id) overload without luabind overload matching; any
+// other call goes to the luabind overloads kept in upvalue 1.
+int script_alife_object_method_lua(lua_State* L)
+{
+	const CALifeSimulator* const simulator = ai().get_alife();
+	const luabind::detail::object_rep* const self = luabind::detail::is_class_object(L, 1);
+	if (lua_gettop(L) == 2 && simulator && self && self->ptr() == simulator && lua_type(L, 2) == LUA_TNUMBER)
+	{
+		const lua_Number number = lua_tonumber(L, 2);
+		const lua_Integer integer = lua_tointeger(L, 2);
+		if (number == static_cast<lua_Number>(integer) && integer >= 0 && integer < 0xffff)
+		{
+			luabind::detail::convert_to_lua(L,
+				simulator->objects().object(static_cast<ALife::_OBJECT_ID>(integer), true));
+			return 1;
+		}
+	}
+
+	lua_pushvalue(L, lua_upvalueindex(1));
+	lua_insert(L, 1);
+	lua_call(L, lua_gettop(L) - 1, LUA_MULTRET);
 	return lua_gettop(L);
 }
 }
@@ -802,6 +828,16 @@ void CALifeSimulator::script_register(lua_State* L)
 	// or non-canonical arguments fall back to the original Lua implementation.
 	lua_pushcfunction(L, &script_alife_object_fast_lua);
 	lua_setglobal(L, "__quark_alife_object_fast");
+
+	if (luabind::detail::class_rep* simulator_class =
+		luabind::detail::class_registry::get_registry(L)->find_class(LUABIND_TYPEID(CALifeSimulator)))
+	{
+		simulator_class->get_table(L);
+		lua_getfield(L, -1, "object");
+		lua_pushcclosure(L, &script_alife_object_method_lua, 1);
+		lua_setfield(L, -2, "object");
+		lua_pop(L, 1);
+	}
 
 	{
 		if (story_ids.empty())

@@ -18,6 +18,13 @@ void R_tree::unmap()
 	c_c_scale = 0;
 	c_c_bias = 0;
 	c_c_sun = 0;
+
+	c_prev_wave = 0;
+	c_prev_wind = 0;
+	c_benders_setup = 0;
+	c_benders_pos = 0;
+	c_benders_prev_pos = 0;
+	named_resolved = false;
 }
 
 void R_tree::set_m_xform_v(Fmatrix& mat)

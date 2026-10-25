@@ -26,6 +26,7 @@
 #include <luabind/detail/policy.hpp>
 #include <luabind/yield_policy.hpp>
 #include <luabind/detail/calc_has_arg.hpp>
+#include <cstdlib>
 
 namespace luabind { namespace detail
 {
@@ -93,22 +94,43 @@ namespace luabind { namespace detail
             conv.converter_postcall(L, decorated_type<U>::get(), calcHasArg<ResInitWithOffset, ResInitWithOffset, Index, Policies...>());
         }
 
+        // A Lua handle can outlive its native object: CScriptGameObject clears the
+        // pointer of its userdata on destruction. A method called through such a
+        // handle is skipped and returns a default value, like SafeWrap does.
+        static T destroyed_self(lua_State* L)
+        {
+            if constexpr (std::is_reference_v<T> || (!std::is_void_v<T> && !std::is_default_constructible_v<T>))
+            {
+                lua_pushliteral(L, "attempt to call a method of a destroyed object");
+                lua_error(L);
+                std::abort();
+            }
+            else
+                return T();
+        }
+
         template <typename WrappedClass, typename C, typename... Args, typename... Ts>
-        static decltype(auto) callApply(T(C::*f)(Args...), lua_State* L, Ts&&... args)
+        static T callApply(T(C::*f)(Args...), lua_State* L, Ts&&... args)
         {
             using self_type = most_derived_t<C, WrappedClass>;
             pointer_converter<Direction::lua_to_cpp> self_cv;
 
-            return (self_cv.apply(L, decorated_type<self_type*>::get(), 1)->*f)(std::forward<Ts>(args)...);
+            self_type* self = self_cv.apply(L, decorated_type<self_type*>::get(), 1);
+            if (!self)
+                return destroyed_self(L);
+            return (self->*f)(std::forward<Ts>(args)...);
         }
 
         template <typename WrappedClass, typename C, typename... Args, typename... Ts>
-        static decltype(auto) callApply(T(C::*f)(Args...) const, lua_State* L, Ts&&... args)
+        static T callApply(T(C::*f)(Args...) const, lua_State* L, Ts&&... args)
         {
             using self_type = most_derived_t<C, WrappedClass>;
             const_pointer_converter<Direction::lua_to_cpp> self_cv;
 
-            return (self_cv.apply(L, decorated_type<self_type const*>::get(), 1)->*f)(std::forward<Ts>(args)...);
+            self_type const* self = self_cv.apply(L, decorated_type<self_type const*>::get(), 1);
+            if (!self)
+                return destroyed_self(L);
+            return (self->*f)(std::forward<Ts>(args)...);
         }
 
         template <typename WrappedClass, typename... Args, typename... Ts>

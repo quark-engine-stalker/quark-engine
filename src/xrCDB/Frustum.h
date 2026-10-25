@@ -48,6 +48,9 @@ public:
 
 	fplane planes [FRUSTUM_MAXPLANES];
 	int p_count;
+	// planes[] as structure-of-arrays (n.x, n.y, n.z, d) for the AVX2 tests: lanes below
+	// p_count mirror planes[], the rest are zero. Kept by _clear(), _add() and Create*().
+	float simd[4][16];
 
 public:
 	ICF EFC_Visible AABB_OverlapPlane(const fplane& P, const float* mM) const
@@ -76,7 +79,12 @@ public:
 	}
 
 public:
-	IC void _clear() { p_count = 0; }
+	IC void _clear()
+	{
+		p_count = 0;
+		memset(simd, 0, sizeof(simd));
+	}
+	void set_simd_lane(int i);
 	void _add(Fplane& P);
 	void _add(Fvector& P1, Fvector& P2, Fvector& P3);
 

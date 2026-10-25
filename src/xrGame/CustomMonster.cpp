@@ -108,7 +108,6 @@ CCustomMonster::CCustomMonster() :
 	m_moving_object = 0;
 	m_vision_phase_delay = 0;
 	m_vision_last_trace_time = 0;
-	m_skeleton_job_frame = u32(-1);
 }
 
 CCustomMonster::~CCustomMonster()
@@ -216,7 +215,6 @@ void CCustomMonster::reinit()
 
 	m_client_update_delta = 0;
 	m_last_client_update_time = Device.dwTimeGlobal;
-	m_skeleton_job_frame = u32(-1);
 
 	eye_pp_stage = 0;
 	m_vision_phase_delay = 0;
@@ -449,72 +447,6 @@ void CCustomMonster::update_sound_player()
 	sound().update(client_update_fdelta());
 }
 
-void CCustomMonster::calculate_bones_parallel()
-{
-	if (getDestroy() || !Visual())
-		return;
-
-	IKinematics* kinematics = smart_cast<IKinematics*>(Visual());
-	if (kinematics)
-		kinematics->CalculateBonesOnWorker(TRUE);
-}
-
-void CCustomMonster::queue_skeleton_update()
-{
-	if (!g_mt_config.test(mtSkeletonJobs))
-	{
-		return;
-	}
-	if (xr_jobs::worker_count() == 0)
-	{
-		return;
-	}
-	if (getDestroy() || !Visual())
-	{
-		return;
-	}
-	if (m_skeleton_job_frame == Device.dwFrame)
-	{
-		return;
-	}
-	if (Device.dwFrame == 0)
-	{
-		return;
-	}
-
-	IKinematics* kinematics = smart_cast<IKinematics*>(Visual());
-	if (!kinematics)
-	{
-		return;
-	}
-
-	const u32 bone_count = kinematics->LL_BoneCount();
-	if (!bone_count)
-	{
-		return;
-	}
-
-	const u32 last_exact_frame = kinematics->LastExactBonesRequestFrame();
-	if (last_exact_frame == u32(-1))
-	{
-		return;
-	}
-	if (last_exact_frame != Device.dwFrame - 1)
-	{
-		return;
-	}
-
-	if (!kinematics->CanCalculateBonesOnWorker())
-	{
-		return;
-	}
-
-	m_skeleton_job_frame = Device.dwFrame;
-	Device.add_to_seq_render_prep_parallel(
-		fastdelegate::FastDelegate0<>(this, &CCustomMonster::calculate_bones_parallel),
-		bone_count);
-}
-
 void CCustomMonster::UpdateCL()
 {
 	START_PROFILE("CustomMonster/client_update")
@@ -537,7 +469,6 @@ void CCustomMonster::UpdateCL()
 
 			CScriptEntity::process_sound_callbacks();
 		}
-		queue_skeleton_update();
 
 #ifdef DEBUG
 	if( animation_movement() )
@@ -1106,9 +1037,6 @@ void CCustomMonster::OnEvent(NET_Packet& P, u16 type)
 
 void CCustomMonster::net_Destroy()
 {
-	Device.remove_from_seq_render_prep_parallel(
-		fastdelegate::FastDelegate0<>(this, &CCustomMonster::calculate_bones_parallel));
-
 	inherited::net_Destroy();
 	CScriptEntity::net_Destroy();
 	sound().unload();
