@@ -1713,13 +1713,9 @@ void CAI_Stalker::ChangeVisual(shared_str NewVisual)
 	IKinematicsAnimated* V = smart_cast<IKinematicsAnimated*>(Visual());
 	if (V)
 	{
-		// Called from a script net_spawn (not Ready yet): the rest of net_Spawn sets up physics (in_NetSpawn),
-		// bone protections and animations from the new visual; m_boneHitProtection does not exist yet.
-		const bool spawned = !!getReady();
 		if (!g_Alive())
 		{
-			if (spawned)
-				m_pPhysics_support->in_Die(false);
+			m_pPhysics_support->in_Die(false);
 		}
 		else
 		{
@@ -1727,13 +1723,10 @@ void CAI_Stalker::ChangeVisual(shared_str NewVisual)
 		}
 
 		CDamageManager::reload(cNameSect_str(), "damage", pSettings);
+		ResetBoneProtections(NULL, NULL);
 		reattach_items();
-		if (spawned)
-		{
-			ResetBoneProtections(NULL, NULL);
-			m_pPhysics_support->in_ChangeVisual();
-			animation().reload();
-		}
+		m_pPhysics_support->in_ChangeVisual();
+		animation().reload();
 		movement().reload(cNameSect_str());
 	}
 

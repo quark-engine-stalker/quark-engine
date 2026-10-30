@@ -889,10 +889,15 @@ void CScriptGameObject::SetCommunityGoodwill_obj(LPCSTR community, int goodwill)
 
 int CScriptGameObject::GetAttitude(CScriptGameObject* pToWho)
 {
+	// CRASH-LOG 29.10: a mod asked general_goodwill of a non-InventoryOwner (monster/item)
 	CInventoryOwner* pInventoryOwner = cached_inventory_owner();
-	VERIFY(pInventoryOwner);
-	CInventoryOwner* pOthersInventoryOwner = pToWho->cached_inventory_owner();
-	VERIFY(pOthersInventoryOwner);
+	CInventoryOwner* pOthersInventoryOwner = pToWho ? pToWho->cached_inventory_owner() : nullptr;
+	if (!pInventoryOwner || !pOthersInventoryOwner)
+	{
+		ai().script_engine().script_log(ScriptStorage::eLuaMessageTypeError,
+		                                "GetAttitude available only for InventoryOwner");
+		return 0;
+	}
 	return RELATION_REGISTRY().GetAttitude(pInventoryOwner, pOthersInventoryOwner);
 }
 

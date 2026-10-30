@@ -13,7 +13,7 @@ extern float r_ssaGLOD_start, r_ssaGLOD_end;
 
 void CRender::Calculate()
 {
-
+	PROF_EVENT();
 	r_dsgraph_begin_frame(Device.dwFrame);
 	// Transfer to global space to avoid deep pointer access
 	IRender_Target* T = getTarget();

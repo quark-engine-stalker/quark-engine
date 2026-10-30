@@ -780,6 +780,7 @@ u32 CDetailManager::sun_shadow_mask_for_slot(Slot& slot)
 
 void CDetailManager::Render()
 {
+	PROF_EVENT();
 #ifndef _EDITOR
 	if (0 == dtFS) return;
 	if (!psDeviceFlags.is(rsDetails)) return;
@@ -854,6 +855,7 @@ void __stdcall CDetailManager::MT_CALC()
 	if (!psDeviceFlags.is(rsDetails)) return;
 #endif
 
+	PROF_EVENT("CDetailManager::MT_CALC");
 	MT.Enter();
 	const u32 current_frame = RDEVICE.dwFrame;
 	const u32 calculated_frame = static_cast<u32>(InterlockedCompareExchange(&m_frame_calc, 0, 0));

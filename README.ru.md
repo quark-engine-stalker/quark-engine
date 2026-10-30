@@ -14,7 +14,6 @@
   <img src="https://img.shields.io/badge/status-OPEN_BETA-c2df77?style=flat-square&amp;labelColor=171d20" alt="Open beta">
   <img src="https://img.shields.io/badge/platform-Windows_x64-8ca6b8?style=flat-square&amp;labelColor=171d20" alt="Windows x64">
   <img src="https://img.shields.io/badge/renderer-DX11_%2F_AVX2-8ca6b8?style=flat-square&amp;labelColor=171d20" alt="DirectX 11 / AVX2">
-  <a href="https://discord.com/invite/X7GRYsNNEc"><img src="https://img.shields.io/badge/Discord-сообщество-5865F2?style=flat-square&amp;logo=discord&amp;logoColor=white" alt="Перейти в Discord"></a>
 </p>
 
 <p align="center">
@@ -25,8 +24,7 @@
   <a href="https://github.com/quark-engine-stalker/quark-engine/releases">Скачать / Releases</a> &
   <a href="#установка-и-требования">Установка</a> &
   <a href="CHANGELOG.ru.md">История изменений</a> &
-  <a href="#документация">Документация</a> &
-  <a href="https://discord.com/invite/X7GRYsNNEc">Discord</a>
+  <a href="#документация">Документация</a>
 </p>
 
 ---
@@ -40,12 +38,14 @@
 
 Ваш процессор должен быть с поддержкой **AVX2**, также установите & обновите библиотеки [Microsoft Visual C++ Redistributable x64](https://aka.ms/vs/17/release/vc_redist.x64.exe).
 
-1. Убедитесь, что STALKER: Anomaly 1.5.3 и STALKER: GAMMA 0.9.5 установлены корректно. Инструкции по установке ищите у соответствующих авторов.
-2. Скачайте последнюю версию `AnomalyDX11AVX.rar` из нашего репозитория на GitHub. Извлеките файлы `.exe` и `.pdb` в папку `Anomaly\bin`, подтвердив замену существующих файлов. **Перед заменой обязательно сделайте резервную копию на всякий случай.**
-3. Запустите игру через MO2 (Mod Organizer). Выберите и запустите **Anomaly Launcher**, включите параметры **Support for AVX CPU** и **Delete Shader Cache**, а затем запустите игру. Это необходимо для перекомпиляции шейдеров.
-4. Если игра вылетает при загрузке сохранения, скопируйте папку `gamedata` из последнего архива на GitHub в корневую директорию Anomaly, подтвердив замену существующих файлов. После этого начните новую игру. **Перед заменой обязательно сделайте резервную копию на всякий случай.**
-5. Рекомендуется оставить настройки графики по умолчанию.
-6. Если возникают ошибки, отправьте нам в Discord логи из папки `AppData\Roaming\QUARK-ENGINE\ERROR`. Эти файлы помогают определить причины вылетов и в дальнейшем улучшать движок.
+1. Убедитесь, что STALKER: Anomaly 1.5.3 и STALKER: GAMMA 0.9.5 установлены корректно. Инструкции по их установке есть у соответствующих авторов.
+2. **Сделайте резервную копию** папки `Anomaly\bin` и папки `Anomaly\gamedata`.
+3. Скачайте последний архив `AnomalyDX11AVX.rar` со [страницы релизов](https://github.com/quark-engine-stalker/quark-engine/releases) и распакуйте его.
+4. Скопируйте `AnomalyDX11AVX.exe` и `AnomalyDX11AVX.pdb` в папку `Anomaly\bin` с заменой существующих файлов.
+5. Скопируйте папку `gamedata` из архива в корень папки `Anomaly` (рядом с `bin`) с заменой существующих файлов.
+6. Запустите через MO2 (Mod Organizer) **Anomaly Launcher**, включите **Support for AVX CPU** и **Delete Shader Cache** и запустите игру. Шейдеры перекомпилируются при первом запуске.
+
+Настройки графики рекомендуется оставить по умолчанию. При ошибках приложите к сообщению о проблеме логи из папки `AppData\Roaming\QUARK-ENGINE\ERROR` и отправьте все это нам в Discord.
 
 
 <p align="center">
@@ -79,10 +79,9 @@ quark-engine/
 | Сборка из исходников | [Building](BUILDING.md) | [Сборка](BUILDING.ru.md) |
 | История версий | [Changelog](CHANGELOG.md) | [История изменений](CHANGELOG.ru.md) |
 
-## Сообщество и авторы проекта
+## Авторы проекта
 
-Присоединяйтесь к нам: **[DISCORD QUARK ENGINE](https://discord.com/invite/X7GRYsNNEc)**.
-Quark Engine основан на [X-Ray Monolith](https://github.com/themrdemonized/xray-monolith).
+QUARK-ENGINE основан на [X-Ray Monolith](https://github.com/themrdemonized/xray-monolith).
 
 ## Лицензия
 

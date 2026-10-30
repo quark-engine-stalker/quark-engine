@@ -17,6 +17,10 @@
 #include "StateManager\dx10SamplerStateCache.h"
 #include "StateManager\dx10StateCache.h"
 
+#ifdef TRACY_ENABLE
+TracyD3D11Ctx g_tracy_d3d11 = nullptr;
+#endif
+
 #ifndef _EDITOR
 void fill_vid_mode_list(CHW* _hw);
 void free_vid_mode_list();
@@ -490,6 +494,9 @@ void CHW::CreateDevice(HWND hwnd, bool move_window)
     _RELEASE(swapchain3);
 
     R_CHK(pContext->QueryInterface(__uuidof(ID3DUserDefinedAnnotation), (void**)&pAnnotation));
+#ifdef TRACY_ENABLE
+    g_tracy_d3d11 = TracyD3D11Context(pDevice, pContext);
+#endif
 
     _SHOW_REF("* CREATE: DeviceREF:", HW.pDevice);
     /*
@@ -552,6 +559,13 @@ void CHW::DestroyDevice()
 	m_fullscreen_restore_pending = false;
 	m_fullscreen_transition_result = S_OK;
 
+#ifdef TRACY_ENABLE
+    if (g_tracy_d3d11)
+    {
+        TracyD3D11Destroy(g_tracy_d3d11);
+        g_tracy_d3d11 = nullptr;
+    }
+#endif
     // Release context-held references before destroying swap-chain resources.
     if (pContext) pContext->ClearState();
     //	Destroy state managers

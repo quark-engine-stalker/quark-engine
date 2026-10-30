@@ -6,6 +6,7 @@ static unsigned int g_uGroupTexelDimensionAfterOverlap = g_uGroupTexelDimension 
 
 void CRenderTarget::phase_hdao()
 {
+	PROF_EVENT();
 	if (ps_r_ssao > 0)
 	{
 		ShaderElement* S;

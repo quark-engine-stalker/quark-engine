@@ -11,7 +11,7 @@
 #include "script_engine.h"
 #include "script_binder.h"
 #include "xrServer_Objects_ALife.h"
-#include "script_binder_object.h"
+#include "script_binder_object_wrapper.h"
 #include "script_game_object.h"
 #include "gameobject.h"
 #include "level.h"
@@ -177,6 +177,27 @@ void CScriptBinder::net_Destroy()
 		catch (...)
 		{
 			clear();
+		}
+	}
+
+	// Scripts may keep the binder after net_destroy (bind_campfire's campfires_all). Give an adopted Lua binder
+	// back to Lua, as adopt_policy does, so its instance stays valid until collected instead of freed here
+	if (auto wrapper = dynamic_cast<CScriptBinderObjectWrapper*>(m_object))
+	{
+		luabind::wrapped_self_t& self = luabind::detail::wrap_access::ref(*wrapper);
+		if (self.m_strong_ref.is_valid())
+		{
+			lua_State* L = ai().script_engine().lua();
+			self.get(L);
+			if (luabind::detail::object_rep* rep = luabind::detail::is_class_object(L, -1))
+			{
+				rep->set_flags(rep->flags() | luabind::detail::object_rep::owner);
+				luaJIT_setudatafinalizer(L, -1, 1);
+				self.m_strong_ref.reset();
+				wrapper->m_object = nullptr;
+				m_object = nullptr;
+			}
+			lua_pop(L, 1);
 		}
 	}
 	xr_delete(m_object);

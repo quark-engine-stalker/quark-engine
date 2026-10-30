@@ -154,6 +154,7 @@ CHUDManager::~CHUDManager()
 //--------------------------------------------------------------------
 void CHUDManager::OnFrame()
 {
+	PROF_EVENT();
 	if (!psHUD_Flags.is(HUD_DRAW_RT2))
 		return;
 
@@ -204,6 +205,7 @@ bool need_render_hud()
 
 void CHUDManager::Render_Last()
 {
+	PROF_EVENT();
 	if (0 == pUIGame) return;
 	if (g_actor) g_actor->RenderCamAttached();
 	if (!psHUD_Flags.is(HUD_WEAPON | HUD_WEAPON_RT | HUD_WEAPON_RT2 | HUD_DRAW_RT2))return;
@@ -273,6 +275,7 @@ extern ENGINE_API BOOL bShowPauseString;
 //отрисовка элементов интерфейса
 void CHUDManager::RenderUI()
 {
+	PROF_EVENT();
 	if (!psHUD_Flags.is(HUD_DRAW_RT2))
 		return;
 

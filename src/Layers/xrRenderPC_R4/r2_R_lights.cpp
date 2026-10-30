@@ -343,6 +343,7 @@ bool CRender::build_cached_shadow(ShadowFace& face, bool& svis_open)
 
 void CRender::render_lights(light_Package& LP)
 {
+	PROF_EVENT();
 
 	RDEVICE.Statistic->RenderDUMP_Lights.Begin();
 	SFrameScope stats_setup_scope(fsLightSetup);

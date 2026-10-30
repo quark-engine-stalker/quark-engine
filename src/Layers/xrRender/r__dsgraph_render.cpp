@@ -445,6 +445,7 @@ bool R_dsgraph_structure::r_dsgraph_prepare_opaque_sort(u32 priority)
 
 void R_dsgraph_structure::r_dsgraph_render_graph(u32 _priority, bool _clear)
 {
+	PROF_EVENT();
 	//PIX_EVENT(r_dsgraph_render_graph);
 	Device.Statistic->RenderDUMP.Begin();
 	const bool items_sorted = r_dsgraph_prepare_opaque_sort(_priority);
@@ -648,6 +649,7 @@ void R_dsgraph_structure::r_dsgraph_render_graph(u32 _priority, bool _clear)
 // HUD render
 void R_dsgraph_structure::r_dsgraph_render_hud(bool NoPS)
 {
+	PROF_EVENT();
 	//PIX_EVENT(r_dsgraph_render_hud);
 
 	// Change projection
@@ -783,6 +785,7 @@ void R_dsgraph_structure::r_dsgraph_render_cam_ui()
 // strict-sorted render
 void R_dsgraph_structure::r_dsgraph_render_sorted()
 {
+	PROF_EVENT();
 	// Sorted (back to front)
 	mapSorted.traverseRL(sorted_L1);
 	mapSorted.clear();
@@ -848,6 +851,7 @@ void R_dsgraph_structure::r_dsgraph_render_ScopeSorted()  //  Redotix99: for 3D 
 // strict-sorted render
 void R_dsgraph_structure::r_dsgraph_render_emissive(bool clear, bool renderHUD)
 {
+	PROF_EVENT();
 	// Sorted (back to front)
 	mapEmissive.traverseLR(sorted_L1);
 	if (clear)
@@ -884,6 +888,7 @@ void R_dsgraph_structure::r_dsgraph_render_water_ssr()
 
 void R_dsgraph_structure::r_dsgraph_render_water()
 {
+	PROF_EVENT();
 	mapWater.traverseLR(water_node);
 	mapWater.clear();
 }
@@ -901,6 +906,7 @@ void R_dsgraph_structure::r_dsgraph_render_wmarks()
 // strict-sorted render
 void R_dsgraph_structure::r_dsgraph_render_distort()
 {
+	PROF_EVENT();
 	// Sorted (back to front)
 	mapDistort.traverseRL(sorted_L1);
 	mapDistort.clear();
@@ -934,6 +940,7 @@ void R_dsgraph_structure::r_dsgraph_render_subspace(IRender_Sector* _sector, Fma
 void R_dsgraph_structure::r_dsgraph_render_subspace(IRender_Sector* _sector, CFrustum* _frustum, Fmatrix& mCombined,
 	                                                Fvector& _cop, BOOL _dynamic, BOOL _precise_portals, BOOL _static)
 {
+	PROF_EVENT();
 	// A spatial can temporarily have no sector near portals, outside static level
 	// geometry or during level teardown. Release builds do not execute VERIFY, so
 	// reject the empty subspace before touching global render/traversal state.
@@ -1146,6 +1153,7 @@ void __fastcall pLandscape_1(mapLandscape_Node *N)
 
 void R_dsgraph_structure::r_dsgraph_render_landscape(u32 pass, bool _clear)
 {
+	PROF_EVENT();
 	RCache.set_xform_world(Fidentity);
 
 	if (pass == 0) 

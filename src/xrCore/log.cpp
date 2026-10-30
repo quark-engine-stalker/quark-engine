@@ -87,7 +87,6 @@ void trim_log_history_locked()
 void FlushLog()
 {
 	PROF_EVENT();
-	PROF_EVENT("Flushing");
 	logCS.Enter();
 	write_pending_log_line_locked();
 	if (!no_log && LogStream && !LogIoFailed && fflush(LogStream) != 0)

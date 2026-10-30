@@ -393,6 +393,7 @@ void CDetailManager::hw_Render_dump(const Fvector4& consts, const Fvector4& wave
 	const Fvector4& prev_wave, const Fvector4& prev_wind, u32 var_id, u32 lod_id,
 	const Fvector4* current_benders, const Fvector4* previous_benders, u32 bender_count)
 {
+	PROF_EVENT();
 	const bool reuse_upload = fade_distance > -1.f;
 	if (reuse_upload)
 		hw_Render_dump_impl<true>(consts, wave, wind, prev_wave, prev_wind, var_id, lod_id,

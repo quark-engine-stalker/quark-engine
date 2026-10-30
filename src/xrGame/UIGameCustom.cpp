@@ -115,6 +115,7 @@ void CUIGameCustom::OnFrame()
 
 void CUIGameCustom::Render()
 {
+	PROF_EVENT();
 	for (StaticDrawableWrapper* item : CustomStatics)
 		item->Draw();
 	Window->Draw();

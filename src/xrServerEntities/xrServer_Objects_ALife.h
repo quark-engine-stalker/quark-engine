@@ -22,6 +22,7 @@
 
 #ifdef XRGAME_EXPORTS
 class CALifeSimulator;
+class CALifeScheduleRegistry;
 #endif
 
 class CSE_ALifeItemWeapon;
@@ -55,6 +56,11 @@ SERVER_ENTITY_DECLARE_BEGIN(CSE_ALifeSchedulable, IPureSchedulableObject)
 	CSE_ALifeItemWeapon* m_tpCurrentBestWeapon;
 	CSE_ALifeDynamicObject* m_tpBestDetector;
 	u64 m_schedule_counter;
+#ifdef XRGAME_EXPORTS
+	// set while the schedule registry holds this object, so the destructor can drop the entry
+	CALifeScheduleRegistry* m_schedule_registry;
+	ALife::_OBJECT_ID m_schedule_id;
+#endif
 
 	CSE_ALifeSchedulable(LPCSTR caSection);
 	virtual ~CSE_ALifeSchedulable();

@@ -238,6 +238,11 @@ for name,v in pairs(intercepts) do
 	next_index[name] = 1
 end
 
+-- QUARK: dispatch order per callback, rebuilt only after callback_set/unset. make_callback
+-- runs thousands of times a frame (npc_on_update per NPC, actor_on_update with hundreds of
+-- GAMMA listeners) and used to collect and sort every listener on every call.
+local dispatch_order = {}
+
 -----------------------------------------------------------
 -- Global Callback Register
 -- param 1 - name as type<string> (ie. intercepts[name])
@@ -247,6 +252,7 @@ function callback_add(name)
 	if (not intercepts[name]) then
 		intercepts[name] = {}
 		next_index[name] = 1
+		dispatch_order[name] = nil
 	else
 		printf("![axr_main callback_add] callback %s already exists!",name)
 		callstack()
@@ -262,6 +268,7 @@ function callback_set(name,func_or_userdata)
 	if (intercepts[name]) then
 		intercepts[name][func_or_userdata] = next_index[name]
 		next_index[name] = next_index[name] + 1
+		dispatch_order[name] = nil
 	else
 		printf("![axr_main callback_set] callback %s doesn't exist!",name)
 		callstack()
@@ -271,6 +278,7 @@ end
 function callback_unset(name,func_or_userdata)
 	if (intercepts[name]) then
 		intercepts[name][func_or_userdata] = nil
+		dispatch_order[name] = nil
 	else
 		printf("![axr_main callback_unset] callback %s doesn't exist!",name)
 		callstack()
@@ -278,9 +286,22 @@ function callback_unset(name,func_or_userdata)
 end
 
 function make_callback(name,...)
-	if (intercepts[name]) then
-		for func_or_userdata, v in spairs(intercepts[name], sort_func_values_ascend) do 
-			if (type(func_or_userdata) == "function") then 
+	local listeners = intercepts[name]
+	if (listeners) then
+		local order = dispatch_order[name]
+		if (not order) then
+			order = {}
+			for func_or_userdata in pairs(listeners) do
+				order[#order+1] = func_or_userdata
+			end
+			table.sort(order, function(a,b) return sort_func_values_ascend(listeners, a, b) end)
+			dispatch_order[name] = order
+		end
+		-- Like the old per-call snapshot: a listener set/unset during dispatch takes effect
+		-- next call (a rebuild makes a new table; this loop keeps its own).
+		for i = 1, #order do
+			local func_or_userdata = order[i]
+			if (type(func_or_userdata) == "function") then
 				func_or_userdata(...)
 			elseif (func_or_userdata[name]) then
 				func_or_userdata[name](func_or_userdata,...)

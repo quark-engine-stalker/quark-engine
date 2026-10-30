@@ -1021,18 +1021,31 @@ _G.COnXmlRead = function(xml_file_name, xml_string)
 
 	if xml_string_debug_enabled then print_parser_msg(xml_file_name, "loaded") end
 
-	local xml_table = try(parser.simple_dom, parser, xml_string, parser_options)
-	if not xml_table then
-		print_parser_error(xml_file_name, "error parsing")
-		return xml_string
-	end
-
-	local xml_obj = try(xml_object, xml_file_name, xml_string, xml_table)
+	local xml_obj = try(xml_object, xml_file_name, xml_string, nil)
 	if not xml_obj then
 		print_parser_error(xml_file_name, "error creating xml_obj")
 		return xml_string
 	end
-	if xml_string_debug_enabled then print_parser_msg(xml_file_name, "parsed") end
+
+	-- QUARK: parse on first use of xml_obj.xml_table (every method reaches the DOM through it).
+	-- Callbacks check the file name first, so a file none of them opens skips the Lua parse
+	-- and re-serialisation and reaches the engine as read, like the text\ files above.
+	local parse_failed = false
+	setmetatable(xml_obj, {__index = function(t, k)
+		if k ~= "xml_table" then
+			return nil
+		end
+		local xml_table = try(parser.simple_dom, parser, xml_string, parser_options)
+		if not xml_table then
+			print_parser_error(xml_file_name, "error parsing")
+			-- callbacks edit an empty document; the file goes back unchanged, as before
+			parse_failed = true
+			xml_table = { el = "!doc", kids = {} }
+		end
+		rawset(t, "xml_table", xml_table)
+		if xml_string_debug_enabled then print_parser_msg(xml_file_name, "parsed") end
+		return xml_table
+	end})
 
 	-- Flags for DXML scripts to change
 	local flags = {
@@ -1041,7 +1054,10 @@ _G.COnXmlRead = function(xml_file_name, xml_string)
 	xmlDispatch(xml_file_name, xml_obj, flags)
 	if xml_string_debug_enabled then print_parser_msg(xml_file_name, "callback") end
 
-	xml_string = parser:simple_xml(xml_table)
+	local xml_table = rawget(xml_obj, "xml_table")
+	if xml_table and not parse_failed then
+		xml_string = parser:simple_xml(xml_table)
+	end
 
 	-- Cache parsed file
 	if flags.cache then

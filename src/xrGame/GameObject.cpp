@@ -375,7 +375,8 @@ BOOL CGameObject::net_Spawn(CSE_Abstract* DC)
 		}
 	};
 
-	setReady(TRUE);
+	// Ready is set by CLevel::g_sv_Spawn once the whole net_Spawn chain has succeeded:
+	// a save started from a script net_spawn must not export this half-built object
 	if (!demo_spectator)
 		g_pGameLevel->Objects.net_Register(this);
 

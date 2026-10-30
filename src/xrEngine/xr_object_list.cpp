@@ -123,6 +123,8 @@ void CObjectList::SingleUpdate(CObject* O)
 	if (g_bEnableStatGather)
 		Device.Statistic->UpdateClient_updated++;
 	O->dwFrame_UpdateCL = Device.dwFrame;
+	PROF_EVENT("UpdateCL");
+	PROF_TEXT(O->cName().c_str());
 
 	// Msg ("[%d][0x%08x]IAmNotACrowAnyMore (CObjectList::SingleUpdate)", Device.dwFrame, fast_dynamic_cast<void*>(O));
 
@@ -206,6 +208,7 @@ void CObjectList::clear_crow_vec(Objects& o)
 
 void CObjectList::Update(bool bForce)
 {
+	PROF_EVENT();
 	if (!Device.Paused() || bForce)
 	{
 		// Clients

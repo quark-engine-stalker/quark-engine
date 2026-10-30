@@ -147,9 +147,12 @@ IC bool dx10ConstantBuffer::set(R_constant* C, R_constant_load& L, const Fmatrix
 IC bool dx10ConstantBuffer::set(R_constant* C, R_constant_load& L, const Fvector4& A)
 {
 	VERIFY(RC_float == C->type);
-	VERIFY(RC_1x4 == L.cls || RC_1x3 == L.cls || RC_1x2 == L.cls);
+	VERIFY(RC_1x4 == L.cls || RC_1x3 == L.cls || RC_1x2 == L.cls || RC_1x1 == L.cls);
 	switch (L.cls)
 	{
+	// a shader may declare a float4 engine constant as a scalar (SSS ssfx_wpn_dof_2): write only that float
+	case RC_1x1:
+		return UpdateDataFixed<sizeof(float)>(L.index, &A.x);
 	case RC_1x2:
 		return UpdateDataFixed<2 * sizeof(float)>(L.index, &A.x);
 	case RC_1x3:

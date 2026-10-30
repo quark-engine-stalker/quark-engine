@@ -672,7 +672,9 @@ void CRenderTarget::phase_ssfx_sss_ext(light_Package& LP)
 		for (int slot = 0; slot < 8; slot++)
 			Lights_Array[slot].set(0, 0, 0, 0);
 
-		xr_vector<light*> LightsSort;
+		// Render thread only; reused so the per-frame sort does not allocate.
+		static xr_vector<light*> LightsSort;
+		LightsSort.clear();
 		bool CheckPackage = true;
 
 		if (Device.dwFrame > sss_currentframe)

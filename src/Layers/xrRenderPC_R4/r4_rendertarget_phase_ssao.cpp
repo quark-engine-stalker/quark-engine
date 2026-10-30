@@ -11,6 +11,7 @@ void set_viewport(ID3DDeviceContext* dev, float w, float h)
 
 void CRenderTarget::phase_ssao()
 {
+	PROF_EVENT();
 	u32 Offset = 0;
 
 	FLOAT ColorRGBA[4] = {0.0f, 0.0f, 0.0f, 0.0f};

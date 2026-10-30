@@ -8,13 +8,18 @@
 
 #pragma once
 
+#include "../xrEngine/SkeletonMotions.h"
+
 class CStalkerAnimationData;
 class IKinematicsAnimated;
 
 class CStalkerAnimationDataStorage
 {
 public:
-	typedef std::pair<IKinematicsAnimated*, CStalkerAnimationData*> OBJECT;
+	// Keyed by the motion slots, not by the first stalker's skeleton: that visual can go back to
+	// the model pool and be freed mid-level (VRAM pressure trim clears the pool).
+	typedef xr_vector<shared_motions> MOTIONS;
+	typedef std::pair<MOTIONS, CStalkerAnimationData*> OBJECT;
 	typedef xr_vector<OBJECT> OBJECTS;
 
 private:

@@ -187,6 +187,13 @@ void CResourceManager::StoreNecessaryTextures()
 	}
 }
 
+// texture_warmup_memory_mb is the learned UI share (pinned first, see IGame_Persistent::Prefetch);
+// the cache holds twice that so model prefetch gets as much again.
+static u64 warm_cache_bytes()
+{
+	return 2u * static_cast<u64>(_max(0, psTextureWarmupMemoryMb)) * 1024u * 1024u;
+}
+
 void CResourceManager::PrefetchTexture(LPCSTR name)
 {
 	if (!name || !name[0] || !m_allow_speculative_texture_upload.load(std::memory_order_acquire))
@@ -201,7 +208,7 @@ void CResourceManager::PrefetchTexture(LPCSTR name)
 	if (!file) return; // Non-DDS/video/user resources remain demand-owned.
 	{
 		xrCriticalSectionGuard guard(textureGuard);
-		const u64 configured = static_cast<u64>(_max(0, psTextureWarmupMemoryMb)) * 1024u * 1024u;
+		const u64 configured = warm_cache_bytes();
 		const u64 limit = video_memory_policy::optional_texture_budget(configured,
 			m_video_memory_budget, m_video_memory_usage, m_warm_texture_reclaimable_bytes);
 		// Do not read/create a speculative resource that cannot even fit its
@@ -232,7 +239,7 @@ void CResourceManager::PinTexture(LPCSTR name)
 	if (!file)
 		return;
 	const u64 bytes = file->size_real;
-	const u64 budget = static_cast<u64>(_max(0, psTextureWarmupMemoryMb)) * 1024u * 1024u;
+	const u64 budget = warm_cache_bytes();
 
 	// Runtime pinning must never turn into another synchronous texture load.
 	// Retain only an object that is already present in the resource registry.
@@ -283,7 +290,9 @@ void CResourceManager::SetVideoMemoryBudget(u64 budget, u64 usage)
 
 void CResourceManager::TrimWarmTextures(u32 now, bool pressure, bool hard_pressure, u32 max_releases)
 {
-	if (!max_releases)
+	// VRAM usage peaks while a level loads, so the budget check alone retired the
+	// learned UI warm-up (Evict() runs in LoadBuffers) before the first frame.
+	if (!max_releases || load_screen_renderer.b_registered)
 		return;
 	xr_vector<ref_texture> retired;
 	{
@@ -297,16 +306,19 @@ void CResourceManager::TrimWarmTextures(u32 now, bool pressure, bool hard_pressu
 			if (entry.texture->dwReference.load(std::memory_order_acquire) == 1)
 				m_warm_texture_reclaimable_bytes += resident;
 		}
-		const u64 configured = static_cast<u64>(_max(0, psTextureWarmupMemoryMb)) * 1024u * 1024u;
+		const u64 configured = warm_cache_bytes();
 		const u64 limit = video_memory_policy::optional_texture_budget(configured,
 			m_video_memory_budget, m_video_memory_usage, m_warm_texture_reclaimable_bytes);
 		for (auto it = m_warm_textures.begin(); it != m_warm_textures.end() && retired.size() < max_releases;)
 		{
 			CTexture* texture = it->texture._get();
+			// Within budget the learned set stays for the session: a retired icon atlas
+			// is read again on the next inventory open.
+			if (!pressure && m_warm_texture_bytes <= limit)
+				break;
 			const u32 age = video_memory_policy::warm_age(now, it->retained_at, texture->last_used_time);
-			const bool over_budget = pressure || m_warm_texture_bytes > limit;
-			const u32 grace = over_budget ? (hard_pressure ? video_memory_policy::warm_hard_pressure_idle_ms :
-				video_memory_policy::warm_pressure_idle_ms) : video_memory_policy::warm_idle_ms;
+			const u32 grace = hard_pressure ? video_memory_policy::warm_hard_pressure_idle_ms :
+				video_memory_policy::warm_pressure_idle_ms;
 			// Only retire sole cache ownership. Shader/UI/scene/explicit-prefetch
 			// owners are never unloaded or modified by memory maintenance.
 			if (age >= grace && texture->dwReference.load(std::memory_order_acquire) == 1)
@@ -325,6 +337,8 @@ void CResourceManager::TrimWarmTextures(u32 now, bool pressure, bool hard_pressu
 				// That texture was not counted as reclaimable yet; clamp the estimate
 				// instead of wrapping an unsigned counter when it now becomes idle.
 				m_warm_texture_reclaimable_bytes -= _min(m_warm_texture_reclaimable_bytes, resident);
+				Msg("* [texture-warmup] retired '%s' (%s, limit %u MB)", texture->cName.c_str(),
+					pressure ? (hard_pressure ? "hard pressure" : "pressure") : "over budget", u32(limit >> 20));
 				retired.push_back(it->texture);
 				it = m_warm_textures.erase(it);
 			}

@@ -164,7 +164,7 @@ void CPlanner::update()
 		show_target_world_state		();
 	}
 #else
-	if (bDbgAct && m_failed && current_action().m_action_name)
+	if (bDbgAct && m_failed && initialized() && current_action().m_action_name)
 		Msg("!ERROR: there is no action sequence, which can transfer current world state to the target one. action[%s]",
 		    current_action().m_action_name);
 #endif
@@ -247,7 +247,10 @@ void CPlanner::update()
 TEMPLATE_SPECIALIZATION
 IC void CPlanner::finalize()
 {
-	current_action().finalize();
+	// update() returns before initializing when there is no solution, so a planner action
+	// (stalker combat) can be finalized with no current action
+	if (initialized())
+		current_action().finalize();
 	m_initialized = false;
 }
 

@@ -53,6 +53,9 @@ function on_game_start()
 		end
 	end
 
-	axr_main.config:w_value("modded_exes", "version", MODDED_EXES_VERSION)
-	axr_main.config:save()
+	-- QUARK: rewrite axr_options.ltx only when the version changes (234 KB under GAMMA, on every load)
+	if saved_modded_exes_version ~= MODDED_EXES_VERSION then
+		axr_main.config:w_value("modded_exes", "version", MODDED_EXES_VERSION)
+		axr_main.config:save()
+	end
 end

@@ -32,6 +32,10 @@ void CBackend::OnFrameBegin()
 #endif
 	{
 		PGO(Msg("PGO:*****frame[%d]*****",RDEVICE.dwFrame));
+		// Overlays (RTSS, Steam) draw inside Present and may leave their resources bound.
+		// The caches below assume the cleared state, so a null bind (a UI texture still
+		// loading) would be skipped and sample the overlay's font atlas instead.
+		HW.pContext->ClearState();
 		Invalidate();
 		//	DX9 sets base rt nd base zb by default
 		RImplementation.rmNormal();

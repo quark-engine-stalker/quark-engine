@@ -1811,6 +1811,7 @@ extern int ps_r4_hdr10_pda; // NOTE: this is a hack to avoid double HDR tonemapp
 
 void CLevel::OnRender()
 {
+	PROF_EVENT();
 	// PDA
 	if (game && CurrentGameUI() && &CurrentGameUI()->GetPdaMenu() != nullptr)
 	{

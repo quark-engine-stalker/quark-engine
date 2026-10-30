@@ -664,6 +664,7 @@ extern CUISequencer* g_tutorial2;
 
 void CGamePersistent::OnFrame()
 {
+	PROF_EVENT();
 	if (Device.dwPrecacheFrame == 5 && m_intro_event.empty())
 	{
 		m_intro_event.bind(this, &CGamePersistent::game_loaded);

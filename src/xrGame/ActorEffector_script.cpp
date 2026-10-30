@@ -3,6 +3,19 @@
 #include "script_engine.h"
 #include "ActorEffector.h"
 #include "../xrEngine/ObjectAnimator.h"
+#include "Actor.h"
+
+void CActorCameraManager::run_script_callbacks()
+{
+	xr_vector<shared_str> callbacks;
+	callbacks.swap(m_script_callbacks);
+	for (const shared_str& cb : callbacks)
+	{
+		::luabind::functor<LPCSTR> fl;
+		R_ASSERT(ai().script_engine().functor<LPCSTR>(*cb, fl));
+		fl();
+	}
+}
 
 void CAnimatorCamEffectorScriptCB::ProcessIfInvalid(SCamEffectorInfo& info)
 {
@@ -22,9 +35,9 @@ BOOL CAnimatorCamEffectorScriptCB::Valid()
 	BOOL res = inherited::Valid();
 	if (!res && cb_name.size())
 	{
-		::luabind::functor<LPCSTR> fl;
-		R_ASSERT(ai().script_engine().functor<LPCSTR>(*cb_name,fl));
-		fl();
+		// CRASH-LOG 29.10: called inside CCameraManager::UpdateCamEffectors, a callback that removed
+		// cam effectors left the list walk on a deleted one
+		Actor()->Cameras().defer_script_callback(cb_name);
 		cb_name = "";
 	}
 	return res;

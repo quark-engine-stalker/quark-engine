@@ -692,36 +692,38 @@ _G.alife_clone_weapon = function(se_obj, section, parent_id)
 end
 
 -- Patch _G functions to recognize new weapon classes
+-- QUARK: clsid is read once and handed to the base check, the class table is built once
+local ssrs_classes
+local function is_ssrs(c)
+	if not (ssrs_classes) then
+		ssrs_classes = {
+			[clsid.wpn_ssrs] 				= true,
+			[clsid.wpn_ssrs_s] 				= true,
+		}
+	end
+	return c and ssrs_classes[c] or false
+end
+
 IsWeapon = _G.IsWeapon
 _G.IsWeapon = function(o, c)
-	if IsWeapon(o, c) then
-		return true
-	end
-
 	if not (c) then
 		c = o and o:clsid()
 	end
-	local weapon_classes = {
-		[clsid.wpn_ssrs] 				= true,
-		[clsid.wpn_ssrs_s] 				= true,
-	}
-	return c and weapon_classes[c] or false
+	if IsWeapon(o, c) then
+		return true
+	end
+	return is_ssrs(c)
 end
 
 IsLauncher = _G.IsLauncher
 _G.IsLauncher = function(o, c)
-	if IsLauncher(o, c) then
-		return true
-	end
-
 	if not (c) then
 		c = o and o:clsid()
 	end
-	local launcher = {
-		[clsid.wpn_ssrs] 				= true,
-		[clsid.wpn_ssrs_s] 				= true,
-	}
-	return c and launcher[c] or false
+	if IsLauncher(o, c) then
+		return true
+	end
+	return is_ssrs(c)
 end
 
 -- VodoXleb: get_object_squad fix

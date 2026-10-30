@@ -18,6 +18,9 @@
 #include <unordered_map>
 #include <set>
 #include <atomic>
+#ifdef TRACY_ENABLE
+#include "../3rd party/tracy/public/tracy/TracyC.h"
+#endif
 
 #ifdef _WIN64
 extern "C"
@@ -644,6 +647,154 @@ void luabind_lua_to_cpp_profile_end(void* context)
 		return;
 	static_cast<SLuaToCppProfileCallContext*>(context)->engine->end_lua_to_cpp_profile_call(context);
 }
+
+#ifdef TRACY_ENABLE
+// Tracy zones for Lua: one per engine->Lua call, named after the callee, and one per
+// PROF_EVENT_BEGIN/END pair in scripts. They share the thread's Tracy stack with C++ zones,
+// and a Lua error skips PROF_EVENT_END, so every engine->Lua call closes what its callee
+// left open and PROF_EVENT_END never closes a zone of an outer call.
+// The Lua state is used by one thread at a time, so this state needs no lock.
+constexpr u32 lua_tracy_max_zones = 256;
+TracyCZoneCtx lua_tracy_zones[lua_tracy_max_zones];
+u32 lua_tracy_depth = 0;
+u32 lua_tracy_base = 0;
+
+// One source location per zone name, so an event carries a pointer instead of strings.
+// Tracy reads them lazily, up to its own shutdown after static destructors, so they are never freed.
+struct SLuaTracyLocation
+{
+	___tracy_source_location_data data{};
+	std::string file;
+};
+constexpr size_t lua_tracy_max_locations = 65536; // dynamic names must not grow memory forever
+auto& lua_tracy_locations = *new std::unordered_map<std::string, SLuaTracyLocation>();
+std::string lua_tracy_key;
+
+bool lua_tracy_active()
+{
+	return lua_tracy_depth < lua_tracy_max_zones && TracyCIsConnected;
+}
+
+void lua_tracy_push(const TracyCZoneCtx& zone)
+{
+	if (lua_tracy_depth < lua_tracy_max_zones)
+		lua_tracy_zones[lua_tracy_depth] = zone;
+	++lua_tracy_depth;
+}
+
+void lua_tracy_end_to(const u32 depth)
+{
+	while (lua_tracy_depth > depth)
+	{
+		--lua_tracy_depth;
+		if (lua_tracy_depth < lua_tracy_max_zones)
+			___tracy_emit_zone_end(lua_tracy_zones[lua_tracy_depth]);
+	}
+}
+
+// Scripts are loaded as "@<path>".
+LPCSTR lua_tracy_path(const lua_Debug& info)
+{
+	return info.source && info.source[0] == '@' ? info.source + 1 : info.short_src;
+}
+
+// info (may be null) gives the file and line of a name seen for the first time.
+TracyCZoneCtx lua_tracy_zone(LPCSTR name, const size_t name_size, const lua_Debug* info, const int line)
+{
+	if (lua_tracy_locations.size() < lua_tracy_max_locations)
+		lua_tracy_key.assign(name, name_size);
+	else
+		lua_tracy_key = "<too many Lua zone names>";
+
+	auto found = lua_tracy_locations.find(lua_tracy_key);
+	if (found == lua_tracy_locations.end())
+	{
+		found = lua_tracy_locations.emplace(lua_tracy_key, SLuaTracyLocation{}).first;
+		SLuaTracyLocation& location = found->second;
+		if (info)
+			location.file = lua_tracy_path(*info);
+		location.data = {found->first.c_str(), found->first.c_str(), location.file.c_str(), u32(_max(line, 0)), 0};
+	}
+	return ___tracy_emit_zone_begin(&found->second.data, 1);
+}
+
+// Zone named "<file>:<line>" after a position in a script.
+TracyCZoneCtx lua_tracy_site_zone(const lua_Debug& info, const int line)
+{
+	LPCSTR file = lua_tracy_path(info);
+	for (LPCSTR cursor = file; *cursor; ++cursor)
+		if (*cursor == '\\' || *cursor == '/')
+			file = cursor + 1;
+	string512 name;
+	xr_sprintf(name, "%s:%d", file, line);
+	return lua_tracy_zone(name, xr_strlen(name), &info, line);
+}
+
+void* lua_tracy_call_begin(lua_State* state, const int function_index)
+{
+	TracyCZoneCtx zone{};
+	if (lua_tracy_active())
+	{
+		lua_Debug info{};
+		if (function_index > 0 && lua_isfunction(state, function_index))
+		{
+			lua_pushvalue(state, function_index);
+			if (lua_getinfo(state, ">S", &info))
+				zone = xr_strcmp(info.what, "C") ? lua_tracy_site_zone(info, info.linedefined) :
+					lua_tracy_zone("Lua C function", 14, nullptr, 0);
+		}
+		else
+			zone = lua_tracy_zone("Lua coroutine resume", 20, nullptr, 0);
+	}
+	const u32 outer_base = lua_tracy_base;
+	lua_tracy_push(zone);
+	lua_tracy_base = lua_tracy_depth;
+	return reinterpret_cast<void*>(static_cast<uintptr_t>(outer_base));
+}
+
+void lua_tracy_call_end(void* context, int)
+{
+	lua_tracy_end_to(lua_tracy_base - 1);
+	lua_tracy_base = static_cast<u32>(reinterpret_cast<uintptr_t>(context));
+}
+
+// luabind pcall hooks while the Lua hotspot profiler and lua_record are off.
+const ::luabind::detail::pcall_profile_begin_callback idle_profile_begin = &lua_tracy_call_begin;
+const ::luabind::detail::pcall_profile_end_callback idle_profile_end = &lua_tracy_call_end;
+#else
+const ::luabind::detail::pcall_profile_begin_callback idle_profile_begin = nullptr;
+const ::luabind::detail::pcall_profile_end_callback idle_profile_end = nullptr;
+#endif
+
+// PROF_EVENT_BEGIN([name]) / PROF_EVENT_END(...) exist in every build, so marked scripts
+// also run on an ordinary engine; without Tracy they do nothing.
+int lua_prof_event_begin(lua_State* state)
+{
+#ifdef TRACY_ENABLE
+	TracyCZoneCtx zone{};
+	if (lua_tracy_active())
+	{
+		size_t name_size = 0;
+		lua_Debug info{};
+		if (LPCSTR name = lua_tolstring(state, 1, &name_size))
+			zone = lua_tracy_zone(name, name_size, nullptr, 0);
+		else if (lua_getstack(state, 1, &info) && lua_getinfo(state, "Sl", &info))
+			zone = lua_tracy_site_zone(info, info.currentline);
+	}
+	lua_tracy_push(zone);
+#endif
+	return 0;
+}
+
+// Returns its arguments, so `return PROF_EVENT_END(f())` keeps f() inside the zone.
+int lua_prof_event_end(lua_State* state)
+{
+#ifdef TRACY_ENABLE
+	if (lua_tracy_depth > lua_tracy_base)
+		lua_tracy_end_to(lua_tracy_depth - 1);
+#endif
+	return lua_gettop(state);
+}
 }
 
 #ifdef USE_DEBUGGER
@@ -775,6 +926,8 @@ CScriptEngine::CScriptEngine()
 
 #ifdef DEBUG
 	::luabind::detail::set_pcall_profile_callbacks(&luabind_profile_begin, &luabind_profile_end);
+#else
+	::luabind::detail::set_pcall_profile_callbacks(idle_profile_begin, idle_profile_end);
 #endif
 	::luabind::detail::set_lua_to_cpp_profile_callbacks(
 		&luabind_lua_to_cpp_profile_begin, &luabind_lua_to_cpp_profile_end);
@@ -874,8 +1027,8 @@ void CScriptEngine::set_lua_hotspot_profiler(const bool enabled, const u32 thres
 	::luabind::detail::set_pcall_profile_callbacks(&luabind_profile_begin, &luabind_profile_end);
 #else
 	::luabind::detail::set_pcall_profile_callbacks(
-		callbacks_enabled ? &luabind_profile_begin : nullptr,
-		callbacks_enabled ? &luabind_profile_end : nullptr);
+		callbacks_enabled ? &luabind_profile_begin : idle_profile_begin,
+		callbacks_enabled ? &luabind_profile_end : idle_profile_end);
 #endif
 }
 
@@ -2352,6 +2505,8 @@ void CScriptEngine::init()
 #endif // #ifdef USE_LUA_STUDIO
 
 	::luabind::open(lua());
+	lua_register(lua(), "PROF_EVENT_BEGIN", &lua_prof_event_begin);
+	lua_register(lua(), "PROF_EVENT_END", &lua_prof_event_end);
 	setup_callbacks();
 	export_classes(lua());
 	setup_auto_load();

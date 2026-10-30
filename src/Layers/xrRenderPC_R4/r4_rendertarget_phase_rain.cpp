@@ -2,6 +2,7 @@
 
 void CRenderTarget::phase_rain()
 {
+	PROF_EVENT();
 	if (!RImplementation.o.dx10_msaa)
 		u_setrt(rt_Color,NULL,NULL, HW.pBaseZB);
 	else

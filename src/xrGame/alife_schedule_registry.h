@@ -82,10 +82,13 @@ protected:
 	u32 m_objects_per_update;
 
 public:
+	bool m_unloading; // set by CALifeSimulatorBase::unload: objects are deleted on purpose
+
 	IC CALifeScheduleRegistry();
 	virtual ~CALifeScheduleRegistry();
 	void add(CSE_ALifeDynamicObject* object);
 	void remove(CSE_ALifeDynamicObject* object, bool no_assert = false);
+	void on_destroy(CSE_ALifeSchedulable* schedulable);
 	void update();
 	IC CSE_ALifeSchedulable* object(const ALife::_OBJECT_ID& id, bool no_assert = false) const;
 	IC const u32& objects_per_update() const;

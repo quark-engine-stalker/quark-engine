@@ -333,6 +333,10 @@ void dxRenderDeviceRender::End()
 	}
 
 	const bool presented = !Device.m_SecondViewport.IsSVPFrame() && !Device.m_SecondViewport.isCamReady;
+#ifdef TRACY_ENABLE
+	if (g_tracy_d3d11)
+		TracyD3D11Collect(g_tracy_d3d11);
+#endif
 	if (presented) {
 
 		{

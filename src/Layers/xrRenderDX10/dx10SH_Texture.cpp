@@ -401,6 +401,8 @@ void CTexture::Load(bool use_staging)
 	flags.bLoaded = true;
 	desc_cache = 0;
 	if (pSurface) return;
+	PROF_EVENT();
+	PROF_TEXT(cName.c_str());
 
 	flags.bUser = false;
 	flags.MemoryUsage = 0;

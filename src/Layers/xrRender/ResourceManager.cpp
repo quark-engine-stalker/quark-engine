@@ -540,7 +540,9 @@ void CResourceManager::Evict()
 	// Drop only aged optional ownership. Never unload a texture owned by a
 	// shader/UI object, and never flush or clear the immediate context here:
 	// this method is also called from buffer/RT creation during rendering.
-	TrimWarmTextures(Device.dwTimeGlobal, true, true);
+	// Those calls are not a pressure signal: claiming one retired the learned UI
+	// warm-up during every level load. Real pressure is polled in CRender.
+	TrimWarmTextures(Device.dwTimeGlobal, false, false);
 }
 
 /*

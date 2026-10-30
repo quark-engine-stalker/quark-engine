@@ -1113,6 +1113,7 @@ void CRender::init_cacades()
 
 void CRender::prepare_sun_cascade(u32 cascade_ind, const Fmatrix& viewport, const Fmatrix& viewport_inverse)
 {
+	PROF_EVENT();
 	VERIFY(cascade_ind < m_sun_cascades.size());
 	VERIFY(cascade_ind < SUN_CASCADE_GATHER_COUNT);
 
@@ -1127,7 +1128,7 @@ void CRender::prepare_sun_cascade(u32 cascade_ind, const Fmatrix& viewport, cons
 	// setup, separated from submission so all cascade frustums exist before the
 	// shared caster gather starts.
 	CFrustum cull_frustum;
-	xr_vector<Fplane> cull_planes;
+	sun_cull_planes cull_planes;
 	Fvector3 cull_COP;
 	Fmatrix cull_xform;
 
@@ -1274,6 +1275,7 @@ void CRender::prepare_sun_cascade(u32 cascade_ind, const Fmatrix& viewport, cons
 
 void CRender::gather_sun_casters(CSector* cull_sector)
 {
+	PROF_EVENT();
 	m_sunSectorGatherIndex.clear();
 	m_sunStaticCasters.clear();
 	m_sunStaticFallback.clear();
@@ -1420,6 +1422,7 @@ void CRender::gather_sun_casters(CSector* cull_sector)
 
 void CRender::submit_sun_cascade_casters(u32 cascade_ind)
 {
+	PROF_EVENT();
 	if (cascade_ind >= m_sun_cascades.size() || cascade_ind >= SUN_CASCADE_GATHER_COUNT ||
 		!m_sunPrepared[cascade_ind].valid)
 		return;
@@ -1511,6 +1514,7 @@ void CRender::submit_sun_cascade_casters(u32 cascade_ind)
 
 void CRender::render_sun_cascades()
 {
+	PROF_EVENT();
 	bool b_need_to_render_sunshafts = RImplementation.Target->need_to_render_sunshafts();
 	bool last_cascade_chain_mode = m_sun_cascades.back().reset_chain;
 	if (b_need_to_render_sunshafts)
@@ -1567,6 +1571,7 @@ void CRender::render_sun_cascades()
 
 void CRender::render_sun_cascade(u32 cascade_ind, CSector* cull_sector)
 {
+	PROF_EVENT();
 	(void)cull_sector;
 	if (cascade_ind >= m_sun_cascades.size() || cascade_ind >= SUN_CASCADE_GATHER_COUNT ||
 		!m_sunPrepared[cascade_ind].valid)

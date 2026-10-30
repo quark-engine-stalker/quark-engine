@@ -2,15 +2,18 @@
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ImportGroup Label="PropertySheets" />
   <PropertyGroup Label="UserMacros">
+    <!-- Tracy profiler build: MSBuild "QUARK ENGINE.sln" /p:QuarkTracy=true. Separate output and
+         intermediate folders keep it from invalidating the normal build. -->
+    <xrBuildSuffix Condition="'$(QuarkTracy)'=='true'">_tracy</xrBuildSuffix>
     <xrBinRootDir>$(SolutionDir)..\_build\bin\</xrBinRootDir>
     <xrBinPlugRootDir>$(SolutionDir)..\_build\bin_plugs\</xrBinPlugRootDir>
     <xrLibRootDir>$(SolutionDir)..\_build\lib\</xrLibRootDir>
     <xrBinDir>$(xrBinRootDir)$(Configuration)\</xrBinDir>
     <xrBinPlugDir>$(xrBinPlugRootDir)$(Configuration)\</xrBinPlugDir>
-    <xrLibDir>$(xrLibRootDir)$(Configuration)\</xrLibDir>
-    <xrIntDir>$(SolutionDir)..\_build\intermediate\$(Configuration)\</xrIntDir>
+    <xrLibDir>$(xrLibRootDir)$(Configuration)$(xrBuildSuffix)\</xrLibDir>
+    <xrIntDir>$(SolutionDir)..\_build\intermediate\$(Configuration)$(xrBuildSuffix)\</xrIntDir>
     <xrSdkDir>$(SolutionDir)..\sdk\</xrSdkDir>
-    <xrGameDir>$(SolutionDir)..\_build\_game\</xrGameDir>
+    <xrGameDir>$(SolutionDir)..\_build\_game$(xrBuildSuffix)\</xrGameDir>
     <xrGameBinDir>$(xrGameDir)bin\</xrGameBinDir>
     <xrSourceRootDir>$(MSBuildThisFileDirectory)</xrSourceRootDir>
     <xr3rdPartyDir>$(xrSourceRootDir)3rd party\</xr3rdPartyDir>
@@ -48,6 +51,12 @@
       <RandomizedBaseAddress>false</RandomizedBaseAddress>
       <GenerateDebugInformation>false</GenerateDebugInformation>
     </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(QuarkTracy)'=='true'">
+    <ClCompile>
+      <!-- On demand: no capture memory or zone cost until a profiler connects; localhost only. -->
+      <PreprocessorDefinitions>TRACY_ENABLE;TRACY_ON_DEMAND;TRACY_ONLY_LOCALHOST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
     <BuildMacro Include="xrBinRootDir">

@@ -729,6 +729,25 @@ namespace luabind { namespace detail
 		{}
 	};
 
+	// nil passed by value or const reference to a class without a holder. Release builds skip the
+	// match for single-overload functions, so this used to dereference null (vanilla
+	// xr_combat_zombied passes nil to vector:distance_to_sqr): pass an empty value instead
+	template<class T>
+	const T& nil_value(lua_State* L)
+	{
+		if constexpr (std::is_default_constructible_v<T>)
+		{
+			static const T empty{};
+			return empty;
+		}
+		else
+		{
+			lua_pushstring(L, "nil passed where an object is required");
+			lua_error(L);
+			return *static_cast<const T*>(nullptr);
+		}
+	}
+
 // ******* value converter *******
 
 	template<Direction Dir> struct value_converter;
@@ -857,6 +876,8 @@ namespace luabind { namespace detail
 				guard.dismiss = true;
 			}
 
+			if (!ptr)
+				return nil_value<T>(L);
 			return *ptr;
 		}
 
@@ -1096,6 +1117,8 @@ namespace luabind { namespace detail
 			if ((void*)ptr == (void*)target) destructor = detail::destruct_only_s<T>::apply;
 			assert(!destructor || sizeof(T) <= 32);
 
+			if (!ptr)
+				return nil_value<T>(L);
 			return *ptr;
 		}
 

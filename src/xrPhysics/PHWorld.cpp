@@ -23,6 +23,7 @@
 #include "../xrengine/defines.h"
 #include "../xrcdb/xr_area.h"
 #include "../xrcore/fs_internal.h"
+#include "../xrCore/profiler.h"
 #include "../xrCore/job_system.h"
 #ifdef	DEBUG
 //				void DBG_ObjAfterPhDataUpdate	( CPHObject *obj );
@@ -278,7 +279,7 @@ void CPHWorld::SetGravity(float g)
 
 void CPHWorld::OnFrame()
 {
-
+	PROF_EVENT();
 	// Msg									("------------- physics: %d / %d",u32(Device.dwFrame),u32(m_steps_num));
 	//просчитать полет пуль
 	/*
@@ -323,6 +324,7 @@ void solve_physics_islands(void* raw_context)
 
 		CPHIsland* island = (*context.islands)[index];
 
+		PROF_EVENT("CPHIsland::Step");
 		island->Step(context.step);
 	}
 }
@@ -330,7 +332,7 @@ void solve_physics_islands(void* raw_context)
 
 void CPHWorld::Step()
 {
-
+	PROF_EVENT();
 #ifdef DEBUG
 	debug_output().dbg_reused_queries_per_step()	=0			;
 	debug_output().dbg_new_queries_per_step()		=0			;

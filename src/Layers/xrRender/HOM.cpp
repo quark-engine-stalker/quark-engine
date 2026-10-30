@@ -289,6 +289,7 @@ void CHOM::Render_DB(CFrustum& base)
 
 void CHOM::Render(CFrustum& base)
 {
+	PROF_EVENT();
 	if (!bEnabled) return;
 
 	Device.Statistic->RenderCALC_HOM.Begin();

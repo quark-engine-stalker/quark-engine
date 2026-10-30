@@ -31,6 +31,8 @@ ENGINE_API BOOL psTextureWarmupManifest = TRUE;
 ENGINE_API BOOL psTextureWarmupUiOnly = TRUE;
 ENGINE_API int psTextureWarmupSlowMs = 4;
 ENGINE_API int psTextureWarmupMax = 1024;
+// Learned UI textures' share; the warm cache holds twice this, so model prefetch
+// (pinned after the UI share) gets as much again. Saved in user.ltx as 256.
 int psTextureWarmupMemoryMb = 256;
 
 namespace
@@ -422,6 +424,14 @@ void IGame_Persistent::Prefetch()
 	const float p_time_start = load_diagnostics ? 1000.f * Device.GetTimerGlobal()->GetElapsed_sec() : 0.f;
 	const size_t mem_0 = load_diagnostics ? Memory.mem_usage() : 0;
 
+	// Learned UI textures take their share of the warm cache before object/model
+	// prefetch: model textures used to fill all of it, so the inventory atlases were
+	// never retained and reloaded on every first open.
+	xr_vector<shared_str> learned_texture_names;
+	LoadTextureWarmupManifest(learned_texture_names);
+	for (const shared_str& texture_name : learned_texture_names)
+		Device.m_pRender->ResourcesPrefetchCreateTexture(texture_name.c_str());
+
 	Log("Loading objects...");
 	ObjectPool.prefetch();
 	Log("Loading models...");
@@ -458,8 +468,6 @@ void IGame_Persistent::Prefetch()
 			texture_prefetch_names.push_back(key);
 	};
 
-	xr_vector<shared_str> learned_texture_names;
-	LoadTextureWarmupManifest(learned_texture_names);
 	for (const shared_str& texture_name : learned_texture_names)
 		queueTexture(texture_name.c_str());
 

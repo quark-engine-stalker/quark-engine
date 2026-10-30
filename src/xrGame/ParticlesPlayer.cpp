@@ -28,7 +28,9 @@ CParticlesPlayer::SParticlesInfo* CParticlesPlayer::SBoneInfo::AppendParticles(
 	if (pi) return pi;
 	particles.push_back(SParticlesInfo());
 	pi = &particles.back();
-	pi->ps = CParticlesObject::Create(*ps_name,FALSE);
+	// owned here and freed in net_DestroyParticles: remove_objects' destroy_particles(false) must not free them
+	// under an object that outlived the removal loops
+	pi->ps = CParticlesObject::Create(*ps_name,FALSE, false);
 	return pi;
 }
 
@@ -79,6 +81,9 @@ void CParticlesPlayer::LoadParticles(IKinematics* K)
 {
 	VERIFY(K);
 
+	for (SBoneInfo& b_info : m_Bones)
+		for (SParticlesInfo& p_info : b_info.particles)
+			CParticlesObject::Destroy(p_info.ps);
 	m_Bones.clear();
 
 

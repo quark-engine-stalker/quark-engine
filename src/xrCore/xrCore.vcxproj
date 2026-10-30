@@ -77,6 +77,13 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="..\3rd party\tracy\public\TracyClient.cpp" Condition="'$(QuarkTracy)'=='true'">
+      <!-- Crashes are reported by the engine's own error logger. -->
+      <PreprocessorDefinitions>TRACY_NO_CRASH_HANDLER;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+    </ClCompile>
     <ClCompile Include="blackbox\BlackBoxUI.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release-AVX|x64'">
       </PrecompiledHeader>

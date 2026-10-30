@@ -167,7 +167,8 @@ bool CObjectHandler::goal_reached()
 void CObjectHandler::weapon_bones(int& b0, int& b1, int& b2) const
 {
 	CWeapon* weapon = smart_cast<CWeapon*>(inventory().ActiveItem());
-	if (!weapon || !planner().m_storage.property(ObjectHandlerSpace::eWorldPropertyStrapped))
+	// strapped property can outlive the weapon that set it: a newly shown weapon may have no strap bones
+	if (!weapon || !weapon->can_be_strapped() || !planner().m_storage.property(ObjectHandlerSpace::eWorldPropertyStrapped))
 	{
 		if (weapon)
 			weapon->strapped_mode(false);
@@ -176,8 +177,6 @@ void CObjectHandler::weapon_bones(int& b0, int& b1, int& b2) const
 		b2 = m_l_finger1;
 		return;
 	}
-
-	THROW3(weapon->can_be_strapped(), "Cannot strap weapon", *weapon->cName());
 
 	if (weapon->ID() != m_strap_object_id)
 	{

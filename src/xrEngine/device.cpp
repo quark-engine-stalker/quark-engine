@@ -1806,6 +1806,7 @@ void CRenderDevice::on_idle()
 		QUARK_DIAGNOSTIC_STAGE("main/lua/gc");
 		const u64 gc_started_ticks = CPU::QPC();
 		{
+			PROF_EVENT("Lua GC step");
 			SFrameScope stats_scope(fsLuaGcPre);
 			ProcessLuaGCWork(false);
 		}
@@ -1911,6 +1912,7 @@ void CRenderDevice::on_idle()
 		// execution can hide part of atomic/finalizer work.
 		QUARK_DIAGNOSTIC_STAGE("main/lua/gc-deferred");
 		const u64 gc_deferred_started_ticks = CPU::QPC();
+		PROF_EVENT("Lua GC deferred");
 		SFrameScope stats_scope(fsLuaGcPost);
 		ProcessLuaGCWork(true);
 		Device.LuaGCDeferredWaitUS = qpc_ticks_to_us(CPU::QPC() - gc_deferred_started_ticks);

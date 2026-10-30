@@ -235,8 +235,6 @@ void CKinematics::CalculateBones(BOOL bForceExact)
 
 void CKinematics::CalculateBonesInternal(BOOL bForceExact, bool on_worker)
 {
-	PROF_EVENT("CKinematics::CalculateBones");
-
 	const u32 frame = RDEVICE.dwFrame;
 	const u64 cache_state = UCalc_CacheState.load(std::memory_order_acquire);
 
@@ -256,6 +254,9 @@ void CKinematics::CalculateBonesInternal(BOOL bForceExact, bool on_worker)
 
 		return; // early out for "fast" update
 	}
+
+	// After the per-pass repeats above: ~1000 of them a frame would bury the real work in Tracy.
+	PROF_EVENT("CKinematics::CalculateBones");
 
 	// frame_stats: poses the main thread builds itself instead of the render-prep workers.
 	const u64 main_started = !on_worker && g_frame_stats.enabled && !xr_jobs::is_worker_thread() ? CPU::QPC() : 0;

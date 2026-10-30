@@ -62,12 +62,16 @@ void CALifeSimulatorBase::destroy()
 
 void CALifeSimulatorBase::unload()
 {
+	// squad destructors re-add their members to m_scheduled, so it outlives m_objects;
+	// unloading deletes still scheduled objects on purpose
+	if (m_scheduled)
+		m_scheduled->m_unloading = true;
 	xr_delete(m_objects);
+	xr_delete(m_scheduled);
 	xr_delete(m_header);
 	xr_delete(m_time_manager);
 	xr_delete(m_spawns);
 	xr_delete(m_graph_objects);
-	xr_delete(m_scheduled);
 	xr_delete(m_story_objects);
 	xr_delete(m_smart_terrains);
 	xr_delete(m_groups);

@@ -4,7 +4,6 @@
 // advertised capacity, and may change while the application is running.
 namespace video_memory_policy
 {
-constexpr u32 warm_idle_ms = 5u * 60u * 1000u;
 constexpr u32 warm_pressure_idle_ms = 60u * 1000u;
 constexpr u32 warm_hard_pressure_idle_ms = 30u * 1000u;
 
@@ -16,9 +15,9 @@ inline u64 optional_texture_budget(u64 configured, u64 budget, u64 usage, u64 wa
     const u64 target_usage = budget - budget / 8u;
     const u64 required_usage = usage - _min(usage, warm_resident);
     const u64 headroom = required_usage < target_usage ? target_usage - required_usage : 0;
-    // Preserve the existing 256 MiB default on an 8 GiB card with the smaller
-    // real DXGI budget. The headroom check still contracts it under pressure.
-    return _min(configured, _min(budget / 24u, headroom));
+    // Fits the 512 MiB warm cache (UI share + model share) on an 8 GiB card's smaller
+    // real DXGI budget; ~340 MiB on 4 GiB. The headroom check still contracts it under pressure.
+    return _min(configured, _min(budget / 12u, headroom));
 }
 
 inline u32 warm_age(u32 now, u32 retained_at, u32 last_used)

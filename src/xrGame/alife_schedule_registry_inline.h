@@ -11,6 +11,7 @@
 IC CALifeScheduleRegistry::CALifeScheduleRegistry()
 {
 	m_objects_per_update = 1;
+	m_unloading = false;
 }
 
 IC const u32& CALifeScheduleRegistry::objects_per_update() const

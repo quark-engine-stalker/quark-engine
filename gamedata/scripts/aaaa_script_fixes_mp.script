@@ -512,22 +512,33 @@ function axr_trade_manager.npc_tech_upgrade_sell(npc)
 end
 
 -- Fix for returning wrong attached scope
+-- QUARK: the sorted order is kept per scopes_list instead of re-sorted on every call
+-- (GAMMA UI asks this for every weapon cell)
+local scopes_sorted, scopes_sorted_from
 utils_item.has_scope = function(section)
 	if not utils_item.scopes_list then
 		utils_item.scopes_list = utils_data.collect_section(ini_sys, "addons_table")
 	end
 
-	local function sort_func(t, a, b)
-		if #t[a] ~= #t[b] then 
-			return sort_func_values_length_descend(t, a, b) 
-		else
-			return sort_func_values_descend(t, a, b)
-		end
-	end
-	
 	-- Determine which addon is attached to the weapon.
 	-- demonized: Sort addons by descend and check if the weapon section ends with addon section instead of string.find
-	for k, v in spairs(utils_item.scopes_list, sort_func) do
+	local list = utils_item.scopes_list
+	if scopes_sorted_from ~= list then
+		scopes_sorted = {}
+		for _, v in pairs(list) do
+			scopes_sorted[#scopes_sorted + 1] = v
+		end
+		table.sort(scopes_sorted, function(a, b)
+			if #a ~= #b then
+				return #a > #b
+			end
+			return a > b
+		end)
+		scopes_sorted_from = list
+	end
+
+	for i = 1, #scopes_sorted do
+		local v = scopes_sorted[i]
 		if section:endswith(v) then
 			return v
 		end
@@ -985,6 +996,8 @@ local anomaly_cycle_start_time
 local anomaly_restrictor_db_count = 0
 function anomaly_restrictor_update()
 	local need_invalidate = {}
+	-- QUARK: camera and live monster positions are read once per call, not once per anomaly
+	local cache_cam_pos, live_monsters
 
 	if not anomaly_cycle_start_time then
 		anomaly_cycle_start_time = time_global()
@@ -1012,7 +1025,7 @@ function anomaly_restrictor_update()
 				-- Pure-Lua distance check bypass and optimized monster search loop over db_online_monsters.
 				-- Bypasses level.iterate_nearest to avoid Luabind interop and C++ sorting overhead.
 				local radius = anomaly_restrictor_db_v.radius
-				local cache_cam_pos = device().cam_pos
+				cache_cam_pos = cache_cam_pos or device().cam_pos
 				local max_dist_limit = 150 + (radius * 2)
 				local dist_to_cam_sqr = new_pos:distance_to_sqr(cache_cam_pos)
 
@@ -1020,13 +1033,19 @@ function anomaly_restrictor_update()
 					local cache_cam_limit_sqr = (150 + radius) * (150 + radius)
 					local radius_sqr = radius * radius
 
-					for id, entity in pairs(db_online_monsters) do
-						if entity:alive() then
-							local pos = entity:position()
-							if pos:distance_to_sqr(new_pos) < radius_sqr then
-								if pos:distance_to_sqr(cache_cam_pos) < cache_cam_limit_sqr then
-									anomaly_restrictor_db_v.entities[id] = true
-								end
+					if not live_monsters then
+						live_monsters = {}
+						for id, entity in pairs(db_online_monsters) do
+							if entity:alive() then
+								live_monsters[id] = entity:position()
+							end
+						end
+					end
+
+					for id, pos in pairs(live_monsters) do
+						if pos:distance_to_sqr(new_pos) < radius_sqr then
+							if pos:distance_to_sqr(cache_cam_pos) < cache_cam_limit_sqr then
+								anomaly_restrictor_db_v.entities[id] = true
 							end
 						end
 					end

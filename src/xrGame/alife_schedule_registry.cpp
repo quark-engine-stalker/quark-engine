@@ -17,7 +17,11 @@ int psALifeSmartBudgetDeferral = 1;
 int psALifeSmartHardDeferMs = 500;
 
 CALifeScheduleRegistry::~CALifeScheduleRegistry()
-{}
+{
+	for (auto& it : m_objects)
+		if (it.second)
+			it.second->m_schedule_registry = nullptr;
+}
 
 void CALifeScheduleRegistry::add(CSE_ALifeDynamicObject* object)
 {
@@ -29,6 +33,11 @@ void CALifeScheduleRegistry::add(CSE_ALifeDynamicObject* object)
 		return;
 
 	inherited::add(object->ID, schedulable);
+	if (m_objects.find(object->ID)->second == schedulable)
+	{
+		schedulable->m_schedule_registry = this;
+		schedulable->m_schedule_id = object->ID;
+	}
 	if (object->cast_smart_zone())
 	{
 		SSmartRuntime runtime = {};
@@ -44,6 +53,22 @@ void CALifeScheduleRegistry::remove(CSE_ALifeDynamicObject* object, bool no_asse
 
 	inherited::remove(object->ID, no_assert || !schedulable->need_update(object));
 	m_smart_runtime.erase(object->ID);
+	schedulable->m_schedule_registry = nullptr;
+}
+
+// CRASH-LOG 29.10: a scheduled object was freed without remove() and update() called it through
+// the dangling pointer. Drop the entry and name the object so the missed path can be found.
+void CALifeScheduleRegistry::on_destroy(CSE_ALifeSchedulable* schedulable)
+{
+	const ALife::_OBJECT_ID id = schedulable->m_schedule_id;
+	_iterator I = m_objects.find(id);
+	if (I == m_objects.end() || I->second != schedulable)
+		return;
+
+	if (!m_unloading)
+		Msg("! [ALife] object [%u] was destroyed while scheduled for update", u32(id));
+	inherited::remove(id, true);
+	m_smart_runtime.erase(id);
 }
 
 void CALifeScheduleRegistry::update()

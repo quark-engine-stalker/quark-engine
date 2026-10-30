@@ -332,9 +332,9 @@ void CRender::release_worker_resource_creation_lane()
 
 void CRender::trim_video_memory_caches(bool hard_pressure)
 {
+    // No Models->ClearPool here: game code keeps skeleton pointers to visuals it returned to the pool
+    // (monster/IK animation caches) and relies on the pool living until the level is unloaded
     dxRenderDeviceRender::Instance().Resources->TrimWarmTextures(Device.dwTimeGlobal, true, hard_pressure);
-    if (Models)
-        Models->ClearPool(false);
 
     if (hard_pressure)
     {
@@ -390,7 +390,10 @@ void CRender::update_video_memory_budget()
             pressure * 100.0, bytes_to_megabytes(m_vramUsage), bytes_to_megabytes(m_vramBudget));
     }
 
-    if (!m_vramPressure || Device.dwTimeGlobal < m_vramNextTrimTime || !g_loading_events.empty())
+    // Usage peaks transiently at the end of a level load (92% -> 53% within seconds);
+    // trimming then retired the whole learned UI warm-up before the first frame.
+    if (!m_vramPressure || Device.dwTimeGlobal < m_vramNextTrimTime || !g_loading_events.empty() ||
+        load_screen_renderer.b_registered)
         return;
 
     const bool hard_pressure = pressure >= kVideoMemoryHardPressure;

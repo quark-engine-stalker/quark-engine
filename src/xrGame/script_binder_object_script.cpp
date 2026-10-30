@@ -11,8 +11,17 @@
 #include "script_export_space.h"
 #include "script_binder_object_wrapper.h"
 #include "xrServer_Objects_ALife.h"
+#include "ai_space.h"
+#include "script_engine.h"
 
 using namespace luabind;
+
+static ::luabind::object binder_object(const CScriptBinderObject* self)
+{
+	if (const auto wrapper = dynamic_cast<const CScriptBinderObjectWrapper*>(self))
+		return wrapper->m_lua_object;
+	return ::luabind::object(ai().script_engine().lua(), self->m_object);
+}
 
 #pragma optimize("s",on)
 void CScriptBinderObject::script_register(lua_State* L)
@@ -20,7 +29,7 @@ void CScriptBinderObject::script_register(lua_State* L)
 	module(L)
 	[
 		class_<CScriptBinderObject, CScriptBinderObjectWrapper>("object_binder")
-		.def_readonly("object", &CScriptBinderObject::m_object)
+		.property("object", &binder_object)
 		.def(constructor<CScriptGameObject*>())
 		.def("reinit", &CScriptBinderObject::reinit, &CScriptBinderObjectWrapper::reinit_static)
 		.def("reload", &CScriptBinderObject::reload, &CScriptBinderObjectWrapper::reload_static)

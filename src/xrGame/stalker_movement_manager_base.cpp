@@ -299,7 +299,8 @@ void stalker_movement_manager_base::setup_movement_params(stalker_movement_param
 		if (
 			(movement_params.m_path_type != MovementManager::ePathTypePatrolPath) &&
 			(movement_params.m_path_type != MovementManager::ePathTypeGamePath) &&
-			(movement_params.m_path_type != MovementManager::ePathTypeNoPath)
+			(movement_params.m_path_type != MovementManager::ePathTypeNoPath) &&
+			ai().level_graph().valid_vertex_id(level_path().dest_vertex_id())
 		)
 		{
 			if (!restrictions().accessible(level_path().dest_vertex_id()))
@@ -326,6 +327,15 @@ void stalker_movement_manager_base::setup_movement_params(stalker_movement_param
 				detail().set_dest_position(vertex_position);
 			}
 		}
+	}
+
+	// dest is u32(-1) when no scheme set it or accessible_nearest found no border; a level path to it
+	// reads outside the level graph, so stay on the own vertex
+	if (movement_params.m_path_type == MovementManager::ePathTypeLevelPath &&
+		!ai().level_graph().valid_vertex_id(level_path().dest_vertex_id()))
+	{
+		level_path().set_dest_vertex(object().ai_location().level_vertex_id());
+		detail().set_dest_position(ai().level_graph().vertex_position(level_path().dest_vertex_id()));
 	}
 
 	if (movement_params.desired_direction())

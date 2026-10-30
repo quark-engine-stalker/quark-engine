@@ -466,6 +466,8 @@ void CActorCameraManager::UpdateCamEffectors()
 	m_cam_info_hud = m_cam_info;
 	inherited::UpdateCamEffectors();
 
+	run_script_callbacks();
+
 	m_cam_info_hud.d.normalize();
 	m_cam_info_hud.n.normalize();
 	m_cam_info_hud.r.crossproduct(m_cam_info_hud.n, m_cam_info_hud.d);

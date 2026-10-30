@@ -5,6 +5,9 @@
 const u32 LIGHT_CUBOIDSIDEPOLYS_COUNT = 4;
 const u32 LIGHT_CUBOIDVERTICES_COUNT = 2 * LIGHT_CUBOIDSIDEPOLYS_COUNT;
 
+// compute_caster_model_fixed: a plane per frustum edge ray, the near clip, the cuboid sides.
+typedef svector<Fplane, 4 + 1 + LIGHT_CUBOIDSIDEPOLYS_COUNT> sun_cull_planes;
+
 template <bool _debug>
 class FixedConvexVolume
 {
@@ -16,7 +19,7 @@ public:
 		Fplane plane;
 	};
 
-	xr_vector<sun::ray> view_frustum_rays;
+	svector<sun::ray, 4> view_frustum_rays;
 	sun::ray view_ray;
 	sun::ray light_ray;
 	Fvector3 light_cuboid_points [LIGHT_CUBOIDVERTICES_COUNT];
@@ -53,7 +56,7 @@ public:
 		}
 	}
 
-	void compute_caster_model_fixed(xr_vector<Fplane>& dest, Fvector3& translation, float map_size,
+	void compute_caster_model_fixed(sun_cull_planes& dest, Fvector3& translation, float map_size,
 	                                bool clip_by_view_near)
 	{
 		translation.set(0.f, 0.f, 0.f);

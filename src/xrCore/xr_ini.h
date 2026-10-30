@@ -92,8 +92,38 @@ public:
 private:
 	string_path m_file_name;
 	Root DATA;
-	xr_unordered_flat_map<shared_str, u32> m_SectionLookup;
-	xr_vector<xr_unordered_flat_map<shared_str, u32>> m_LineLookup;
+
+	// Lookups by a plain C string (every script ini call) must not intern it as shared_str: that takes a
+	// global shard lock and refcounts, and inserts a new string on every miss. Names are hashed by content
+	// (shared_str already keeps its CRC) and a C string view is compared against the stored name.
+	struct name_view
+	{
+		LPCSTR str;
+		u32 length;
+		u32 crc;
+		explicit name_view(LPCSTR s);
+	};
+	struct name_hash
+	{
+		using is_transparent = void;
+		size_t operator()(const shared_str& s) const { return s._get() ? s._get()->dwCRC : 0; }
+		size_t operator()(const name_view& v) const { return v.crc; }
+	};
+	struct name_equal
+	{
+		using is_transparent = void;
+		bool operator()(const shared_str& a, const shared_str& b) const { return a == b; }
+		bool operator()(const name_view& v, const shared_str& s) const { return same(s, v); }
+		bool operator()(const shared_str& s, const name_view& v) const { return same(s, v); }
+		static bool same(const shared_str& s, const name_view& v)
+		{
+			const str_value* p = s._get();
+			return p && p->dwCRC == v.crc && p->dwLength == v.length && !memcmp(p->value, v.str, v.length);
+		}
+	};
+	using name_lookup = robin_hood::unordered_flat_map<shared_str, u32, name_hash, name_equal>;
+	name_lookup m_SectionLookup;
+	xr_vector<name_lookup> m_LineLookup;
 	void RebuildLineLookup(u32 section_index);
 	void RebuildLookupCaches();
 	void Load(IReader* F, LPCSTR path

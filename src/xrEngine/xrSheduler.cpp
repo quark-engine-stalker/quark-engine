@@ -4,6 +4,7 @@
 #include "xr_object.h"
 #include "frame_stats.h"
 #include "Feel_Vision.h"
+#include "../xrCore/profiler.h"
 
 //#define DEBUG_SCHEDULER
 
@@ -727,7 +728,11 @@ void CSheduler::ProcessQueue(xr_vector<Item>& queue, LPCSTR queue_name)
 			const bool measure_cost = psShedulerAdaptive || psShedulerClassPrediction ||
 				psShedulerHeavyBackoff || psShedulerJitterMs > 0;
 			const u64 callback_started = measure_cost ? CPU::QPC() : 0;
-			object->shedule_Update(clampr(elapsed, u32(1), u32(_max(u32(object->shedule.t_max), u32(1000)))));
+			{
+				PROF_EVENT("shedule_Update");
+				PROF_TEXT(object->shedule_Name().c_str());
+				object->shedule_Update(clampr(elapsed, u32(1), u32(_max(u32(object->shedule.t_max), u32(1000)))));
+			}
 			const u64 callback_finished = callback_started ? CPU::QPC() : 0;
 
 			if (callback_started && CPU::qpc_freq)
@@ -909,7 +914,11 @@ void CSheduler::UpdateRT()
 			const bool measure_cost = psShedulerAdaptive || psShedulerClassPrediction ||
 				psShedulerHeavyBackoff || psShedulerJitterMs > 0;
 			const u64 callback_started = measure_cost ? CPU::QPC() : 0;
-			object->shedule_Update(elapsed);
+			{
+				PROF_EVENT("shedule_Update RT");
+				PROF_TEXT(object->shedule_Name().c_str());
+				object->shedule_Update(elapsed);
+			}
 			const u64 callback_finished = callback_started ? CPU::QPC() : 0;
 			u32 actual_cost_us = 0;
 			if (callback_started && CPU::qpc_freq)
@@ -970,7 +979,7 @@ void CSheduler::UpdateRT()
 
 void CSheduler::UpdateMainThread()
 {
-
+	PROF_EVENT();
 	const u64 phase_started = CPU::QPC();
 	InterlockedExchange(&m_processing_thread_id, static_cast<LONG>(GetCurrentThreadId()));
 	cycles_start = CPU::QPC();
@@ -984,7 +993,7 @@ void CSheduler::UpdateMainThread()
 
 void CSheduler::UpdateDeferred()
 {
-
+	PROF_EVENT();
 	const u64 phase_started = CPU::QPC();
 	InterlockedExchange(&m_processing_thread_id, static_cast<LONG>(GetCurrentThreadId()));
 	cycles_start = CPU::QPC();
@@ -1038,6 +1047,7 @@ void CSheduler::UpdateFinalize()
 
 void CSheduler::Update()
 {
+	PROF_EVENT();
 	UpdateInit();
 	UpdateRT();
 

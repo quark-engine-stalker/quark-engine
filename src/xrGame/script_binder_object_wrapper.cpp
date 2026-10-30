@@ -154,7 +154,8 @@ void lua_profile_reset_callbacks()
 }
 
 CScriptBinderObjectWrapper::CScriptBinderObjectWrapper(CScriptGameObject* object) :
-	CScriptBinderObject(object)
+	CScriptBinderObject(object),
+	m_lua_object(ai().script_engine().lua(), object)
 {}
 
 CScriptBinderObjectWrapper::~CScriptBinderObjectWrapper()

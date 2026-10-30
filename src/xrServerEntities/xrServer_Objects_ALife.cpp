@@ -25,6 +25,7 @@
 #else // XRGAME_EXPORTS
 #	include "../xrEngine/bone.h"
 #	include "../xrEngine/render.h"
+#	include "alife_schedule_registry.h"
 #endif // XRGAME_EXPORTS
 
 #ifdef XRSE_FACTORY_EXPORTS
@@ -1731,10 +1732,18 @@ CSE_ALifeSchedulable::CSE_ALifeSchedulable(LPCSTR caSection)
 	m_tpCurrentBestWeapon = 0;
 	m_tpBestDetector = 0;
 	m_schedule_counter = u64(-1);
+#ifdef XRGAME_EXPORTS
+	m_schedule_registry = nullptr;
+	m_schedule_id = ALife::_OBJECT_ID(-1);
+#endif
 }
 
 CSE_ALifeSchedulable::~CSE_ALifeSchedulable()
 {
+#ifdef XRGAME_EXPORTS
+	if (m_schedule_registry)
+		m_schedule_registry->on_destroy(this);
+#endif
 }
 
 bool CSE_ALifeSchedulable::need_update(CSE_ALifeDynamicObject* object)

@@ -113,6 +113,7 @@ struct TL_2c3uv
 
 void CRenderTarget::phase_pp()
 {
+	PROF_EVENT();
 	// combination/postprocess
 	u_setrt(Device.dwWidth, Device.dwHeight, HW.pBaseRT,NULL,NULL, HW.pBaseZB);
 	//	Element 0 for for normal post-process

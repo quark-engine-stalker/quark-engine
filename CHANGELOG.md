@@ -2,6 +2,47 @@
 
 **English** & [Русский](CHANGELOG.ru.md)
 
+VER 1.0.1 [BUG FIXES AND PERFORMANCE]
+
+FIXES:
+
+- Fixed a crash shortly after loading a save near artifacts
+- Fixed a crash near bloodsuckers and other mutants when the game runs out of video memory
+- Fixed a crash when loading a save near a campfire (the root of the problem still lies in the GAMMA Cooking Overhaul mod; the fixes only cover the engine side)
+- Fixed crashes when an NPC exits combat state
+- Fixed a crash in combat with zombified stalkers (scripts that mistakenly pass an empty value instead of a position or another object no longer crash the game)
+- Fixed crashes in the Zone's life simulation (A-Life) when an NPC, monster, or squad disappears
+- Fixed a crash at the end of animations with a camera effect (drinking Anabiotic during an emission sometimes caused a crash)
+- Fixed full-screen "gibberish characters" while loading a save (with the RTSS/MSI Afterburner overlay enabled, its font was drawn instead of the loading background)
+
+OPTIMIZATION:
+
+- Texture warm-up cache increased from 256 to 512 MB (half for UI, half for models). If video memory is insufficient, the cache shrinks and is freed.
+- Sped up script callbacks (gamedata -> axr_main.script): the subscriber list is no longer re-sorted on every call and is taken from a cache instead.
+- Faster XML processing in DXML (gamedata -> dxml_core.script). XML files are no longer parsed and rebuilt in Lua if no mod modifies them. In synthetic tests on 142 real XML files from GAMMA (before: 681 ms -> after: 2 ms)
+- Sped up the weapon scope check (gamedata -> aaaa_script_fixes_mp.script). (before: up to 62 µs -> after: up to 3.3 µs)
+- Sped up the IsWeapon and IsLauncher checks (gamedata -> _g_patches.script). For items that are not weapons, there is one fewer engine call and no memory allocation per call.
+- Reduced the load from monsters' per-frame anomaly traversal (gamedata -> aaaa_script_fixes_mp.script). In a test with 60 anomalies and 30 monsters (before: 164 -> after: 110 engine calls per frame)
+
+PORTED AND ADAPTED FIXES:
+
+- Fixed memory corruption and graphical artifacts when a shader declares an engine constant as a single number (weapon blur in Screen Space Shaders).
+  Part of the fix ported from Xray-Monolith, PR #736:
+  https://github.com/themrdemonized/xray-monolith/pull/736
+- Fixed lightning flash accumulating in the sky color while the game is paused.
+  Ported from Xray-Monolith, PR #733:
+  https://github.com/themrdemonized/xray-monolith/pull/733
+- Fixed a UI element's texture color being reset when its color animation is removed.
+  Ported from Xray-Monolith, PR #682:
+  https://github.com/themrdemonized/xray-monolith/pull/682
+- Fixed small changes to a script light source's range being ignored.
+  Part of the fix ported from Xray-Monolith, PR #674:
+  https://github.com/themrdemonized/xray-monolith/pull/674
+- Weapons dropped by NPCs no longer fly off in the direction of the player's gaze (fixed a crash when no actor is present).
+  Ported and adapted from Xray-Monolith, commit 6eefc64:
+  https://github.com/themrdemonized/xray-monolith/commit/6eefc64
+- Added Tracy 0.14.1 (https://github.com/wolfpld/tracy) for profiling the engine and more
+
 VER 1.0 [BUG FIXES AND PERFORMANCE]
 
 FIXES:

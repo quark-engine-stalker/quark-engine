@@ -1144,6 +1144,18 @@ public:
 	}
 };
 
+#ifdef TRACY_ENABLE
+extern XRCORE_API int g_tracy_alloc;
+// tracy_alloc 1 - send every allocation with its call stack to a connected Tracy.
+// Not saved to user.ltx: it is for one trace and costs microseconds per allocation.
+class CCC_TracyAlloc : public CCC_Integer
+{
+public:
+	CCC_TracyAlloc(LPCSTR N) : CCC_Integer(N, &g_tracy_alloc, 0, 1) {}
+	virtual void Save(IWriter*) {}
+};
+#endif
+
 // frame_ab <seconds> <command A> | <command B>
 //                        - A/B of two console states in one session, for example
 //                          frame_ab 120 r__ssa_discard_gradient 0 | r__ssa_discard_gradient 1;
@@ -1407,6 +1419,9 @@ void CCC_Register()
 	CMD4(CCC_Integer, "mt_scheduler", &mt_Scheduler, 0, 1);
 	CMD1(CCC_FrameStats, "frame_stats");
 	CMD1(CCC_FrameAB, "frame_ab");
+#ifdef TRACY_ENABLE
+	CMD1(CCC_TracyAlloc, "tracy_alloc");
+#endif
 	CMD1(CCC_OrchestrationThreads, "orchestration_threads");
 	CMD4(CCC_Integer, "scheduler_batch_size", &psShedulerBatchSize, 16, 8192);
 	CMD4(CCC_Integer, "scheduler_main_budget_ms", &psShedulerMainBudgetMs, 1, 33);

@@ -20,6 +20,18 @@ extern void save_stack_trace();
 
 MEMPOOL mem_pools[mem_pools_count];
 
+#ifdef TRACY_ENABLE
+#include "profiler.h"
+// Console `tracy_alloc 1`: every allocation goes to a connected Tracy with its call stack
+// (frees without one). Off by default, the stacks cost microseconds per allocation.
+XRCORE_API int g_tracy_alloc = 0;
+#	define TRACK_ALLOC(P, Size) do { if (g_tracy_alloc && (P)) TracyAllocS(P, Size, 24); } while (0)
+#	define TRACK_FREE(P) do { if (g_tracy_alloc && (P)) TracyFree(P); } while (0)
+#else
+#	define TRACK_ALLOC(P, Size)
+#	define TRACK_FREE(P)
+#endif
+
 // MSVC
 ICF u8* acc_header(void* P)
 {
@@ -87,6 +99,7 @@ void* xrMemory::mem_alloc(size_t size
 #ifdef USE_MEMORY_MONITOR
         memory_monitor::monitor_alloc(result, size, _name);
 #endif // USE_MEMORY_MONITOR
+		TRACK_ALLOC(result, size);
 		return (result);
 	}
 #endif // PURE_ALLOC
@@ -152,6 +165,7 @@ void* xrMemory::mem_alloc(size_t size
     memory_monitor::monitor_alloc(_ptr, size, _name);
 #endif // USE_MEMORY_MONITOR
 	fill_zero_memory(*this, _ptr, size);
+	TRACK_ALLOC(_ptr, size);
 	return _ptr;
 }
 
@@ -173,6 +187,7 @@ void* xrMemory::mem_alloc_uninitialized(size_t size
 #ifdef USE_MEMORY_MONITOR
 		memory_monitor::monitor_alloc(result, size, _name);
 #endif // USE_MEMORY_MONITOR
+		TRACK_ALLOC(result, size);
 		return result;
 	}
 #endif // PURE_ALLOC
@@ -190,6 +205,7 @@ void* xrMemory::mem_alloc_uninitialized(size_t size
 void xrMemory::mem_free(void* P)
 {
 	mem_calls_record();
+	TRACK_FREE(P);
 #ifdef USE_MEMORY_MONITOR
     memory_monitor::monitor_free(P);
 #endif // USE_MEMORY_MONITOR
@@ -263,6 +279,7 @@ void* xrMemory::mem_realloc(void* P, size_t size
 #endif
 #endif // PURE_MEMORY_FILL_ZERO
 
+		TRACK_FREE(P);
 #ifdef _WIN64
 		void* result = realloc(P, size);
 #else
@@ -278,6 +295,7 @@ void* xrMemory::mem_realloc(void* P, size_t size
         memory_monitor::monitor_free(P);
         memory_monitor::monitor_alloc(result, size, _name);
 # endif // USE_MEMORY_MONITOR
+		TRACK_ALLOC(result, size);
 		return (result);
 	}
 #endif // PURE_ALLOC
@@ -317,10 +335,12 @@ void* xrMemory::mem_realloc(void* P, size_t size
         }
 #endif // DEBUG_MEMORY_MANAGER
 		// Igor: Reserve 1 byte for xrMemory header
+		TRACK_FREE(P);
 		void* _real2 = xr_aligned_offset_realloc(_real, 1 + size + _footer, 16, 0x1);
 		//void* _real2 = xr_aligned_offset_realloc (_real,size+_footer,16,0x1);
 		_ptr = (void*)(((u8*)_real2) + 1);
 		*acc_header(_ptr) = mem_generic;
+		TRACK_ALLOC(_ptr, size);
 #ifdef DEBUG_MEMORY_MANAGER
         if (debug_mode) dbg_register(_ptr, size, _name);
 #endif // DEBUG_MEMORY_MANAGER

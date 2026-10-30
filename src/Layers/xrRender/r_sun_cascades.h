@@ -23,7 +23,7 @@ namespace sun
 		}
 
 		Fmatrix xform;
-		xr_vector<ray> rays;
+		svector<ray, 4> rays; // the four view-frustum edge rays, copied between cascades every frame
 		float size;
 		float bias;
 		bool reset_chain;

@@ -796,6 +796,7 @@ void CRender::Render()
 
 		if (RImplementation.o.ssfx_sss && !Device.m_SecondViewport.IsSVPFrame())
 		{
+			PIX_EVENT(SSFX_SSS);
 			static bool sss_rendered, sss_extended_rendered;
 
 			// SSS Shadows
@@ -872,7 +873,7 @@ void CRender::Render()
 
 	if (RImplementation.o.ssfx_bloom)
 	{
-
+		PIX_EVENT(SSFX_BLOOM_EMISSIVE);
 		// Render Emissive on `rt_ssfx_bloom_emissive`
 		FLOAT ColorRGBA[4] = { 0,0,0,0 };
 		HW.pContext->ClearRenderTargetView(Target->rt_ssfx_bloom_emissive->pRT, ColorRGBA);
@@ -898,10 +899,10 @@ void CRender::Render()
 		render_lights(LP_pending);
 	}
 
+	if (RImplementation.o.ssfx_volumetric)
 	{
-
-		if (RImplementation.o.ssfx_volumetric)
-			Target->phase_ssfx_volumetric_blur();
+		PIX_EVENT(SSFX_VOLUMETRIC_BLUR);
+		Target->phase_ssfx_volumetric_blur();
 	}
 
 	// Postprocess
@@ -920,6 +921,7 @@ void CRender::Render()
 
 void CRender::render_forward()
 {
+	PROF_EVENT();
 	VERIFY(0 == mapDistort.size() + mapHUDDistort.size());
 	RImplementation.o.distortion = RImplementation.o.distortion_enabled; // enable distorion
 

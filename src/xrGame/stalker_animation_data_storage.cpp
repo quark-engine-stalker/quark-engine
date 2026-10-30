@@ -28,11 +28,11 @@ public:
 
 	IC bool operator()(const CStalkerAnimationDataStorage::OBJECT& object) const
 	{
-		if (m_object->LL_MotionsSlotCount() != object.first->LL_MotionsSlotCount())
+		if (m_object->LL_MotionsSlotCount() != object.first.size())
 			return (false);
 
 		for (u16 i = 0, n = m_object->LL_MotionsSlotCount(); i < n; ++i)
-			if (!(m_object->LL_MotionsSlot(i) == object.first->LL_MotionsSlot(i)))
+			if (!(m_object->LL_MotionsSlot(i) == object.first[i]))
 				return (false);
 
 		return (true);
@@ -59,6 +59,10 @@ const CStalkerAnimationData* CStalkerAnimationDataStorage::object(IKinematicsAni
 	if (I != m_objects.end())
 		return ((*I).second);
 
-	m_objects.push_back(std::make_pair(skeleton_animated, xr_new<CStalkerAnimationData>(skeleton_animated)));
+	// The copies hold references, so the motions cannot be freed and reused at the same address
+	MOTIONS motions;
+	for (u16 i = 0, n = skeleton_animated->LL_MotionsSlotCount(); i < n; ++i)
+		motions.push_back(skeleton_animated->LL_MotionsSlot(i));
+	m_objects.push_back(std::make_pair(motions, xr_new<CStalkerAnimationData>(skeleton_animated)));
 	return (m_objects.back().second);
 }

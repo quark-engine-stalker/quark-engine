@@ -140,6 +140,11 @@ constexpr u32 kIniSectionLookupThreshold = 8;
 constexpr u32 kIniLineLookupThreshold = 8;
 }
 
+// Same crc32 as str_container::dock, so a view hashes like the interned name.
+CInifile::name_view::name_view(LPCSTR s) : str(s), length(s ? xr_strlen(s) : 0), crc(s ? crc32(s, length) : 0)
+{
+}
+
 void CInifile::RebuildLineLookup(u32 section_index)
 {
 	VERIFY(section_index < DATA.size());
@@ -1663,7 +1668,7 @@ BOOL CInifile::section_exist(LPCSTR S) const
 {
 	if (!S || !S[0])
 		return FALSE;
-	const auto cached = m_SectionLookup.find(shared_str(S));
+	const auto cached = m_SectionLookup.find(name_view(S));
 	if (cached != m_SectionLookup.end() && cached->second < DATA.size())
 	{
 		const Sect& section = DATA[cached->second];
@@ -1682,7 +1687,7 @@ BOOL CInifile::line_exist(LPCSTR S, LPCSTR L) const
 	if (!S || !L || !S[0] || !L[0])
 		return FALSE;
 
-	const auto section_it = m_SectionLookup.find(shared_str(S));
+	const auto section_it = m_SectionLookup.find(name_view(S));
 	if (section_it != m_SectionLookup.end())
 	{
 		const u32 section_index = section_it->second;
@@ -1691,7 +1696,7 @@ BOOL CInifile::line_exist(LPCSTR S, LPCSTR L) const
 			const Sect& section = DATA[section_index];
 			if (*section.Name && xr_strcmp(*section.Name, S) == 0)
 			{
-				const auto line_it = m_LineLookup[section_index].find(shared_str(L));
+				const auto line_it = m_LineLookup[section_index].find(name_view(L));
 				if (line_it != m_LineLookup[section_index].end() && line_it->second < section.Data.size())
 				{
 					const Item& item = section.Data[line_it->second];
@@ -1747,7 +1752,7 @@ CInifile::Sect& CInifile::r_section(LPCSTR S) const
 	xr_strcpy(section, sizeof(section), S);
 	strlwr(section);
 
-	const auto cached = m_SectionLookup.find(shared_str(section));
+	const auto cached = m_SectionLookup.find(name_view(section));
 	if (cached != m_SectionLookup.end() && cached->second < DATA.size())
 	{
 		const Sect& cached_section = DATA[cached->second];
@@ -1772,12 +1777,12 @@ LPCSTR CInifile::r_string(LPCSTR S, LPCSTR L) const
 	}
 
 	Sect const& I = r_section(S);
-	const auto section_it = m_SectionLookup.find(I.Name);
-	if (section_it != m_SectionLookup.end() && section_it->second < DATA.size() &&
-		section_it->second < m_LineLookup.size() && &DATA[section_it->second] == &I)
+	// r_section returns an element of DATA; a stale line index is caught by the name check below.
+	const size_t section_index = &I - DATA.data();
+	if (section_index < m_LineLookup.size())
 	{
-		const auto& line_lookup = m_LineLookup[section_it->second];
-		const auto line_it = line_lookup.find(shared_str(L));
+		const auto& line_lookup = m_LineLookup[section_index];
+		const auto line_it = line_lookup.find(name_view(L));
 		if (line_it != line_lookup.end() && line_it->second < I.Data.size())
 		{
 			const Item& item = I.Data[line_it->second];
