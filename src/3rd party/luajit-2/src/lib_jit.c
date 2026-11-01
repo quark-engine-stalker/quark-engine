@@ -28,6 +28,12 @@
 #include "lj_vm.h"
 #include "lj_vmevent.h"
 #include "lj_lib.h"
+#if LJ_HASPROFILE
+#include "lj_gc.h"
+#include "lj_trace.h"
+#include "lj_profile.h"
+#include "lj_allocprof.h"
+#endif
 
 #include "luajit.h"
 
@@ -172,6 +178,12 @@ static void setintfield(lua_State *L, GCtab *t, const char *name, int32_t val)
   setintV(lj_tab_setstr(L, t, lj_str_newz(L, name)), val);
 }
 
+/* GC counters are MSize (uint32); a double holds the full range without the int32 wrap. */
+static void setnumfield(lua_State *L, GCtab *t, const char *name, lua_Number val)
+{
+  setnumV(lj_tab_setstr(L, t, lj_str_newz(L, name)), val);
+}
+
 /* local info = jit.util.funcinfo(func [,pc]) */
 LJLIB_CF(jit_util_funcinfo)
 {
@@ -261,6 +273,29 @@ LJLIB_CF(jit_util_funcuvname)
     return 1;
   }
   return 0;
+}
+
+extern uint32_t lj_gc_cycles;  /* Defined in lj_gc.c: completed GC cycles since start. */
+
+/* local info = jit.util.gcstat() -- GC counters: total, threshold, estimate, debt (bytes) and cycles (completed collections) */
+LJLIB_CF(jit_util_gcstat)
+{
+  global_State *g = G(L);
+  /* Snapshot before allocating: lua_createtable/lj_str_newz can run a GC step that moves these. */
+  lua_Number total = (lua_Number)g->gc.total;
+  lua_Number threshold = (lua_Number)g->gc.threshold;
+  lua_Number estimate = (lua_Number)g->gc.estimate;
+  lua_Number debt = (lua_Number)g->gc.debt;
+  lua_Number cycles = (lua_Number)lj_gc_cycles;
+  GCtab *t;
+  lua_createtable(L, 0, 5);
+  t = tabV(L->top-1);
+  setnumfield(L, t, "total", total);
+  setnumfield(L, t, "threshold", threshold);
+  setnumfield(L, t, "estimate", estimate);
+  setnumfield(L, t, "debt", debt);
+  setnumfield(L, t, "cycles", cycles);
+  return 1;
 }
 
 /* -- Reflection API for traces ------------------------------------------- */
@@ -514,6 +549,170 @@ LJLIB_CF(jit_opt_start)
 
 #endif
 
+/* -- jit.profile module (backported from LuaJIT 2.1) --------------------- */
+
+#if LJ_HASPROFILE
+
+#define LJLIB_MODULE_jit_profile
+
+#define KEY_PROFILE_THREAD	(U64x(81000000,00000000)|'t')
+#define KEY_PROFILE_FUNC	(U64x(81000000,00000000)|'f')
+
+static void jit_profile_callback(lua_State *L2, lua_State *L, int samples,
+				 int vmstate)
+{
+  TValue key;
+  cTValue *tv;
+  key.u64 = KEY_PROFILE_FUNC;
+  tv = lj_tab_get(L, tabV(registry(L)), &key);
+  if (tvisfunc(tv)) {
+    char vmst = (char)vmstate;
+    int status;
+    setfuncV(L2, L2->top++, funcV(tv));
+    setthreadV(L2, L2->top++, L);
+    setintV(L2->top++, samples);
+    setstrV(L2, L2->top++, lj_str_new(L2, &vmst, 1));
+    status = lua_pcall(L2, 3, 0, 0);  /* callback(thread, samples, vmstate) */
+    if (status) {
+      /* Panic logs and returns; drop the sample and keep sampling, never exit the game. */
+      if (G(L2)->panic) G(L2)->panic(L2);
+      lua_settop(L2, 0);
+    }
+    lj_trace_abort(G(L2));
+  }
+}
+
+/* profile.start(mode, cb) */
+LJLIB_CF(jit_profile_start)
+{
+  GCtab *registry = tabV(registry(L));
+  GCstr *mode = lj_lib_optstr(L, 1);
+  GCfunc *func = lj_lib_checkfunc(L, 2);
+  lua_State *L2;
+  TValue key;
+  if (lj_allocprof_active)
+    lj_err_callermsg(L, "jit.profile cannot start while jit.allocprof is running");
+  L2 = lua_newthread(L);  /* Thread that runs profiler callback. */
+  /* Anchor thread and function in registry. */
+  key.u64 = KEY_PROFILE_THREAD;
+  setthreadV(L, lj_tab_set(L, registry, &key), L2);
+  key.u64 = KEY_PROFILE_FUNC;
+  setfuncV(L, lj_tab_set(L, registry, &key), func);
+  lj_gc_anybarriert(L, registry);
+  luaJIT_profile_start(L, mode ? strdata(mode) : "",
+		       (luaJIT_profile_callback)jit_profile_callback, L2);
+  return 0;
+}
+
+/* profile.stop() */
+LJLIB_CF(jit_profile_stop)
+{
+  GCtab *registry;
+  TValue key;
+  luaJIT_profile_stop(L);
+  registry = tabV(registry(L));
+  key.u64 = KEY_PROFILE_THREAD;
+  setnilV(lj_tab_set(L, registry, &key));
+  key.u64 = KEY_PROFILE_FUNC;
+  setnilV(lj_tab_set(L, registry, &key));
+  lj_gc_anybarriert(L, registry);
+  return 0;
+}
+
+/* dump = profile.dumpstack([thread,] fmt, depth) */
+LJLIB_CF(jit_profile_dumpstack)
+{
+  lua_State *L2 = L;
+  int arg = 0;
+  size_t len;
+  int depth;
+  GCstr *fmt;
+  const char *p;
+  if (L->top > L->base && tvisthread(L->base)) {
+    L2 = threadV(L->base);
+    arg = 1;
+  }
+  fmt = lj_lib_checkstr(L, arg+1);
+  depth = lj_lib_checkint(L, arg+2);
+  p = luaJIT_profile_dumpstack(L2, strdata(fmt), depth, &len);
+  lua_pushlstring(L, p, len);
+  return 1;
+}
+
+#include "lj_libdef.h"
+
+#endif
+
+/* -- jit.allocprof module (allocation profiler) ------------------------- */
+
+#if LJ_HASPROFILE
+
+#define LJLIB_MODULE_jit_allocprof
+
+/* allocprof.start([depth]) -- jit.off() recommended for exact attribution; depth>1 also builds full stacks */
+LJLIB_CF(jit_allocprof_start)
+{
+  if (lj_profile_active())
+    lj_err_callermsg(L, "jit.allocprof cannot start while jit.profile is running");
+  lj_allocprof_start(L, lj_lib_optint(L, 1, 1));
+  return 0;
+}
+
+/* allocprof.stop() */
+LJLIB_CF(jit_allocprof_stop)
+{
+  lj_allocprof_stop(L);
+  return 0;
+}
+
+/* results = allocprof.dump([stacks[, reset]]) -- reset clears tables but keeps capturing */
+LJLIB_CF(jit_allocprof_dump)
+{
+  int stacks = (L->top > L->base) && lua_toboolean(L, 1);
+  int reset = (L->top > L->base + 1) && lua_toboolean(L, 2);
+  int slots = lj_allocprof_slots(stacks);
+  int k, i = 0;
+  lua_createtable(L, lj_allocprof_count(stacks), 4);
+  for (k = 0; k < slots; k++) {
+    const AllocProfEntry *e = lj_allocprof_slot(stacks, k);
+    if (!e) continue;
+    lua_createtable(L, 0, 2);
+    lua_pushstring(L, e->key);                lua_setfield(L, -2, "key");
+    lua_pushnumber(L, (lua_Number)e->bytes);  lua_setfield(L, -2, "bytes");
+    lua_rawseti(L, -2, ++i);
+  }
+  lua_pushnumber(L, (lua_Number)lj_allocprof_dropped);  lua_setfield(L, -2, "dropped");
+  lua_pushnumber(L, (lua_Number)lj_allocprof_pending);  lua_setfield(L, -2, "pending");
+  lua_pushnumber(L, (lua_Number)lj_allocprof_drains);   lua_setfield(L, -2, "drains");
+  lua_pushnumber(L, (lua_Number)lj_allocprof_seen);     lua_setfield(L, -2, "seen");
+  if (reset) lj_allocprof_reset();
+  return 1;
+}
+
+/* pct = allocprof.usage() -- 0..100, fullest table */
+LJLIB_CF(jit_allocprof_usage)
+{
+  lua_pushinteger(L, lj_allocprof_usage());
+  return 1;
+}
+
+/* allocprof.pause() / allocprof.resume() -- around a snapshot report build */
+LJLIB_CF(jit_allocprof_pause)
+{
+  lj_allocprof_pause();
+  return 0;
+}
+
+LJLIB_CF(jit_allocprof_resume)
+{
+  lj_allocprof_resume();
+  return 0;
+}
+
+#include "lj_libdef.h"
+
+#endif
+
 /* -- JIT compiler initialization ----------------------------------------- */
 
 #if LJ_HASJIT
@@ -638,7 +837,7 @@ static void jit_init(lua_State *L)
 #endif
     J->flags = flags | JIT_F_ON | JIT_F_OPT_DEFAULT;
   memcpy(J->param, jit_param_default, sizeof(J->param));
-  lj_dispatch_update(G(L));
+  lj_dispatch_update(G(L), 0);
 #else
   UNUSED(flags);
 #endif
@@ -656,6 +855,10 @@ LUALIB_API int luaopen_jit(lua_State *L)
 #endif
 #if LJ_HASJIT
   LJ_LIB_REG(L, "jit.opt", jit_opt);
+#endif
+#if LJ_HASPROFILE
+  LJ_LIB_REG(L, "jit.profile", jit_profile);
+  LJ_LIB_REG(L, "jit.allocprof", jit_allocprof);
 #endif
   L->top -= 2;
   jit_init(L);

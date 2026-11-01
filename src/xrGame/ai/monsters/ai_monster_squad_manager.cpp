@@ -89,7 +89,11 @@ void CMonsterSquadManager::register_member(u8 team_id, u8 squad_id, u8 group_id,
 
 void CMonsterSquadManager::remove_member(u8 team_id, u8 squad_id, u8 group_id, CEntity* e)
 {
-	get_squad(team_id, squad_id, group_id)->RemoveMember(e);
+	// net_Destroy after a failed net_Spawn comes here without register_member
+	if (team_id >= team.size() || squad_id >= team[team_id].size() || group_id >= team[team_id][squad_id].size())
+		return;
+	if (CMonsterSquad* squad = team[team_id][squad_id][group_id])
+		squad->RemoveMember(e);
 }
 
 CMonsterSquad* CMonsterSquadManager::get_squad(u8 team_id, u8 squad_id, u8 group_id)

@@ -26,6 +26,9 @@
 #endif
 #include "lj_trace.h"
 #include "lj_vm.h"
+#if LJ_HASPROFILE
+#include "lj_allocprof.h"
+#endif
 
 #if LJ_TARGET_WINDOWS
 #define WIN32_LEAN_AND_MEAN
@@ -1094,6 +1097,10 @@ static void atomic(global_State *g, lua_State *L)
   g->gc.atomic_total_cycles = gc_cycle_counter() - started;
 }
 
+/* Completed GC cycles since process start, read via jit.util.gcstat. A file-scope
+** global, not a GCState field, so it does not shift global_State layout. */
+uint32_t lj_gc_cycles = 0;
+
 /* GC state machine. Returns a cost estimate for each step performed. */
 static size_t gc_onestep(lua_State *L, uint32_t sweepstr_object_limit,
 			uint32_t sweep_object_limit)
@@ -1196,6 +1203,7 @@ static size_t gc_onestep(lua_State *L, uint32_t sweepstr_object_limit,
       } else {  /* Otherwise skip this phase to help the JIT. */
 	g->gc.state = GCSpause;  /* End of GC cycle. */
 	g->gc.debt = 0;
+	lj_gc_cycles++;
       }
     }
     return cost;
@@ -1214,6 +1222,7 @@ static size_t gc_onestep(lua_State *L, uint32_t sweepstr_object_limit,
 #endif
     g->gc.state = GCSpause;  /* End of GC cycle. */
     g->gc.debt = 0;
+    lj_gc_cycles++;
     return 0;
   default:
     lua_assert(0);
@@ -1476,6 +1485,10 @@ void *lj_mem_realloc(lua_State *L, void *p, MSize osz, MSize nsz)
   lua_assert((nsz == 0) == (p == NULL));
   lua_assert(checkptr32(p));
   g->gc.total = (g->gc.total - osz) + nsz;
+#if LJ_HASPROFILE
+  if (lj_allocprof_active && nsz > osz)
+    lj_allocprof_pending += (uint64_t)(nsz - osz);
+#endif
   return p;
 }
 
@@ -1491,6 +1504,10 @@ void * LJ_FASTCALL lj_mem_newgco(lua_State *L, MSize size)
   setgcrefr(o->gch.nextgc, g->gc.root);
   setgcref(g->gc.root, o);
   newwhite(g, o);
+#if LJ_HASPROFILE
+  if (lj_allocprof_active)
+    lj_allocprof_pending += (uint64_t)size;
+#endif
   return o;
 }
 

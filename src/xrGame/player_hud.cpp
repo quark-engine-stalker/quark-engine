@@ -1672,7 +1672,8 @@ u32 player_hud::script_anim_play(u8 hand, LPCSTR section, LPCSTR anm_name, bool 
 	Fvector offs = READ_IF_EXISTS(pSettings, r_fvector3, section, pos.c_str(), def);
 	Fvector rrot = READ_IF_EXISTS(pSettings, r_fvector3, section, rot.c_str(), def);
 
-	if (pSettings->line_exist(section, "item_visual"))
+	LPCSTR item_visual = READ_IF_EXISTS(pSettings, r_string, section, "item_visual", nullptr);
+	if (item_visual)
 	{
 		delete_script_anim_item_model();
 		create_script_anim_item_model(section);
@@ -1723,18 +1724,25 @@ u32 player_hud::script_anim_play(u8 hand, LPCSTR section, LPCSTR anm_name, bool 
 		if (!M2.valid())
 			M2 = script_anim_item_model->ID_Cycle_Safe("idle");
 
-		R_ASSERT3(M2.valid(), "model %s has no motion [idle] ", pSettings->r_string(m_sect_name, "item_visual"));
+		// No item_visual here: the model belongs to the previous script anim, which is still playing when a script
+		// (lam2) starts the next one in the same frame. It can't play this motion, so drop it instead of failing.
+		if (!M2.valid() && !item_visual)
+			delete_script_anim_item_model();
+		else
+		{
+			R_ASSERT4(M2.valid(), "script anim item model has no motion [idle]", item_visual, item_anm_name.c_str());
 
-		u16 root_id = script_anim_item_model->dcast_PKinematics()->LL_GetBoneRoot();
-		CBoneInstance& root_binst = script_anim_item_model->dcast_PKinematics()->LL_GetBoneInstance(root_id);
-		root_binst.set_callback_overwrite(TRUE);
-		root_binst.mTransform.identity();
+			u16 root_id = script_anim_item_model->dcast_PKinematics()->LL_GetBoneRoot();
+			CBoneInstance& root_binst = script_anim_item_model->dcast_PKinematics()->LL_GetBoneInstance(root_id);
+			root_binst.set_callback_overwrite(TRUE);
+			root_binst.mTransform.identity();
 
-		u16 pc = script_anim_item_model->partitions().count();
-		for (u16 pid = 0; pid < pc; ++pid)
-			CBlend* B = script_anim_item_model->PlayCycle(pid, M2, bMixIn, 0, 0, 0, speed);
+			u16 pc = script_anim_item_model->partitions().count();
+			for (u16 pid = 0; pid < pc; ++pid)
+				CBlend* B = script_anim_item_model->PlayCycle(pid, M2, bMixIn, 0, 0, 0, speed);
 
-		script_anim_item_model->dcast_PKinematics()->CalculateBones_Invalidate();
+			script_anim_item_model->dcast_PKinematics()->CalculateBones_Invalidate();
+		}
 	}
 
 	play_blend(this, (hand == 2 ? 0 : hand == 0 ? 2 : 1), M.mid, bMixIn, speed, true);

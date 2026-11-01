@@ -146,7 +146,10 @@ void CSpaceRestrictionManager::restrict(ALife::_OBJECT_ID id, shared_str out_res
 void CSpaceRestrictionManager::unrestrict(ALife::_OBJECT_ID id)
 {
 	CLIENT_RESTRICTIONS::iterator I = m_clients->find(id);
-	VERIFY(I != m_clients->end());
+	// Not an error: a spawn rejected as a duplicate id never got its own id (0xFFFF), and a leftover
+	// object destroyed after clear() has no entry; erase(end()) frees the map's head node
+	if (I == m_clients->end())
+		return;
 	m_clients->erase(I);
 	collect_garbage();
 }

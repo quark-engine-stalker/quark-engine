@@ -74,66 +74,44 @@ void stalker_movement_manager_obstacles::rebuild_path()
 	update_path();
 }
 
-bool stalker_movement_manager_obstacles::apply_border(const obstacles_query& query)
+bool stalker_movement_manager_obstacles::can_build_restricted_path(const obstacles_query& query)
 {
 	u32 start_vertex_id = object().ai_location().level_vertex_id();
 	u32 dest_vertex_id = level_path().dest_vertex_id();
-	CLevelGraph& graph = ai().level_graph();
 
-	restricted_object().CRestrictedObject::add_border(start_vertex_id, dest_vertex_id);
+	// The level path search skips blocked_vertices, not CLevelGraph's shared mask, so the probe has to
+	// block the same vertices (restriction border plus the candidate obstacles) or it can never fail
+	xr_vector<u32> border;
+	restricted_object().CRestrictedObject::collect_path_border(start_vertex_id, dest_vertex_id, border);
 
-	AREA::const_iterator B = query.area().begin(), I = B;
-	AREA::const_iterator E = query.area().end();
-	for (; I != E; ++I)
+	xr_unordered_flat_set<u32> blocked;
+	blocked.reserve(border.size() + query.area().size());
+	for (u32 vertex_id : border)
+		blocked.insert(vertex_id);
+
+	for (u32 vertex_id : query.area())
 	{
-		if ((*I == dest_vertex_id))
-			continue;
-
-		if (*I == start_vertex_id)
-			continue;
-
-		graph.set_mask_no_check(*I);
-	}
-
-	return (true);
-}
-
-void stalker_movement_manager_obstacles::remove_border(const obstacles_query& query)
-{
-	restricted_object().CRestrictedObject::remove_border();
-	CLevelGraph& graph = ai().level_graph();
-	AREA::const_iterator I = query.area().begin();
-	AREA::const_iterator E = query.area().end();
-	for (; I != E; ++I)
-		graph.clear_mask_no_check(*I);
-}
-
-bool stalker_movement_manager_obstacles::can_build_restricted_path(const obstacles_query& query)
-{
-	if (!apply_border(query))
-	{
-		VERIFY(!restricted_object().applied());
-		return (false);
+		if (vertex_id != start_vertex_id && vertex_id != dest_vertex_id)
+			blocked.insert(vertex_id);
 	}
 
 	typedef SBaseParameters<float, u32, u32> evaluator_type;
 
+	evaluator_type evaluator(
+		type_max(_dist_type),
+		_iteration_type(-1),
+		4096
+	);
+	evaluator.blocked_vertices = blocked.empty() ? nullptr : &blocked;
+
 	m_failed_to_build_path =
 		!ai().graph_engine().search(
 			ai().level_graph(),
-			object().ai_location().level_vertex_id(),
-			level_path().dest_vertex_id(),
+			start_vertex_id,
+			dest_vertex_id,
 			&m_temp_path,
-			evaluator_type(
-				type_max(_dist_type),
-				_iteration_type(-1),
-				4096
-			)
+			evaluator
 		);
-
-	remove_border(query);
-
-	VERIFY(!restricted_object().applied());
 
 	return (!m_failed_to_build_path);
 }

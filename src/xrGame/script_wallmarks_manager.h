@@ -5,7 +5,7 @@
 struct ScriptWallmarksArray
 {
 	FactoryPtr<IWallMarkArray>* m_wallmarks;
-	LPCSTR m_section;
+	shared_str m_section; // own copy: the Lua string passed in is freed by GC
 
 	ScriptWallmarksArray(LPCSTR section);
 };

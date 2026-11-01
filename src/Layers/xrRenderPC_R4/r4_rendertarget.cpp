@@ -41,9 +41,13 @@ void CRenderTarget::set_viewport_size(ID3DDeviceContext * dev, float w, float h)
 	dev->RSSetViewports(1, custom_viewport);
 }
 
+extern Fvector4 ps_s3ds_param_3;
+
 bool CRenderTarget::need_heat_buffer() const
 {
-	return ps_r2_nightvision > 0 || ps_r2_heatvision > 0;
+	// 3DSS thermal scopes (s3ds image type 2/3) sample $user$heat without r__heatvision
+	const int s3ds_image_type = int(ps_s3ds_param_3.x);
+	return ps_r2_nightvision > 0 || ps_r2_heatvision > 0 || s3ds_image_type == 2 || s3ds_image_type == 3;
 }
 
 bool CRenderTarget::need_motion_vectors() const

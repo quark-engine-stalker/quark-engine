@@ -34,6 +34,10 @@ void CLevel::remove_objects()
 {
 	if (!IsGameTypeSingle()) Msg("CLevel::remove_objects - Start");
 	BOOL b_stored = psDeviceFlags.test(rsDisableObjectsAsCrows);
+	// A same-level load (Game:QuickLoad) skips net_Stop and keeps bReady set, so CObjectList::Update
+	// would destroy only 24 objects per call and leave old objects alive under ids the save reuses
+	const BOOL b_ready = bReady;
+	bReady = false;
 
 	int loop = 5;
 	while (loop)
@@ -72,6 +76,22 @@ void CLevel::remove_objects()
 			Msg("Objects removal next loop. Active objects count=%d", Objects.o_count());
 		}
 	}
+	bReady = b_ready;
+
+#ifdef SPAWN_ANTIFREEZE
+	// Postponed spawns belong to the unloaded game; after a same-level load they would spawn its
+	// objects under ids the new game reuses. The prefetch job drops its own batch on closeSignal.
+	_InterlockedExchange(&closeSignal, TRUE);
+	xr_jobs::wait(prefetch_job_group);
+	_InterlockedExchange(&prefetch_job_scheduled, FALSE);
+	{
+		xrSRWLockGuard g(prefetch_lock);
+		prefetch_events->clear();
+		spawn_events->queue.clear();
+		spawn_events_data->clear();
+	}
+	_InterlockedExchange(&closeSignal, FALSE);
+#endif
 
 	BulletManager().Clear();
 	ph_commander().clear();

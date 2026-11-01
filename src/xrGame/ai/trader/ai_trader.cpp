@@ -196,6 +196,9 @@ void CAI_Trader::OnEvent(NET_Packet& P, u16 type)
 		{
 			P.r_u16(id);
 			Obj = Level().Objects.net_Find(id);
+			// Spawn antifreeze may still hold the item's M_SPAWN, so the client never had it (as in CAI_Stalker/CActor)
+			if (!Obj)
+				break;
 			bool just_before_destroy = !P.r_eof() && P.r_u8();
 			bool dont_create_shell = (type == GE_TRADE_SELL) || just_before_destroy;
 

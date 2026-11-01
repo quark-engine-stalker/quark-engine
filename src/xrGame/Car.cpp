@@ -1962,6 +1962,9 @@ void CCar::OnEvent(NET_Packet& P, u16 type)
 		{
 			P.r_u16(id);
 			CObject* O = Level().Objects.net_Find(id);
+			// Spawn antifreeze may still hold the item's M_SPAWN, so the client never had it
+			if (!O)
+				break;
 
 			bool just_before_destroy = !P.r_eof() && P.r_u8();
 			O->SetTmpPreDestroy(just_before_destroy);

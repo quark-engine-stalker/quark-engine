@@ -66,8 +66,10 @@ protected:
 	{
 		str_value* value = p_;
 		if (!value) return;
-		p_ = nullptr;
-		value->dwReference.fetch_sub(1, std::memory_order_release);
+		// As in vanilla, keep p_ while the entry is still referenced: mods call server objects
+		// after release through stale se_obj handles, and only these leftover fields keep them working
+		if (value->dwReference.fetch_sub(1, std::memory_order_release) == 1)
+			p_ = nullptr;
 	}
 
 public:

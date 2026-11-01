@@ -2,6 +2,21 @@
 
 **English** & [Русский](CHANGELOG.ru.md)
 
+VER 1.0.2 [BUG FIXES]
+
+FIXES:
+
+- Fixed a crash that occurred when an item pickup animation started immediately after an eating animation (FDDA).
+- Fixed a crash caused by the engine calling `net_Destroy` on an object that had not been fully created (e.g. when a monster failed to spawn).
+- Fixed visual bugs with thermal scopes.
+- Fixed items disappearing from the player's inventory.
+- Fixed NPC pathfinding issues that could prevent them from entering buildings and cause them to block each other.
+- The hand shadow rendering issue is still present.
+
+MISC:
+
+- Added support for [JitProfiler](https://www.moddb.com/mods/stalker-anomaly/addons/jitprofiler) (requires installation through MO2).
+
 VER 1.0.1 [BUG FIXES AND PERFORMANCE]
 
 FIXES:

@@ -48,8 +48,6 @@ public:
 
 private:
 	IC void remove_query_objects(const Fvector& position, const float& radius);
-	bool apply_border(const obstacles_query& query);
-	void remove_border(const obstacles_query& query);
 	void move_along_path_no_changes();
 	void rebuild_path();
 	void process_query_impl();

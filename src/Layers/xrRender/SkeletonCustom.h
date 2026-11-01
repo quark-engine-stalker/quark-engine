@@ -323,6 +323,7 @@ public:
 	virtual void PrepareBonesOnMain();
 	virtual bool FinishBonesOnMain();
 	void CalculateBones_Invalidate();
+	bool CopyBonesFrom(IKinematics* from);
 
 	void Callback(UpdateCallback C, void* Param)
 	{
