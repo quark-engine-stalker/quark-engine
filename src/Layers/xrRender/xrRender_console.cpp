@@ -437,6 +437,32 @@ Fvector4 ps_ssfx_water = { 1.0f, 0.8f, 1.0f, 0.0f }; // Res, Blur, Blur Perlin, 
 Fvector3 ps_ssfx_water_quality = { 1.0, 2.0, 0.0 }; // SSR Quality, Parallax Quality, -
 Fvector4 ps_ssfx_water_setup1 = { 0.6f, 3.0f, 0.3f, 0.05f }; // Distortion, Turbidity, Softborder, Parallax Height
 Fvector4 ps_ssfx_water_setup2 = { 0.8f, 6.0f, 0.3f, 0.5f }; // Reflection, Specular, Caustics, Ripples
+Fvector4 ps_ssfx_flowmap_setup = { 0.0f, 0.0f, 0.0f, 0.0f }; // SSS 24: Flow texture scale XY, UV position ZW
+
+// SSS 24 compatibility. The values are stored so the mod scripts and user.ltx keep working,
+// but Quark has no per-cascade shadow maps or upscalers (yet).
+Fvector4 ps_ssfx_cascades_resolution = { 1536.0f, 2048.0f, 2560.0f, 0.0f };
+Fvector4 ps_ssfx_cascades_delay = { 0.0f, 1.0f, 2.0f, 0.0f };
+
+u32 ps_ssfx_upscaler = 0;
+xr_token ssfx_upscaler_token[] = {
+	{ "off", 0 },
+	{ "dlss", 1 },
+	{ "fsr", 2 },
+	{ 0, 0 }
+};
+
+u32 ps_ssfx_upscaler_resolution = 0;
+xr_token ssfx_upscaler_resolution_token[] = {
+	{ "dlaa/nativeaa", 0 },
+	{ "quality", 1 },
+	{ "balanced", 2 },
+	{ "performance", 3 },
+	{ "ultra performance", 4 },
+	{ 0, 0 }
+};
+
+float ps_ssfx_upscaler_sharp = 0.5f;
 
 int ps_ssfx_ssr_quality = 0; // Quality
 Fvector4 ps_ssfx_ssr = { 1.0f, 0.2f, 0.0f, 0.0f }; // Res, Blur, Temp, Noise
@@ -1402,6 +1428,13 @@ void xrRender_initconsole()
 	CMD4(CCC_Vector3, "ssfx_water_quality", &ps_ssfx_water_quality, Fvector3().set(0, 0, 0), Fvector3().set(4, 3, 0));
 	CMD4(CCC_Vector4, "ssfx_water_setup1", &ps_ssfx_water_setup1, Fvector4().set(0, 0, 0, 0), Fvector4().set(2, 10, 1, 0.1));
 	CMD4(CCC_Vector4, "ssfx_water_setup2", &ps_ssfx_water_setup2, Fvector4().set(0, 0, 0, 0), Fvector4().set(1, 10, 1, 1));
+	CMD4(CCC_Vector4, "ssfx_flowmap_setup", &ps_ssfx_flowmap_setup, Fvector4().set(-10, -10, -10, -10), Fvector4().set(10, 10, 10, 10));
+
+	CMD4(CCC_Vector4, "ssfx_cascades_resolution", &ps_ssfx_cascades_resolution, Fvector4().set(0, 0, 0, 0), Fvector4().set(8192, 8192, 8192, 8192));
+	CMD4(CCC_Vector4, "ssfx_cascades_delay", &ps_ssfx_cascades_delay, Fvector4().set(0, 0, 0, 0), Fvector4().set(10, 10, 10, 10));
+	CMD3(CCC_Token, "ssfx_upscaler", &ps_ssfx_upscaler, ssfx_upscaler_token);
+	CMD3(CCC_Token, "ssfx_upscaler_resolution", &ps_ssfx_upscaler_resolution, ssfx_upscaler_resolution_token);
+	CMD4(CCC_Float, "ssfx_upscaler_sharp", &ps_ssfx_upscaler_sharp, 0.0f, 2.0f);
 
 	CMD4(CCC_Integer, "ssfx_ssr_quality", &ps_ssfx_ssr_quality, 0, 5);
 	CMD4(CCC_Vector4, "ssfx_ssr", &ps_ssfx_ssr, Fvector4().set(1, 0, 0, 0), Fvector4().set(2, 1, 1, 1));

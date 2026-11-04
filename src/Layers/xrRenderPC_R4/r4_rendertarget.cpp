@@ -606,6 +606,9 @@ CRenderTarget::CRenderTarget()
 			rt_Generic_temp.create("$user$generic_temp", w, h, D3DFMT_A8R8G8B8, RImplementation.o.dx10_msaa ? SampleCount : 1);
 		}
 
+		// SSS 24: scene image for 3D scopes and post-process. Same format as the Generic RTs it is copied from.
+		rt_ssfx_scene_final.create(r2_RT_ssfx_scene_final, w, h, rt_Generic->fmt, 1);
+
 		rt_dof.create(r2_RT_dof, w, h, RImplementation.o.dx11_hdr10 ? D3DFMT_A16B16G16R16F : D3DFMT_A8R8G8B8);
 
 		if (RImplementation.o.dx11_hdr10) {
@@ -690,6 +693,8 @@ CRenderTarget::CRenderTarget()
 		rt_ssfx_volumetric_tmp.create(r2_RT_ssfx_volumetric_tmp, w / 8.0f, h / 8.0f, D3DFMT_A16B16G16R16F); // Volumetric
 		rt_ssfx_rain.create(r2_RT_ssfx_rain, w / 8.0f, h / 8.0f, D3DFMT_A8R8G8B8); // Rain refraction buffer
 		rt_ssfx_water_waves.create(r2_RT_ssfx_water_waves, 512, 512, D3DFMT_A8R8G8B8); // Water Waves
+		rt_ssfx_water_waves_tmp.create(r2_RT_ssfx_water_waves_tmp, 512, 512, D3DFMT_A8R8G8B8); // SSS 24: Water wave heights
+		rt_ssfx_rain_ripples.create(r2_RT_ssfx_rain_ripples, 512, 512, D3DFMT_A8R8G8B8); // SSS 24: Rain ripples
 
 		rt_ssfx_prevPos.create(r2_RT_ssfx_prevPos, w, h, D3DFMT_A16B16G16R16F, SampleCount);
 

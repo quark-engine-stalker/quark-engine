@@ -803,6 +803,13 @@ void CRenderTarget::phase_combine()
 	//	PP-if required
 	if (PP_Complex)
 	{
+		// SSS 24: post-process reads $user$scene_final. Copy this frame's post-process source.
+		{
+			const ref_rt& ppSource = RImplementation.o.dx10_msaa ? (pp_source_is_generic() ? rt_Generic : rt_Generic_0) : rt_Color;
+			if (rt_ssfx_scene_final->fmt == ppSource->fmt)
+				HW.pContext->CopyResource(rt_ssfx_scene_final->pSurface, ppSource->pSurface);
+		}
+
 		PIX_EVENT(phase_pp);
 		phase_pp();
 	}

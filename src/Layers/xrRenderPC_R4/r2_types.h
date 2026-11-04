@@ -89,6 +89,9 @@
 #define		r2_RT_ssfx_ssr			"$user$ssfx_ssr" // SSR Acc
 #define		r2_RT_ssfx_water		"$user$ssfx_water" // Water Acc
 #define		r2_RT_ssfx_water_waves	"$user$ssfx_water_waves"
+#define		r2_RT_ssfx_water_waves_tmp	"$user$ssfx_water_waves_tmp" // SSS 24: wave heights
+#define		r2_RT_ssfx_rain_ripples	"$user$ssfx_rain_ripples" // SSS 24: rain ripples normal
+#define		r2_RT_ssfx_scene_final	"$user$scene_final" // SSS 24: finished scene before post-process
 #define		r2_RT_ssfx_ao			"$user$ssfx_ao" // AO Acc
 #define		r2_RT_ssfx_il			"$user$ssfx_il" // IL Acc
 

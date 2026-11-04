@@ -134,6 +134,11 @@ void CRenderTarget::phase_3DSSReticle()
 	const ref_rt& sceneRT = pp_source_is_generic() ? rt_Generic : rt_Generic_0;
 	HW.pContext->CopyResource(rt_Generic_temp->pSurface, sceneRT->pSurface);
 
+	// SSS 24 3D scopes sample $user$scene_final as the scene behind the lens. Without an
+	// upscaler it is this image; post-process overwrites it later with the finished frame.
+	if (rt_ssfx_scene_final->fmt == sceneRT->fmt)
+		HW.pContext->CopyResource(rt_ssfx_scene_final->pSurface, sceneRT->pSurface);
+
 	u_setrt(sceneRT, RImplementation.Target->rt_Position, 0, HW.pBaseZB);
 
 	RCache.set_CullMode(CULL_CCW);

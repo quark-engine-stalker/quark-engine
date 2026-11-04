@@ -638,6 +638,22 @@ CTexture* CResourceManager::_CreateTexture(LPCSTR _Name)
 	xr_strcpy(Name, _Name);
 	fix_texture_name(Name);
 
+	// SSS 24 names for buffers that only differ from the old ones when an upscaler runs.
+	// Quark renders at output resolution, so they are the same render targets.
+	static const std::pair<LPCSTR, LPCSTR> sss24_aliases[] = {
+		{ "$user$scene_aa", "$user$generic0" },
+		{ "$user$upscaled_heat", "$user$heat" },
+		{ "$user$upscaled_pos", "$user$generic2" },
+	};
+	for (const auto& alias : sss24_aliases)
+	{
+		if (0 == xr_strcmp(Name, alias.first))
+		{
+			xr_strcpy(Name, alias.second);
+			break;
+		}
+	}
+
 	// Fast registry lookup. Do not keep the registry lock while performing
 	// filesystem I/O or creating D3D resources: unrelated textures must be
 	// able to preload in parallel.

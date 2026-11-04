@@ -645,6 +645,21 @@ void R_dsgraph_structure::r_dsgraph_render_graph(u32 _priority, bool _clear)
 	Device.Statistic->RenderDUMP.End();
 }
 
+// HUD passes must switch the previous-frame projection together with the current one.
+// Otherwise m_wvp_prev mixes the world projection into HUD motion vectors (SSS 24 PDA,
+// emissive and sorted HUD shaders write them), and TAA/motion blur smear the HUD radially.
+static void set_hud_projection(const Fmatrix& P)
+{
+	RCache.set_xform_project(P);
+	RCache.set_xform_project_prev(P);
+}
+
+static void restore_world_projection()
+{
+	RCache.set_xform_project(Device.mProject);
+	RCache.set_xform_project_prev(Device.mProject_prev);
+}
+
 //////////////////////////////////////////////////////////////////////////
 // HUD render
 void R_dsgraph_structure::r_dsgraph_render_hud(bool NoPS)
@@ -746,7 +761,7 @@ void R_dsgraph_structure::r_dsgraph_render_hud_ui()
 	Fmatrix FTold = Device.mFullTransform;
 
 	Device.mFullTransform = Device.mFullTransformHud;
-	RCache.set_xform_project(Device.mProjectHud);
+	set_hud_projection(Device.mProjectHud);
 
 	rmNear();
 	g_hud->RenderActiveItemUI();
@@ -754,7 +769,7 @@ void R_dsgraph_structure::r_dsgraph_render_hud_ui()
 
 	// Restore projection
 	Device.mFullTransform = FTold;
-	RCache.set_xform_project(Device.mProject);
+	restore_world_projection();
 }
 
 void R_dsgraph_structure::r_dsgraph_render_cam_ui()
@@ -769,7 +784,7 @@ void R_dsgraph_structure::r_dsgraph_render_cam_ui()
 		g_pGamePersistent->Environment().CurrentEnv->far_plane);
 
 	Device.mFullTransform.mul(camproj, Device.mView);
-	RCache.set_xform_project(camproj);
+	set_hud_projection(camproj);
 
 	// Rendering
 	rmNear();
@@ -778,7 +793,7 @@ void R_dsgraph_structure::r_dsgraph_render_cam_ui()
 
 	// Restore projection
 	Device.mFullTransform = FTold;
-	RCache.set_xform_project(Device.mProject);
+	restore_world_projection();
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -794,7 +809,7 @@ void R_dsgraph_structure::r_dsgraph_render_sorted()
 	Fmatrix FTold = Device.mFullTransform;
 
 	Device.mFullTransform = Device.mFullTransformHud;
-	RCache.set_xform_project(Device.mProjectHud);
+	set_hud_projection(Device.mProjectHud);
 
 	// Rendering
 	rmNear();
@@ -812,7 +827,7 @@ void R_dsgraph_structure::r_dsgraph_render_sorted()
 			g_pGamePersistent->Environment().CurrentEnv->far_plane);
 
 		Device.mFullTransform.mul(camproj, Device.mView);
-		RCache.set_xform_project(camproj);
+		set_hud_projection(camproj);
 
 		// Rendering
 		mapCamAttachedSorted.traverseRL(sorted_L1);
@@ -823,7 +838,7 @@ void R_dsgraph_structure::r_dsgraph_render_sorted()
 
 	// Restore projection
 	Device.mFullTransform = FTold;
-	RCache.set_xform_project(Device.mProject);
+	restore_world_projection();
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -834,7 +849,7 @@ void R_dsgraph_structure::r_dsgraph_render_ScopeSorted()  //  Redotix99: for 3D 
 	Fmatrix FTold = Device.mFullTransform;
 
 	Device.mFullTransform = Device.mFullTransformHud;
-	RCache.set_xform_project(Device.mProjectHud);
+	set_hud_projection(Device.mProjectHud);
 
 	// Rendering
 	rmNear();
@@ -844,7 +859,7 @@ void R_dsgraph_structure::r_dsgraph_render_ScopeSorted()  //  Redotix99: for 3D 
 
 	// Restore projection
 	Device.mFullTransform = FTold;
-	RCache.set_xform_project(Device.mProject);
+	restore_world_projection();
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -861,7 +876,7 @@ void R_dsgraph_structure::r_dsgraph_render_emissive(bool clear, bool renderHUD)
 	Fmatrix FTold = Device.mFullTransform;
 
 	Device.mFullTransform = Device.mFullTransformHud;
-	RCache.set_xform_project(Device.mProjectHud);
+	set_hud_projection(Device.mProjectHud);
 
 	// Rendering
 	rmNear();
@@ -878,7 +893,7 @@ void R_dsgraph_structure::r_dsgraph_render_emissive(bool clear, bool renderHUD)
 
 	// Restore projection
 	Device.mFullTransform = FTold;
-	RCache.set_xform_project(Device.mProject);
+	restore_world_projection();
 }
 
 void R_dsgraph_structure::r_dsgraph_render_water_ssr()
@@ -914,7 +929,7 @@ void R_dsgraph_structure::r_dsgraph_render_distort()
 	// Change projection
 	Fmatrix FTold = Device.mFullTransform;
 	Device.mFullTransform = Device.mFullTransformHud;
-	RCache.set_xform_project(Device.mProjectHud);
+	set_hud_projection(Device.mProjectHud);
 
 	rmNear();
 	mapHUDDistort.traverseLR(sorted_L1);
@@ -923,7 +938,7 @@ void R_dsgraph_structure::r_dsgraph_render_distort()
 
 	// Restore projection
 	Device.mFullTransform = FTold;
-	RCache.set_xform_project(Device.mProject);
+	restore_world_projection();
 }
 
 //////////////////////////////////////////////////////////////////////////

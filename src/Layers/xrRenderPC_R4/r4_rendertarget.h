@@ -192,6 +192,9 @@ public:
 	ref_rt rt_ssfx_ssr;
 	ref_rt rt_ssfx_water;
 	ref_rt rt_ssfx_water_waves;
+	ref_rt rt_ssfx_water_waves_tmp; // SSS 24
+	ref_rt rt_ssfx_rain_ripples; // SSS 24
+	ref_rt rt_ssfx_scene_final; // SSS 24
 	ref_rt rt_ssfx_ao;
 	ref_rt rt_ssfx_il;
 

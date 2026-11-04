@@ -482,6 +482,19 @@ void CRenderTarget::phase_ssfx_water_blur()
 
 };
 
+// SSS 24 splits the waves into a height pass and a normal pass, and adds procedural rain ripples.
+// Older SSS versions do not ship these shaders and keep the single pass.
+static bool ssfx_sss24_water_shaders()
+{
+	static const bool present = []
+	{
+		string_path fn;
+		strconcat(sizeof(fn), fn, ::Render->getShaderPath(), "ssfx_water_waves_build.ps");
+		return !!FS.exist("$game_shaders$", fn);
+	}();
+	return present;
+}
+
 void CRenderTarget::phase_ssfx_water_waves()
 {
 	//Constants
@@ -498,9 +511,11 @@ void CRenderTarget::phase_ssfx_water_waves()
 	p0.set(0.0f, 0.0f);
 	p1.set(1.0f, 1.0f);
 
+	const bool sss24 = ssfx_sss24_water_shaders();
+
 	set_viewport_size(HW.pContext, 512, 512);
 
-	u_setrt(rt_ssfx_water_waves, 0, 0, NULL);
+	u_setrt(sss24 ? rt_ssfx_water_waves_tmp : rt_ssfx_water_waves, 0, 0, NULL);
 	RCache.set_CullMode(CULL_NONE);
 	RCache.set_Stencil(FALSE);
 
@@ -512,11 +527,29 @@ void CRenderTarget::phase_ssfx_water_waves()
 	pv->set(w, 0, d_Z, d_W, C, p1.x, p0.y); pv++;
 	RCache.Vertex.Unlock(4, g_combine->vb_stride);
 
+	const Fvector4 wind_setup = { g_pGamePersistent->Environment().wind_anim.w, g_pGamePersistent->Environment().CurrentEnv->wind_velocity, 0, 0 };
+
 	// Draw COLOR
 	RCache.set_Element(s_ssfx_water_blur->E[5]);
-	RCache.set_c("wind_setup", g_pGamePersistent->Environment().wind_anim.w, g_pGamePersistent->Environment().CurrentEnv->wind_velocity, 0, 0);
+	RCache.set_c("wind_setup", wind_setup);
 	RCache.set_Geometry(g_combine);
 	RCache.Render(D3DPT_TRIANGLELIST, Offset, 0, 4, 0, 2);
+
+	if (sss24)
+	{
+		// Normals from the heights
+		u_setrt(rt_ssfx_water_waves, 0, 0, NULL);
+		RCache.set_Element(s_ssfx_water_blur->E[3]);
+		RCache.set_c("wind_setup", wind_setup);
+		RCache.set_Geometry(g_combine);
+		RCache.Render(D3DPT_TRIANGLELIST, Offset, 0, 4, 0, 2);
+
+		// Rain ripples
+		u_setrt(rt_ssfx_rain_ripples, 0, 0, NULL);
+		RCache.set_Element(s_ssfx_water_blur->E[4]);
+		RCache.set_Geometry(g_combine);
+		RCache.Render(D3DPT_TRIANGLELIST, Offset, 0, 4, 0, 2);
+	}
 
 	set_viewport_size(HW.pContext, w, h);
 };

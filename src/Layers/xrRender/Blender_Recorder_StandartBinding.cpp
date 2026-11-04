@@ -735,6 +735,7 @@ extern Fvector4 ps_ssfx_ao_setup1;
 extern Fvector4 ps_ssfx_water;
 extern Fvector4 ps_ssfx_water_setup1;
 extern Fvector4 ps_ssfx_water_setup2;
+extern Fvector4 ps_ssfx_flowmap_setup;
 
 extern Fvector4 ps_ssfx_volumetric;
 extern Fvector4 ps_ssfx_ssr_2;
@@ -1027,6 +1028,24 @@ static class ssfx_water_setup2 : public R_constant_setup
 		RCache.set_c(C, ps_ssfx_water_setup2);
 	}
 }    ssfx_water_setup2;
+
+static class ssfx_flowmap_setup : public R_constant_setup
+{
+	virtual void setup(R_constant* C)
+	{
+		RCache.set_c(C, ps_ssfx_flowmap_setup);
+	}
+}    ssfx_flowmap_setup;
+
+// SSS 24: shadow map resolution. Quark uses one size for every sun cascade.
+static class ssfx_smap_res : public R_constant_setup
+{
+	virtual void setup(R_constant* C)
+	{
+		float size = float(RImplementation.o.smapsize);
+		RCache.set_c(C, size, size, 1.0f / size, 1.0f / size);
+	}
+}    ssfx_smap_res;
 
 static class ssfx_ao : public R_constant_setup
 {
@@ -1433,6 +1452,8 @@ void CBlender_Compile::SetMapping()
 	r_Constant("ssfx_water", &ssfx_water);
 	r_Constant("ssfx_water_setup1", &ssfx_water_setup1);
 	r_Constant("ssfx_water_setup2", &ssfx_water_setup2);
+	r_Constant("ssfx_flowmap_setup", &ssfx_flowmap_setup);
+	r_Constant("m_SMAP_res", &ssfx_smap_res);
 
 	r_Constant("ssfx_volumetric", &ssfx_volumetric);
 	r_Constant("ssfx_ssr_2", &ssfx_ssr_2);

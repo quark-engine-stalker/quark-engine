@@ -560,6 +560,26 @@ void CBlender_ssfx_water_blur::Compile(CBlender_Compile& C)
 		C.r_dx10Sampler("smp_linear");
 		C.r_End();
 		break;
+
+	case 3:	// SSS 24: Water Waves normals from the wave heights
+		C.r_Pass("stub_screen_space", "ssfx_water_waves_build", FALSE, FALSE, FALSE);
+
+		C.r_dx10Texture("water_waves", r2_RT_ssfx_water_waves_tmp);
+		C.r_dx10Texture("water_n0", "fx\\water_normal");
+		C.r_dx10Texture("water_n1", "fx\\water_normal");
+
+		C.r_dx10Sampler("smp_linear");
+		C.r_End();
+		break;
+
+	case 4:	// SSS 24: Rain Ripples
+		C.r_Pass("stub_screen_space", "ssfx_rain_ripples", FALSE, FALSE, FALSE);
+
+		C.r_dx10Texture("tex_ripples", "fx\\water_sbumpvolume");
+
+		C.r_dx10Sampler("smp_linear");
+		C.r_End();
+		break;
 	}
 }
 
