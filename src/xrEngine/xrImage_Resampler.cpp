@@ -227,7 +227,15 @@ IC float horizontal_sum_avx(__m256 value)
 	return _mm_cvtss_f32(sum);
 }
 
-IC void accumulate_contributors_avx2(const Pixel* raster, const CONTRIB* contributors, int count,
+template <int Shift>
+IC __m256 channel_ps(__m128i low, __m128i high)
+{
+	const __m128i mask = _mm_set1_epi32(255);
+	return _mm256_set_m128(_mm_cvtepi32_ps(_mm_and_si128(_mm_srli_epi32(high, Shift), mask)),
+		_mm_cvtepi32_ps(_mm_and_si128(_mm_srli_epi32(low, Shift), mask)));
+}
+
+IC void accumulate_contributors_avx(const Pixel* raster, const CONTRIB* contributors, int count,
 	float& red, float& green, float& blue, float& alpha)
 {
 	red = 0.0f;
@@ -253,27 +261,27 @@ IC void accumulate_contributors_avx2(const Pixel* raster, const CONTRIB* contrib
 	__m256 green_sum = _mm256_setzero_ps();
 	__m256 blue_sum = _mm256_setzero_ps();
 	__m256 alpha_sum = _mm256_setzero_ps();
-	const __m256i channel_mask = _mm256_set1_epi32(255);
 
 	int i = 0;
 	for (; i + 8 <= count; i += 8)
 	{
 		const CONTRIB* c = contributors + i;
-		const __m256i indices = _mm256_setr_epi32(c[0].pixel, c[1].pixel, c[2].pixel, c[3].pixel,
-			c[4].pixel, c[5].pixel, c[6].pixel, c[7].pixel);
 		const __m256 weights = _mm256_setr_ps(c[0].weight, c[1].weight, c[2].weight, c[3].weight,
 			c[4].weight, c[5].weight, c[6].weight, c[7].weight);
-		const __m256i pixels = _mm256_i32gather_epi32(reinterpret_cast<const int*>(raster), indices, sizeof(Pixel));
+		const __m128i low = _mm_setr_epi32(int(raster[c[0].pixel]), int(raster[c[1].pixel]),
+			int(raster[c[2].pixel]), int(raster[c[3].pixel]));
+		const __m128i high = _mm_setr_epi32(int(raster[c[4].pixel]), int(raster[c[5].pixel]),
+			int(raster[c[6].pixel]), int(raster[c[7].pixel]));
 
-		const __m256 red_values = _mm256_cvtepi32_ps(_mm256_and_si256(_mm256_srli_epi32(pixels, 16), channel_mask));
-		const __m256 green_values = _mm256_cvtepi32_ps(_mm256_and_si256(_mm256_srli_epi32(pixels, 8), channel_mask));
-		const __m256 blue_values = _mm256_cvtepi32_ps(_mm256_and_si256(pixels, channel_mask));
-		const __m256 alpha_values = _mm256_cvtepi32_ps(_mm256_srli_epi32(pixels, 24));
+		const __m256 red_values = channel_ps<16>(low, high);
+		const __m256 green_values = channel_ps<8>(low, high);
+		const __m256 blue_values = channel_ps<0>(low, high);
+		const __m256 alpha_values = channel_ps<24>(low, high);
 
-		red_sum = _mm256_fmadd_ps(weights, red_values, red_sum);
-		green_sum = _mm256_fmadd_ps(weights, green_values, green_sum);
-		blue_sum = _mm256_fmadd_ps(weights, blue_values, blue_sum);
-		alpha_sum = _mm256_fmadd_ps(weights, alpha_values, alpha_sum);
+		red_sum = _mm256_add_ps(_mm256_mul_ps(weights, red_values), red_sum);
+		green_sum = _mm256_add_ps(_mm256_mul_ps(weights, green_values), green_sum);
+		blue_sum = _mm256_add_ps(_mm256_mul_ps(weights, blue_values), blue_sum);
+		alpha_sum = _mm256_add_ps(_mm256_mul_ps(weights, alpha_values), alpha_sum);
 	}
 
 	red = horizontal_sum_avx(red_sum);
@@ -487,7 +495,7 @@ void imf_Process(u32* dstI, u32 dstW, u32 dstH, u32* srcI, u32 srcW, u32 srcH, E
 			for (i = 0; i < tmp->xsize; ++i)
 			{
 				float w_r, w_g, w_b, w_a;
-				accumulate_contributors_avx2(raster, contrib[i].p, contrib[i].n, w_r, w_g, w_b, w_a);
+				accumulate_contributors_avx(raster, contrib[i].p, contrib[i].n, w_r, w_g, w_b, w_a);
 				put_pixel(tmp, i, k, color_rgba(CC(w_r), CC(w_g), CC(w_b), CC(w_a + 0.5f)));
 			}
 		}
@@ -600,7 +608,7 @@ void imf_Process(u32* dstI, u32 dstW, u32 dstH, u32* srcI, u32 srcW, u32 srcH, E
 			for (i = 0; i < dst.ysize; ++i)
 			{
 				float w_r, w_g, w_b, w_a;
-				accumulate_contributors_avx2(raster, contrib[i].p, contrib[i].n, w_r, w_g, w_b, w_a);
+				accumulate_contributors_avx(raster, contrib[i].p, contrib[i].n, w_r, w_g, w_b, w_a);
 				put_pixel(&dst, k, i, color_rgba(CC(w_r), CC(w_g), CC(w_b), CC(w_a + 0.5f)));
 			}
 		}

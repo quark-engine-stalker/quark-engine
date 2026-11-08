@@ -72,6 +72,7 @@ CWeaponMagazined::~CWeaponMagazined()
 
 	// sounds
 	Device.remove_from_seq_parallel(fastdelegate::FastDelegate0<>(this, &CWeaponMagazined::UpdateSoundsPositions));
+	Device.remove_after_poses(fastdelegate::FastDelegate0<>(this, &CWeaponMagazined::UpdateSoundsAfterPoses));
 }
 
 void CWeaponMagazined::net_Destroy()
@@ -701,6 +702,14 @@ void CWeaponMagazined::UpdateSoundsPositions()
 	UpdateSoundsPositionsImpl();
 }
 
+void CWeaponMagazined::UpdateSoundsAfterPoses()
+{
+	get_LastFP(); // the pose is ready; fixes flickering limbs, see UpdateSounds
+	Device.add_to_seq_parallel(
+		fastdelegate::FastDelegate0<>(this, &CWeaponMagazined::UpdateSoundsPositions),
+		"weapon_sound_positions");
+}
+
 void CWeaponMagazined::UpdateSounds()
 {
 	if (Device.dwFrame == dwUpdateSounds_Frame)
@@ -715,7 +724,12 @@ void CWeaponMagazined::UpdateSounds()
 		return;
 
 	// demonized: put updates of m_sounds into second thread
-	if (g_bootComplete && mt_UpdateWeaponSounds && sounds_update_initialized)
+	if (g_bootComplete && mt_UpdateWeaponSounds && sounds_update_initialized && !GetHUDmode())
+	{
+		// An NPC's weapon: asking for the fire point here would build the owner's whole pose on the main thread.
+		Device.add_after_poses(fastdelegate::FastDelegate0<>(this, &CWeaponMagazined::UpdateSoundsAfterPoses));
+	}
+	else if (g_bootComplete && mt_UpdateWeaponSounds && sounds_update_initialized)
 	{
 		// Force update of fire dependencies and then put into second thread, fixes flickering limbs
 		get_LastFP();

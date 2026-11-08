@@ -1,7 +1,7 @@
 #include "stdafx.h"
 #include "../../xrEngine/cl_intersect.h"
 #include "../xrRender/du_cone.h"
-#include "r4_avx2_math.h"
+#include "r4_avx_math.h"
 
 //extern Fvector du_cone_vertices			[DU_CONE_NUMVERTEX];
 
@@ -28,7 +28,7 @@ void CRenderTarget::enable_dbt_bounds(light* L)
 
 	Fbox bbp;
 	bbp.invalidate();
-	r4_avx2::transform_aabb_bounds(Device.mFullTransform, BB, bbp);
+	r4_avx::transform_aabb_bounds(Device.mFullTransform, BB, bbp);
 	u_DBT_enable(bbp.min.z, bbp.max.z);
 }
 

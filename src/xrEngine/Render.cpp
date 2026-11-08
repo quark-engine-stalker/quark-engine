@@ -1,6 +1,8 @@
 #include "stdafx.h"
 #include "render.h"
 
+thread_local bool IRender_interface::hud_loading = false;
+
 IRender_interface::~IRender_interface()
 {
 };

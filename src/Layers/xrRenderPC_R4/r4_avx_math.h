@@ -3,7 +3,7 @@
 #include <immintrin.h>
 #include <cstddef>
 
-namespace r4_avx2
+namespace r4_avx
 {
 struct points8
 {
@@ -32,13 +32,13 @@ IC points8 load_points8(const Fvector3* source)
 {
     static_assert(sizeof(Fvector3) == sizeof(float) * 3, "Fvector3 must be tightly packed");
 
-    const __m256i offsets = _mm256_setr_epi32(0, 3, 6, 9, 12, 15, 18, 21);
-    const float* base = &source[0].x;
-
     points8 result;
-    result.x = _mm256_i32gather_ps(base, offsets, sizeof(float));
-    result.y = _mm256_i32gather_ps(base + 1, offsets, sizeof(float));
-    result.z = _mm256_i32gather_ps(base + 2, offsets, sizeof(float));
+    result.x = _mm256_setr_ps(source[0].x, source[1].x, source[2].x, source[3].x,
+                              source[4].x, source[5].x, source[6].x, source[7].x);
+    result.y = _mm256_setr_ps(source[0].y, source[1].y, source[2].y, source[3].y,
+                              source[4].y, source[5].y, source[6].y, source[7].y);
+    result.z = _mm256_setr_ps(source[0].z, source[1].z, source[2].z, source[3].z,
+                              source[4].z, source[5].z, source[6].z, source[7].z);
     return result;
 }
 
@@ -58,9 +58,9 @@ IC points8 make_box_corners8(const Box& box)
 IC __m256 transform_component(const points8& source, float m1, float m2, float m3, float m4)
 {
     __m256 result = _mm256_set1_ps(m4);
-    result = _mm256_fmadd_ps(source.x, _mm256_set1_ps(m1), result);
-    result = _mm256_fmadd_ps(source.y, _mm256_set1_ps(m2), result);
-    result = _mm256_fmadd_ps(source.z, _mm256_set1_ps(m3), result);
+    result = _mm256_add_ps(_mm256_mul_ps(source.x, _mm256_set1_ps(m1)), result);
+    result = _mm256_add_ps(_mm256_mul_ps(source.y, _mm256_set1_ps(m2)), result);
+    result = _mm256_add_ps(_mm256_mul_ps(source.z, _mm256_set1_ps(m3)), result);
     return result;
 }
 
@@ -81,9 +81,9 @@ IC points8 transform_points8_perspective(const Fmatrix& matrix, const points8& s
 IC Fvector3 transform_point_perspective(const Fmatrix& matrix, const Fvector3& source)
 {
     __m128 result = _mm_loadu_ps(&matrix._41);
-    result = _mm_fmadd_ps(_mm_set1_ps(source.z), _mm_loadu_ps(&matrix._31), result);
-    result = _mm_fmadd_ps(_mm_set1_ps(source.y), _mm_loadu_ps(&matrix._21), result);
-    result = _mm_fmadd_ps(_mm_set1_ps(source.x), _mm_loadu_ps(&matrix._11), result);
+    result = _mm_add_ps(_mm_mul_ps(_mm_set1_ps(source.z), _mm_loadu_ps(&matrix._31)), result);
+    result = _mm_add_ps(_mm_mul_ps(_mm_set1_ps(source.y), _mm_loadu_ps(&matrix._21)), result);
+    result = _mm_add_ps(_mm_mul_ps(_mm_set1_ps(source.x), _mm_loadu_ps(&matrix._11)), result);
 
     const __m128 wwww = _mm_shuffle_ps(result, result, _MM_SHUFFLE(3, 3, 3, 3));
     result = _mm_div_ps(result, wwww);

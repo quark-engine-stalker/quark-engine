@@ -75,6 +75,14 @@ bool CRender::is_sun()
 }
 
 float r_dtex_range = 50.f;
+
+// sqrt(cdist_sq) - R < range without the square root: a distance is never negative, so range + R <= 0 never matches.
+ICF bool closer_than(float cdist_sq, float R, float range)
+{
+	const float reach = range + R;
+	return reach > 0.f && cdist_sq < reach * reach;
+}
+
 //////////////////////////////////////////////////////////////////////////
 ShaderElement* CRender::rimp_select_sh_dynamic(dxRender_Visual* pVisual, float cdist_sq)
 {
@@ -88,7 +96,7 @@ ShaderElement* CRender::rimp_select_sh_dynamic(dxRender_Visual* pVisual, float c
 	int id = SE_R2_SHADOW;
 	if (CRender::PHASE_NORMAL == RImplementation.phase)
 	{
-		id = ((_sqrt(cdist_sq) - pVisual->vis.sphere.R) < r_dtex_range) ? SE_R2_NORMAL_HQ : SE_R2_NORMAL_LQ;
+		id = closer_than(cdist_sq, pVisual->vis.sphere.R, r_dtex_range) ? SE_R2_NORMAL_HQ : SE_R2_NORMAL_LQ;
 	}
 	return shader->E[id]._get();
 }
@@ -109,16 +117,17 @@ ShaderElement* CRender::rimp_select_sh_static(dxRender_Visual* pVisual, float cd
 		ShaderElement* base_element = shader->E[SE_R2_NORMAL_HQ]._get();
 		if (base_element && base_element->flags.isLandscape)
 		{
-			float sec_dist = _sqrt(cdist_sq) - pVisual->vis.sphere.R;
-			id = (sec_dist < ps_ssfx_terrain_quality.x * 10) ? SE_R2_NORMAL_HQ : SE_R2_NORMAL_LQ;
+			const float R = pVisual->vis.sphere.R;
+			id = closer_than(cdist_sq, R, ps_ssfx_terrain_quality.x * 10) ? SE_R2_NORMAL_HQ : SE_R2_NORMAL_LQ;
 
-			// Very low shader variation
-			if (sec_dist > 240)
+			// Very low shader variation: sqrt(cdist_sq) - R > 240, a radius is never negative
+			const float far_reach = 240.f + R;
+			if (cdist_sq > far_reach * far_reach)
 				id = 3;
 		}
 		else
 		{
-			id = ((_sqrt(cdist_sq) - pVisual->vis.sphere.R) < r_dtex_range) ? SE_R2_NORMAL_HQ : SE_R2_NORMAL_LQ;
+			id = closer_than(cdist_sq, pVisual->vis.sphere.R, r_dtex_range) ? SE_R2_NORMAL_HQ : SE_R2_NORMAL_LQ;
 		}
 	}
 	return shader->E[id]._get();
@@ -798,6 +807,7 @@ void CRender::destroy()
 	// Join before closing either, including background HUD requests.
 	if (Models)
 		Models->FinishLevelPrefetch();
+	texture_transcode_stop();
 	destroy_resource_policy();
 	m_bMakeAsyncSS = false;
 	FluidManager.Destroy();
@@ -963,12 +973,13 @@ void CRender::ImportParticles()
 // Implementation
 IRender_ObjectSpecific* CRender::ros_create(IRenderable* parent) { return xr_new<CROS_impl>(); }
 void CRender::ros_destroy(IRender_ObjectSpecific* & p) { xr_delete(p); }
-IRenderVisual* CRender::model_Create(LPCSTR name, IReader* data) { return Models->Create(name, data); }
-IRenderVisual* CRender::model_CreateChild(LPCSTR name, IReader* data) { return Models->CreateChild(name, data); }
-IRenderVisual* CRender::model_Duplicate(IRenderVisual* V) { return Models->Instance_Duplicate((dxRender_Visual*)V); }
+IRenderVisual* CRender::model_Create(LPCSTR name, IReader* data) { RDEVICE.WaitSceneRendered(); return Models->Create(name, data); }
+IRenderVisual* CRender::model_CreateChild(LPCSTR name, IReader* data) { RDEVICE.WaitSceneRendered(); return Models->CreateChild(name, data); }
+IRenderVisual* CRender::model_Duplicate(IRenderVisual* V) { RDEVICE.WaitSceneRendered(); return Models->Instance_Duplicate((dxRender_Visual*)V); }
 
 void CRender::model_Delete(IRenderVisual* & V, BOOL bDiscard)
 {
+	RDEVICE.WaitSceneRendered();
 	dxRender_Visual* pVisual = (dxRender_Visual*)V;
 	Models->Delete(pVisual, bDiscard);
 	V = 0;
@@ -1001,6 +1012,7 @@ IRenderVisual* CRender::model_CreatePE(LPCSTR name)
 
 IRenderVisual* CRender::model_CreateParticles(LPCSTR name)
 {
+	RDEVICE.WaitSceneRendered();
 	PS::CPEDef* SE = PSLibrary.FindPED(name);
 	if (SE) return Models->CreatePE(SE);
 	else
@@ -1093,8 +1105,8 @@ FSlideWindowItem* CRender::getSWI(int id)
 
 IRender_Target* CRender::getTarget() { return Target; }
 
-IRender_Light* CRender::light_create() { return Lights.Create(); }
-IRender_Glow* CRender::glow_create() { return xr_new<CGlow>(); }
+IRender_Light* CRender::light_create() { RDEVICE.WaitSceneRendered(); return Lights.Create(); }
+IRender_Glow* CRender::glow_create() { RDEVICE.WaitSceneRendered(); return xr_new<CGlow>(); }
 
 void CRender::flush() { r_dsgraph_render_graph(0); }
 
@@ -1142,7 +1154,8 @@ void CRender::run_parallel(u32 count, void (CRender::*work)(u32))
 	if (lanes > 1)
 		xr_jobs::submit_many(&render_parallel_lane, &batch, lanes - 1, &group, xr_jobs::priority::high);
 	render_parallel_lane(&batch);
-	xr_jobs::wait(group);
+	// The frame job may hold the workers and wait for this render: the render runs the lanes nobody took itself.
+	xr_jobs::wait_own(group);
 }
 
 // demonized: add user defined rotation to wallmark

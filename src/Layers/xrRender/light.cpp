@@ -97,6 +97,7 @@ void light::set_texture(LPCSTR name)
 
 void light::set_active(bool a)
 {
+	RDEVICE.WaitSceneRendered();
 	if (a)
 	{
 		if (flags.bActive) return;

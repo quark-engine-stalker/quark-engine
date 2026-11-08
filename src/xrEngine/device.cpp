@@ -113,6 +113,15 @@ ENGINE_API BOOL g_bRendering = FALSE;
 BOOL g_bLoaded = FALSE;
 ref_light precache_light = 0;
 
+void CRenderDevice::DestroyPrecacheLight()
+{
+	if (precache_light)
+	{
+		precache_light->set_active(false);
+		precache_light.destroy();
+	}
+}
+
 BOOL psLua_ParallelGC = TRUE;
 BOOL psLua_ParallelGC_debug = FALSE;
 int psLua_ParallelGC_CallAmount = 8;
@@ -260,11 +269,7 @@ void CRenderDevice::End(void)
 
 			m_pRender->updateGamma();
 
-			if (precache_light)
-			{
-				precache_light->set_active(false);
-				precache_light.destroy();
-			}
+			DestroyPrecacheLight();
 			::Sound->set_master_volume(1.f);
 
 			m_pRender->ResourcesDestroyNecessaryTextures();
@@ -287,7 +292,7 @@ void CRenderDevice::End(void)
 			{
 				WINDOWINFO wi;
 				GetWindowInfo(m_hWnd, &wi);
-				if (wi.dwWindowStatus != WS_ACTIVECAPTION)
+				if (wi.dwWindowStatus != WS_ACTIVECAPTION && !psDeviceFlags2.test(rsAlwaysActive))
 					Pause(TRUE, TRUE, TRUE, "application start");
 			}
 		}
@@ -388,18 +393,50 @@ void process_named_parallel_lane(void* raw_context)
 }
 }
 
+void CRenderDevice::WaitSceneRendered()
+{
+	if (!IsFrameJobThread())
+		return;
+
+	while (mt_scene_rendering)
+		SwitchToThread();
+}
+
+void CRenderDevice::JoinFrameJobForLua()
+{
+	if (mt_scene_rendering && !xr_jobs::is_worker_thread())
+		WaitFrameParallelWork();
+}
+
+static void process_frame_audio(void* context)
+{
+	static_cast<CRenderDevice*>(context)->seqFrameOverGC.Process(rp_Frame);
+}
+
+static void process_frame_tail(void* context)
+{
+	static_cast<CRenderDevice*>(context)->ProcessFrameTail();
+}
+
+void CRenderDevice::ProcessFrameTail()
+{
+	PROF_EVENT("Frame tail");
+	InterlockedExchange(&mt_overlap_tail_thread, static_cast<LONG>(GetCurrentThreadId())); // poses are read as they are
+	{
+		xrCriticalSectionGuard guard(seqFrameTailLock);
+		for (u32 index = 0; index < seqFrameTail.size(); ++index)
+			seqFrameTail[index]();
+		seqFrameTail.clear_not_free();
+	}
+	InterlockedExchange(&mt_overlap_tail_thread, 0);
+}
+
 void CRenderDevice::ProcessFrameParallelWork()
 {
+	const u64 job_started = CPU::QPC();
+	const u64 scheduler_budget = u64(FrameJobSchedulerWindowUS) * CPU::qpc_freq / 1000000u;
+	InterlockedExchange(&mt_overlap_thread, static_cast<LONG>(GetCurrentThreadId()));
 
-	// RT callbacks were completed on the main thread during FrameMove. The normal
-	// scheduler retains its deterministic serial order, but overlaps rendering.
-	if (InterlockedExchange(&mt_scheduler_deferred_pending, FALSE) != FALSE)
-	{
-
-		Engine.Sheduler.UpdateDeferred();
-		Engine.Sheduler.UpdateFinalize();
-
-	}
 
 	{
 		xrCriticalSectionGuard guard(seqParallelIndependentLock);
@@ -408,30 +445,35 @@ void CRenderDevice::ProcessFrameParallelWork()
 			seqParallelIndependentWork.swap(seqParallelIndependent);
 	}
 
+	SParallelDelegateBatch independent_context = {
+		&seqParallelIndependentWork, &seqParallelIndependentLock,
+		0};
+	xr_jobs::task_group independent_group;
 	if (!seqParallelIndependentWork.empty())
 	{
-		SParallelDelegateBatch context = {
-			&seqParallelIndependentWork, &seqParallelIndependentLock,
-			0};
-		xr_jobs::task_group independent_group;
+		// Not on this lane: the NPCs below must start at once. The join is at the end of the job.
 		const u32 lane_count = _max(1u, _min(
 			static_cast<u32>(seqParallelIndependentWork.size()), xr_jobs::available_thread_count()));
 		xr_jobs::submit_many(
 			&process_parallel_delegate_batch,
-			&context,
-			lane_count - 1,
+			&independent_context,
+			lane_count,
 			&independent_group,
 			xr_jobs::priority::high);
+	}
 
-		process_parallel_delegate_batch(&context);
-		xr_jobs::wait(independent_group);
+	if (FrameJobLuaPrelude)
+		FrameJobLuaPrelude();
 
-		xrCriticalSectionGuard guard(seqParallelIndependentLock);
-		seqParallelIndependentWork.clear_not_free();
-		// Keep the largest allocation as the next-frame queued container unless
-		// callbacks were registered while this batch was executing.
-		if (seqParallelIndependent.empty())
-			seqParallelIndependentWork.swap(seqParallelIndependent);
+	// RT callbacks were completed on the main thread during FrameMove. The normal
+	// scheduler retains its deterministic serial order, but overlaps rendering. It goes after the
+	// independent batch: the render waits for grass, not for the NPCs.
+	if (InterlockedExchange(&mt_scheduler_deferred_pending, FALSE) != FALSE)
+	{
+
+		Engine.Sheduler.UpdateDeferred();
+		Engine.Sheduler.UpdateFinalize();
+
 	}
 
 	START_PROFILE("Process seqParallel lanes");
@@ -522,6 +564,49 @@ void CRenderDevice::ProcessFrameParallelWork()
 
 	STOP_PROFILE;
 
+	if (!seqParallelIndependentWork.empty())
+	{
+		process_parallel_delegate_batch(&independent_context); // what the pool has not started yet
+		xr_jobs::wait(independent_group);
+
+		xrCriticalSectionGuard guard(seqParallelIndependentLock);
+		seqParallelIndependentWork.clear_not_free();
+		// Keep the largest allocation as the next-frame queued container unless
+		// callbacks were registered while this batch was executing.
+		if (seqParallelIndependent.empty())
+			seqParallelIndependentWork.swap(seqParallelIndependent);
+	}
+
+	// Audio shares nothing with the collector: no Lua, no game state written. Physics and the net above may enter Lua.
+	xr_jobs::task_group audio_group;
+	if (!mt_frame_lua_gc || xr_jobs::worker_count() <= 1 ||
+		!xr_jobs::submit(&process_frame_audio, this, &audio_group, xr_jobs::priority::high))
+		seqFrameOverGC.Process(rp_Frame);
+
+	xr_jobs::task_group tail_group;
+	if (xr_jobs::worker_count() <= 1 || !xr_jobs::submit(&process_frame_tail, this, &tail_group, xr_jobs::priority::high))
+		ProcessFrameTail();
+
+	// Last in the job: the render waits for grass and particles queued above, not for the collector. The VM is
+	// handed over for the render: nothing on the main thread enters Lua until the join, and this pass stays in
+	// bounded marking/sweeping (no atomic, no __gc, see the host_managed check before submit).
+	if (mt_frame_lua_gc)
+	{
+		PROF_EVENT("Lua GC step");
+		SFrameScope stats_scope(fsLuaGcPre);
+		const u64 gc_started_ticks = CPU::QPC();
+		ProcessLuaGCWork(false);
+		LuaGCWaitUS = qpc_ticks_to_us(CPU::QPC() - gc_started_ticks);
+		mt_frame_lua_gc = false;
+	}
+	xr_jobs::wait(audio_group);
+	xr_jobs::wait(tail_group);
+	{
+		const u64 job_ticks = CPU::QPC() - job_started;
+		mt_frame_job_other_ticks = job_ticks > scheduler_budget ? job_ticks - scheduler_budget : 0;
+	}
+
+	InterlockedExchange(&mt_overlap_thread, 0);
 }
 
 void CRenderDevice::ProcessRenderPrepParallelWork()
@@ -823,13 +908,11 @@ void CRenderDevice::ProcessLuaGCWork(bool allow_deferred_phase)
 	// for the byte threshold therefore allows an indivisible atomic commit to grow
 	// into a 30-70 ms spike. Start the *normal* LuaJIT cycle earlier based on a
 	// monotonic allocation counter; atomic itself remains stock-order and indivisible.
-	// The current GAMMA hitch trace reaches a 3.8-4.8 ms indivisible atomic phase
-	// already around 46K-61K visited userdata. Start a host cycle at 24K so the mark
-	// phase has more headroom, while keeping the existing 32K active-cycle pressure
-	// threshold to avoid spending the 1.8 ms boosted budget earlier on every cycle.
-	constexpr u64 udata_cycle_trigger = 24ull * 1024ull;
-	constexpr u64 udata_active_pressure_trigger = 32ull * 1024ull;
-	constexpr u64 udata_hard_pressure = 96ull * 1024ull;
+	// Vectors, the bulk of the churn, have no finalizer and die in the sweep, so they do not lengthen atomic. At 24K a
+	// firefight kept a cycle always running over a mostly live heap; 96K costs 30 % less GC time, the longest slice is 5 ms.
+	constexpr u64 udata_cycle_trigger = 96ull * 1024ull;
+	constexpr u64 udata_active_pressure_trigger = udata_cycle_trigger * 4ull / 3ull;
+	constexpr u64 udata_hard_pressure = udata_cycle_trigger * 4ull;
 	if (current_udata_serial < lua_gc_udata_baseline_serial)
 		lua_gc_udata_baseline_serial = current_udata_serial;
 	const u64 udata_allocated_since_cycle = current_udata_serial - lua_gc_udata_baseline_serial;
@@ -1040,7 +1123,6 @@ void CRenderDevice::ProcessLuaGCWork(bool allow_deferred_phase)
 	// submission; atomic and finalizers run only after those workers finish. This
 	// preserves exclusive ownership of the single LuaJIT state. Critical pressure
 	// still bypasses backoff.
-	R_ASSERT(InterlockedCompareExchange(&isRendering, FALSE, FALSE) == FALSE);
 	LuaGCEmergencyStep = emergency_completion_pressure;
 
 	// Long atomic phases are indivisible and do not describe the cost of a bounded
@@ -1424,17 +1506,27 @@ void CRenderDevice::SubmitFrameParallelWork()
 	R_ASSERT(InterlockedCompareExchange(&mt_frame_submitted, FALSE, FALSE) == FALSE);
 
 	InterlockedExchange(&mt_frame_submitted, TRUE);
+	InterlockedExchange(&mt_scene_rendering, TRUE);
+	mt_frame_submit_ticks = CPU::QPC();
+	mt_frame_render_end_ticks = 0;
 
-	if (!xr_jobs::submit(&process_frame_parallel_job, this, &mt_frame_group, xr_jobs::priority::high))
+	// Without workers the pool runs the job inside submit, on this thread: it must not look like a job beside the
+	// render, or its first Lua call joins itself.
+	if (xr_jobs::worker_count() == 0 ||
+		!xr_jobs::submit(&process_frame_parallel_job, this, &mt_frame_group, xr_jobs::priority::high))
 	{
 		// The pool may reject work only while shutting down. Preserve frame
 		// correctness by executing the lane on the submitting thread.
+		InterlockedExchange(&mt_scene_rendering, FALSE);
 		ProcessFrameParallelWork();
 	}
 }
 
 void CRenderDevice::WaitFrameParallelWork()
 {
+	if (InterlockedExchange(&mt_scene_rendering, FALSE) != FALSE) // opens the gates: this thread touches nothing until the job ends
+		mt_frame_render_end_ticks = CPU::QPC();
+
 	if (InterlockedExchange(&mt_frame_submitted, FALSE) == FALSE)
 	{
 		// Shutdown or a non-rendering frame may skip SubmitFrameParallelWork after
@@ -1450,9 +1542,22 @@ void CRenderDevice::WaitFrameParallelWork()
 	}
 
 	const u64 wait_start_ticks = CPU::QPC();
+	// Joined from inside the render: never while holding a lock the job may take.
+	const bool render_unlocked = seqRender.UnlockForWait();
 	xr_jobs::wait(mt_frame_group);
+	if (render_unlocked)
+		seqRender.RelockAfterWait();
 	const u64 wait_end_ticks = CPU::QPC();
 	FrameParallelWaitUS = qpc_ticks_to_us(wait_end_ticks - wait_start_ticks);
+	if (mt_frame_render_end_ticks)
+	{
+		// Slowly: one heavy frame must not set the budget of the next ones.
+		const float render_us = float(qpc_ticks_to_us(mt_frame_render_end_ticks - mt_frame_submit_ticks));
+		const float other_us = float(qpc_ticks_to_us(mt_frame_job_other_ticks));
+		mt_frame_window_us += (render_us - other_us - mt_frame_window_us) * 0.125f;
+		// The floor keeps the NPCs going beside a short render, the ceiling keeps a long one from starving the rest of the job.
+		FrameJobSchedulerWindowUS = u32(_max(_min(mt_frame_window_us, 6000.f), 2000.f));
+	}
 }
 
 #include "igame_level.h"
@@ -1618,7 +1723,7 @@ void mt_FreezeThread(void *ptr) {
 	float freezetime = 0.f;
 	float repeatcheck = 500.f;
 
-	while (true)
+	while (!Device.mt_bMustExit)
 	{
 		PROF_EVENT();
 
@@ -1691,6 +1796,15 @@ void CRenderDevice::on_idle()
 	}
 
 	cpu_placement::note_main_frame();
+
+	// Before FrameMove: input is read after this wait, which is what lowers the latency.
+	// Outside the frame body and not fsFrameWait: frame_ab skips frames of the limiter.
+	bool latency_limits_frames = false;
+	if (b_is_Active && !dwPrecacheFrame)
+	{
+		PROF_EVENT("Reflex wait");
+		latency_limits_frames = m_pRender->LatencyFrameBegin(ps_framelimiter);
+	}
 
 	// Times the engine body of every rendered frame (frame_stats command).
 	SFrameBody frame_stats_body;
@@ -1768,6 +1882,9 @@ void CRenderDevice::on_idle()
 	{
 		SFrameScope stats_scope(fsRenderPrep);
 		ProcessRenderPrepParallelWork();
+		for (u32 index = 0; index < seqAfterPoses.size(); ++index)
+			seqAfterPoses[index]();
+		seqAfterPoses.clear_not_free();
 	}
 	STOP_PROFILE;
 
@@ -1799,7 +1916,15 @@ void CRenderDevice::on_idle()
 		return state == 2u || state == 5u;
 	};
 
-	if (psLua_ParallelGC && Device.LuaGC)
+	if (psLua_ParallelGC && Device.LuaGC && Device.LuaGCStatus && xr_jobs::worker_count())
+	{
+		// Without host management (memory pressure) a step may run atomic and finalizers: main thread only.
+		SLuaGCStatus gc_status = {};
+		Device.LuaGCStatus(&gc_status);
+		mt_frame_lua_gc = gc_status.host_managed;
+	}
+
+	if (psLua_ParallelGC && Device.LuaGC && !mt_frame_lua_gc)
 	{
 		// Advance only bounded phases here. LuaJIT yields before atomic/finalizers,
 		// so an indivisible phase or arbitrary callback cannot delay frame submission.
@@ -1826,7 +1951,7 @@ void CRenderDevice::on_idle()
 	STOP_PROFILE;
 
 #ifdef ECO_RENDER // ECO_RENDER START
-	if (Device.Paused() || IsMainMenuActive() || ps_framelimiter)
+	if (Device.Paused() || IsMainMenuActive() || (ps_framelimiter && !latency_limits_frames))
 	{
 		PROF_EVENT("Eco Render");
 
@@ -1853,6 +1978,7 @@ void CRenderDevice::on_idle()
 	bool frame_began = false;
 	{
 		SFrameScope stats_scope(fsRenderBegin);
+		m_pRender->LatencyRenderBegin();
 		frame_began = b_is_Active && Begin();
 	}
 	if (frame_began)

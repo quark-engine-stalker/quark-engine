@@ -2,16 +2,16 @@
 #include "ISpatial.h"
 #include "frustum.h"
 
-#if defined(__AVX2__) || defined(_M_AVX2)
+#if defined(__AVX__)
 #	include <immintrin.h>
 #endif
 
 extern Fvector c_spatial_offset[8];
 
-#if defined(__AVX2__) || defined(_M_AVX2)
+#if defined(__AVX__)
 namespace
 {
-	constexpr u32 spatial_avx2_batch_size = 8;
+	constexpr u32 spatial_avx_batch_size = 8;
 
 	// ISpatial nodes keep pointers to objects, not a structure-of-arrays.  Packing one
 	// node's sphere data into a small stack SoA is still worthwhile for dense nodes:
@@ -19,16 +19,16 @@ namespace
 	// The mask returned here preserves both the original item order and testSphere's
 	// rejection rule; the per-sphere test mask is local in q_frustum and is not used
 	// after the visibility decision.
-	u32 test_sphere_batch_avx2(ISpatial* const* items, const u32 type_mask, const CFrustum& frustum,
+	u32 test_sphere_batch_avx(ISpatial* const* items, const u32 type_mask, const CFrustum& frustum,
 		u32 frustum_mask)
 	{
-		alignas(32) float center_x[spatial_avx2_batch_size];
-		alignas(32) float center_y[spatial_avx2_batch_size];
-		alignas(32) float center_z[spatial_avx2_batch_size];
-		alignas(32) float radius[spatial_avx2_batch_size];
+		alignas(32) float center_x[spatial_avx_batch_size];
+		alignas(32) float center_y[spatial_avx_batch_size];
+		alignas(32) float center_z[spatial_avx_batch_size];
+		alignas(32) float radius[spatial_avx_batch_size];
 		u32 active_mask = 0;
 
-		for (u32 lane = 0; lane < spatial_avx2_batch_size; ++lane)
+		for (u32 lane = 0; lane < spatial_avx_batch_size; ++lane)
 		{
 			const ISpatial* spatial = items[lane];
 			const Fsphere& sphere = spatial->spatial.sphere;
@@ -96,12 +96,12 @@ public:
 		u32 item_index = 0;
 		const u32 item_count = static_cast<u32>(N->items.size());
 
-#if defined(__AVX2__) || defined(_M_AVX2)
-		for (; item_index + spatial_avx2_batch_size <= item_count; item_index += spatial_avx2_batch_size)
+#if defined(__AVX__)
+		for (; item_index + spatial_avx_batch_size <= item_count; item_index += spatial_avx_batch_size)
 		{
-			const u32 visible_mask = test_sphere_batch_avx2(
+			const u32 visible_mask = test_sphere_batch_avx(
 				&N->items[item_index], mask, *F, fmask);
-			for (u32 lane = 0; lane < spatial_avx2_batch_size; ++lane)
+			for (u32 lane = 0; lane < spatial_avx_batch_size; ++lane)
 				if (visible_mask & (1u << lane))
 					result->push_back(N->items[item_index + lane]);
 		}

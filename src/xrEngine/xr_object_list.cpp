@@ -117,6 +117,22 @@ void CObjectList::SingleUpdate(CObject* O)
 		return;
 	}
 
+	// The buckets are shifted by id: the skipping objects spread over the frames instead of bursting together.
+	CObject* slice_root = O->H_Root();
+	const u32 slice_period = slice_root->UpdateCL_Period();
+	if (slice_period)
+	{
+		const u32 bucket = (Device.dwTimeGlobal + u32(slice_root->ID()) * 37u) / slice_period;
+		if (bucket == O->UpdateCL_Bucket)
+		{
+			O->UpdateCL_Debt += Device.fTimeDelta;
+			O->UpdateCL_DebtMs += Device.dwTimeDelta;
+			O->UpdateCL_Skipped();
+			return;
+		}
+		O->UpdateCL_Bucket = bucket;
+	}
+
 	if (O->H_Parent())
 		SingleUpdate(O->H_Parent());
 
@@ -128,6 +144,13 @@ void CObjectList::SingleUpdate(CObject* O)
 
 	// Msg ("[%d][0x%08x]IAmNotACrowAnyMore (CObjectList::SingleUpdate)", Device.dwFrame, fast_dynamic_cast<void*>(O));
 
+	const float frame_delta = Device.fTimeDelta;
+	const u32 frame_delta_ms = Device.dwTimeDelta;
+	Device.fTimeDelta += O->UpdateCL_Debt;
+	Device.dwTimeDelta += O->UpdateCL_DebtMs;
+	O->UpdateCL_Debt = 0.f;
+	O->UpdateCL_DebtMs = 0;
+
 	if (g_frame_stats.deep)
 	{
 		// frame_stats deep: UpdateCL time grouped by class id.
@@ -137,6 +160,9 @@ void CObjectList::SingleUpdate(CObject* O)
 	}
 	else
 		O->UpdateCL();
+
+	Device.fTimeDelta = frame_delta;
+	Device.dwTimeDelta = frame_delta_ms;
 #ifdef DEBUG
 	VERIFY3(O->dbg_update_cl == Device.dwFrame, "Broken sequence of calls to 'UpdateCL'", *O->cName());
 #endif
@@ -287,7 +313,15 @@ void CObjectList::Update(bool bForce)
 		}
 	}
 
-	// Destroy
+	ProcessDestroyQueue(false);
+}
+
+void CObjectList::ProcessDestroyQueue(bool everything)
+{
+	if (processing_destroy_queue)
+		return;
+	processing_destroy_queue = true;
+
 	if (!destroy_queue.empty())
 	{
 		// Large destruction bursts are pathological in heavily modded games: the
@@ -296,15 +330,15 @@ void CObjectList::Update(bool bForce)
 		// and amortize only a large backlog. Work is taken from the tail so actual
 		// net_Destroy order remains the historical reverse registration order.
 		constexpr u32 destroy_batch_threshold = 32;
-		constexpr u32 destroy_max_per_frame = 24;
+		constexpr u32 destroy_max_per_frame = 4;
 		const u32 total_destroy_count = static_cast<u32>(destroy_queue.size());
 		// A level teardown is not a frame-budgeted operation. More importantly, its
 		// callers expect one Update() to finish the pending reverse-order destruction
 		// before another object-update pass starts. Leaving a partially destroyed
 		// world alive between remove_objects() iterations invalidates actor/HUD and
 		// restriction-manager lifetime assumptions.
-		const bool amortize_destroy = g_pGameLevel && g_pGameLevel->bReady &&
-			total_destroy_count > destroy_batch_threshold;
+		const bool amortize_destroy = !everything && g_pGameLevel && g_pGameLevel->bReady &&
+			total_destroy_count > destroy_max_per_frame;
 		const u32 destroy_count = amortize_destroy ?
 			_min(total_destroy_count, destroy_max_per_frame) : total_destroy_count;
 		const u32 destroy_begin = total_destroy_count - destroy_count;
@@ -395,6 +429,7 @@ void CObjectList::Update(bool bForce)
 			destroy_queue.begin() + total_destroy_count);
 	}
 
+	processing_destroy_queue = false;
 }
 
 void CObjectList::net_Register(CObject* O)
@@ -551,6 +586,7 @@ void CObjectList::Unload()
 
 CObject* CObjectList::Create(LPCSTR name)
 {
+	Device.WaitSceneRendered();
 	CObject* O = g_pGamePersistent->ObjectPool.create(name);
 	// Msg("CObjectList::Create [%x]%s", O, name);
 	objects_sleeping.push_back(O);
@@ -559,6 +595,7 @@ CObject* CObjectList::Create(LPCSTR name)
 
 void CObjectList::Destroy(CObject* O)
 {
+	Device.WaitSceneRendered();
 	if (0 == O) return;
 	net_Unregister(O);
 

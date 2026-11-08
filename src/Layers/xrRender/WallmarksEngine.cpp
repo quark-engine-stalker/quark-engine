@@ -21,6 +21,8 @@ namespace WallmarksEngine
 		ref_shader shader;
 		StaticWMVec static_items;
 		xr_vector<intrusive_ptr<CSkeletonWallmark>> skeleton_items;
+		u32 skeleton_prepared = 0; // these first items are in skin_verts, in order, from skeleton_offset
+		u32 skeleton_offset = 0;
 
 		explicit wm_slot(const ref_shader& sh)
 			: shader(sh)
@@ -77,12 +79,14 @@ CWallmarksEngine::CWallmarksEngine()
 
 CWallmarksEngine::~CWallmarksEngine()
 {
+	skin_finish();
 	clear();
 	hGeom.destroy();
 }
 
 void CWallmarksEngine::clear()
 {
+	skin_finish();
 	{
 		for (WMSlotVecIt p_it = marks.begin(); p_it != marks.end(); p_it++)
 		{
@@ -394,6 +398,88 @@ void CWallmarksEngine::AddSkeletonWallmark(intrusive_ptr<CSkeletonWallmark> wm)
 	}
 }
 
+void CWallmarksEngine::skin_chunks(void* context)
+{
+	constexpr u32 chunk = 8;
+	CWallmarksEngine& self = *static_cast<CWallmarksEngine*>(context);
+	const u32 count = u32(self.skin_jobs.size());
+	for (;;)
+	{
+		const u32 begin = u32(InterlockedExchangeAdd(&self.skin_next, LONG(chunk)));
+		if (begin >= count)
+			return;
+		const u32 end = _min(begin + chunk, count);
+		for (u32 index = begin; index < end; ++index)
+		{
+			const skin_job& job = self.skin_jobs[index];
+			FVF::LIT* const first = self.skin_verts.data() + job.offset;
+			FVF::LIT* verts = first;
+			try
+			{
+				job.wallmark->Parent()->RenderWallmark(job.wallmark, verts);
+			}
+			catch (...)
+			{
+				Msg("! Failed to render dynamic wallmark");
+				verts = first;
+			}
+			// The range is taken already: whatever was not written becomes degenerate triangles.
+			const u32 written = u32(verts - first);
+			const u32 size = job.wallmark->VCount();
+			if (written < size)
+				ZeroMemory(first + written, (size - written) * sizeof(FVF::LIT));
+		}
+	}
+}
+
+void CWallmarksEngine::skin_finish()
+{
+	if (skin_jobs.empty())
+		return;
+	skin_chunks(this); // what the pool has not started yet
+	xr_jobs::wait_own(skin_group); // see CRender::run_parallel
+	skin_jobs.clear_not_free();
+}
+
+void CWallmarksEngine::PrepareSkeletonWallmarks()
+{
+	constexpr u32 verts_per_lane = 1500;
+	skin_finish();
+	if (xr_jobs::worker_count() == 0)
+		return;
+
+	u32 total = 0;
+	lock.Enter();
+	for (wm_slot* slot : marks)
+	{
+		slot->skeleton_offset = total;
+		slot->skeleton_prepared = u32(slot->skeleton_items.size());
+		for (const intrusive_ptr<CSkeletonWallmark>& wallmark : slot->skeleton_items)
+		{
+			if (wallmark)
+				skin_jobs.push_back({wallmark, total});
+			total += wallmark ? wallmark->VCount() : 0;
+		}
+	}
+	lock.Leave();
+
+	const u32 lanes = _min(xr_jobs::available_thread_count(), total / verts_per_lane);
+	if (lanes == 0)
+	{
+		skin_jobs.clear_not_free();
+		lock.Enter();
+		for (wm_slot* slot : marks)
+			slot->skeleton_prepared = 0;
+		lock.Leave();
+		return;
+	}
+
+	if (skin_verts.size() < total)
+		skin_verts.resize(total);
+	skin_next = 0;
+	xr_jobs::submit_many(&CWallmarksEngine::skin_chunks, this, lanes, &skin_group, xr_jobs::priority::high);
+}
+
 extern float r_ssaDISCARD;
 ICF void BeginStream(ref_geom& hGeom, u32& w_offset, FVF::LIT*& w_verts, FVF::LIT*& w_start)
 {
@@ -441,6 +527,7 @@ void CWallmarksEngine::Render()
 
 	float ssaCLIP = r_ssaDISCARD / 4;
 
+	skin_finish();
 	lock.Enter(); // Physics may add wallmarks in parallel with rendering
 
 	for (WMSlotVecIt slot_it = marks.begin(); slot_it != marks.end(); ++slot_it)
@@ -505,12 +592,14 @@ void CWallmarksEngine::Render()
 			FVF::LIT *w_verts, *w_start;
 			BeginStream(hGeom, w_offset, w_verts, w_start);
 
+			u32 skin_offset = slot->skeleton_offset;
 			for (auto w_it = slot->skeleton_items.cbegin();
 				w_it != slot->skeleton_items.cend(); ++w_it)
 			{
 				const intrusive_ptr<CSkeletonWallmark>& W = *w_it;
 				if (!W)
 					continue;
+				const bool skinned = u32(w_it - slot->skeleton_items.cbegin()) < slot->skeleton_prepared;
 
 #ifdef DEBUG
 				if (W->used_in_render != Device.dwFrame)
@@ -530,6 +619,14 @@ void CWallmarksEngine::Render()
 					BeginStream(hGeom, w_offset, w_verts, w_start);
 				}
 
+				if (skinned)
+				{
+					CopyMemory(w_verts, skin_verts.data() + skin_offset, W->VCount() * sizeof(FVF::LIT));
+					w_verts += W->VCount();
+					skin_offset += W->VCount();
+					continue;
+				}
+
 				FVF::LIT* const w_save = w_verts;
 				try
 				{
@@ -547,6 +644,7 @@ void CWallmarksEngine::Render()
 			}
 
 			slot->skeleton_items.clear();
+			slot->skeleton_prepared = 0;
 			FlushStream(hGeom, slot->shader, w_offset, w_verts, w_start, TRUE);
 		}
 	}

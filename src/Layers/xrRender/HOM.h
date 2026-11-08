@@ -45,6 +45,10 @@ public:
 	void __stdcall MT_RENDER();
 	ICF void MT_SYNC()
 	{
+		// Rendered for this frame: the buffer is only read until the next one, each test needs no lock.
+		if (MT_frame_rendered == static_cast<LONG>(Device.dwFrame))
+			return;
+
 		if (g_pGamePersistent->m_pMainMenu && g_pGamePersistent->m_pMainMenu->IsActive())
 			return;
 

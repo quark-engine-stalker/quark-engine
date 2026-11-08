@@ -4,7 +4,7 @@
 #include "../xrRender/FBasicVisual.h"
 
 #include "r4_R_sun_support.h"
-#include "r4_avx2_math.h"
+#include "r4_avx_math.h"
 
 const float tweak_rain_COP_initial_offs = 1200.f;
 const float tweak_rain_ortho_xform_initial_offs = 1000.f; //. ?
@@ -98,7 +98,7 @@ void CRender::render_rain()
 		{
 			hull.points.reserve(9);
 			Fvector3 transformed_corners[8];
-			r4_avx2::transform_points8(fullxform_inv, corners, transformed_corners);
+			r4_avx::transform_points8(fullxform_inv, corners, transformed_corners);
 			for (const Fvector3& corner : transformed_corners)
 				hull.points.push_back(corner);
 			for (int plane = 0; plane < 6; plane++)
@@ -159,7 +159,7 @@ void CRender::render_rain()
 		//	Simple
 		Fbox frustum_bb;
 		frustum_bb.invalidate();
-		r4_avx2::transform_points8_bounds(mdir_View, &hull.points[0], frustum_bb);
+		r4_avx::transform_points8_bounds(mdir_View, &hull.points[0], frustum_bb);
 		Fbox& bb = frustum_bb;
 		bb.grow(EPS);
 

@@ -161,6 +161,8 @@ public:
 	{
 	};
 	virtual void shedule_Update(u32 DT);
+	// Runs in the frame job, overlapping the 3D render; the order to UpdateCL and to the next frame stays the same.
+	virtual bool shedule_AllowDeferred() const { return true; }
 	virtual void UpdateCL();
 
 	// Network

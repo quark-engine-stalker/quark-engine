@@ -447,6 +447,8 @@ void CCustomMonster::update_sound_player()
 	sound().update(client_update_fdelta());
 }
 
+extern ENGINE_API BOOL mt_Scheduler;
+
 void CCustomMonster::UpdateCL()
 {
 	START_PROFILE("CustomMonster/client_update")
@@ -464,7 +466,7 @@ void CCustomMonster::UpdateCL()
 		// Drain saved sound events every client frame. Scheduler updates may be
 		// hundreds of milliseconds apart and would execute GAMMA's Lua callbacks
 		// in large, visible bursts instead of preserving the original cadence.
-		if (!m_saved_sounds.empty())
+		if (!m_saved_sounds.empty() && !mt_Scheduler) // otherwise CLevel::flush_saved_sounds, on the frame job
 		{
 
 			CScriptEntity::process_sound_callbacks();
@@ -892,6 +894,7 @@ void CCustomMonster::Die(CObject* who)
 
 BOOL CCustomMonster::net_Spawn(CSE_Abstract* DC)
 {
+	PROF_EVENT();
 	{
 
 		memory().reload(*cNameSect());

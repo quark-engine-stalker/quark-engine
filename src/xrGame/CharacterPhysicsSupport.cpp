@@ -947,27 +947,44 @@ void CCharacterPhysicsSupport::on_child_shell_activate(CPhysicsShellHolder* obj)
 	//DBG_ClosedCashedDraw( 50000 );
 }
 
-void CCharacterPhysicsSupport::RemoveActiveWeaponCollision()
+void CCharacterPhysicsSupport::on_child_leave(CPhysicsShellHolder* obj)
+{
+	if (!has_shell_collision_place(obj))
+		return;
+
+	// The weapon leaves a dead owner without a shell of its own (destroyed or handed over), so its collision geoms
+	// cannot go back to it. They keep the weapon as their reference object and would outlive it.
+	if (m_pPhysicsShell)
+		RemoveActiveWeaponCollision(false);
+	else
+		m_active_item_obj = 0; // the geoms went down with the ragdoll shell
+}
+
+void CCharacterPhysicsSupport::RemoveActiveWeaponCollision(bool give_pose)
 {
 	VERIFY(m_pPhysicsShell);
 	VERIFY(m_weapon_attach_bone);
 	VERIFY(!m_weapon_geoms.empty());
 	xr_vector<CODEGeom*>::iterator ii = m_weapon_geoms.begin(), ee = m_weapon_geoms.end();
-	Fmatrix m0;
-	(*ii)->get_xform(m0);
-	CPhysicsElement* root = m_active_item_obj->PPhysicsShell()->get_ElementByStoreOrder(0);
-	CODEGeom* rg = root->geometry(0);
-	VERIFY(rg);
-	Fmatrix m1;
-	rg->get_xform(m1);
+	CPhysicsElement* root = 0;
+	if (give_pose)
+	{
+		Fmatrix m0;
+		(*ii)->get_xform(m0);
+		root = m_active_item_obj->PPhysicsShell()->get_ElementByStoreOrder(0);
+		CODEGeom* rg = root->geometry(0);
+		VERIFY(rg);
+		Fmatrix m1;
+		rg->get_xform(m1);
 
-	Fmatrix me;
-	root->GetGlobalTransformDynamic(&me);
+		Fmatrix me;
+		root->GetGlobalTransformDynamic(&me);
 
-	Fmatrix m1_to_e = Fmatrix().mul_43(Fmatrix().invert(m1), me);
+		Fmatrix m1_to_e = Fmatrix().mul_43(Fmatrix().invert(m1), me);
 
-	Fmatrix m0e = Fmatrix().mul_43(m0, m1_to_e);
-	root->SetTransform(m0e, mh_unspecified);
+		Fmatrix m0e = Fmatrix().mul_43(m0, m1_to_e);
+		root->SetTransform(m0e, mh_unspecified);
+	}
 
 	for (; ii != ee; ++ii)
 	{
@@ -983,14 +1000,17 @@ void CCharacterPhysicsSupport::RemoveActiveWeaponCollision()
 
 	//m_active_item_obj->PPhysicsShell()->dbg_draw_geometry( 0.2f, D3DCOLOR_XRGB( 255, 0, 100 ) );
 
-	Fvector a_vel, l_vel;
-	const Fvector& mc = root->mass_Center();
-	//dBodyGetPointVel( m_weapon_attach_bone->get_body(),mc.x, mc.y, mc.z, cast_fp(l_vel) );
-	m_weapon_attach_bone->GetPointVel(l_vel, mc);
-	m_weapon_attach_bone->get_AngularVel(a_vel);
+	if (give_pose)
+	{
+		Fvector a_vel, l_vel;
+		const Fvector& mc = root->mass_Center();
+		//dBodyGetPointVel( m_weapon_attach_bone->get_body(),mc.x, mc.y, mc.z, cast_fp(l_vel) );
+		m_weapon_attach_bone->GetPointVel(l_vel, mc);
+		m_weapon_attach_bone->get_AngularVel(a_vel);
 
-	root->set_AngularVel(a_vel);
-	root->set_LinearVel(l_vel);
+		root->set_AngularVel(a_vel);
+		root->set_LinearVel(l_vel);
+	}
 
 	m_weapon_geoms.clear();
 	m_weapon_attach_bone = 0;

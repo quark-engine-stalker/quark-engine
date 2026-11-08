@@ -46,7 +46,7 @@ void __stdcall xrSkin4W_thread(vertRender* D,
         return;
     }
 
-    // AVX2 substantially reduces work per vertex. Keep each job large enough to
+    // AVX substantially reduces work per vertex. Keep each job large enough to
     // amortize task submission, synchronization and the per-worker store fence.
     u32 nWorkers = vCount / kTargetVerticesPerWorker;
     if (nWorkers < 2)
@@ -57,7 +57,7 @@ void __stdcall xrSkin4W_thread(vertRender* D,
     SKIN_PARAMS* sknParams = static_cast<SKIN_PARAMS*>(_alloca(sizeof(SKIN_PARAMS) * nWorkers));
 
     // Keep slices reasonably even and on an 8-vertex boundary. vertRender is 32 bytes,
-    // therefore every slice remains 32-byte aligned for AVX2 streaming stores.
+    // therefore every slice remains 32-byte aligned for AVX streaming stores.
     u32 nStep = (vCount / nWorkers) & ~7u;
     if (nStep == 0)
     {

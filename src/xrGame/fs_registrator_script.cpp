@@ -22,6 +22,12 @@ LPCSTR update_path_script(CLocatorAPI* fs, LPCSTR initial, LPCSTR src)
 }
 
 //Alundaio: Set flag to rescan all files in path
+// CLocatorAPI::r_close takes IReader*&, which luabind cannot bind to a Lua object: a script could never close what it opened.
+void r_close_script(CLocatorAPI* fs, IReader* reader)
+{
+	fs->r_close(reader);
+}
+
 void rescan_path_script(CLocatorAPI* fs, LPCSTR initial)
 {
 	fs->get_path(initial)->m_Flags.set(FS_Path::flNeedRescan, TRUE);
@@ -295,7 +301,7 @@ void fs_registrator::script_register(lua_State* L)
 		.def("get_file_age_str", &get_file_age_str)
 		.def("r_open", (IReader* (CLocatorAPI::*)(LPCSTR, LPCSTR))(&CLocatorAPI::r_open))
 		.def("r_open", (IReader* (CLocatorAPI::*)(LPCSTR))(&CLocatorAPI::r_open))
-		.def("r_close", (void (CLocatorAPI::*)(IReader*&))(&CLocatorAPI::r_close))
+		.def("r_close", &r_close_script)
 
 		.def("w_open", (IWriter* (CLocatorAPI::*)(LPCSTR, LPCSTR))(&CLocatorAPI::w_open))
 		.def("w_open", (IWriter* (CLocatorAPI::*)(LPCSTR))(&CLocatorAPI::w_close))

@@ -53,6 +53,15 @@ inline const char* lua_source_basename(const char* path, size_t limit)
         *p != '"' && *p != ';' && *p != '|'; ++p)
     {
         if (separator(*p)) { name = p + 1; identifier = true; continue; }
+        if (identifier && p > name && p - name <= 160 && starts(p, ".script("))
+        {
+            // a Lua stack frame: path\module.script(line) : function
+            const char* end = p + sizeof(".script(") - 1;
+            const char* line = end;
+            while (*end >= '0' && *end <= '9' && end - line < 10) ++end;
+            if (end != line && *end == ')')
+                return name;
+        }
         if (identifier && p > name && p - name <= 160 && starts(p, ".script:"))
         {
             const char* line = p + sizeof(".script:") - 1;

@@ -45,18 +45,19 @@ public:
 	u64 ResidentBytes() const;
 	void ReleaseReference();
 	u32 last_used_time = 0;
+	u32 top_mips_skipped = 0; // sizes stay those of the file: UI layouts count in pixels of the full texture
 
 	IC BOOL isUser() { return flags.bUser; }
 	IC u32 get_Width()
 	{
 		desc_enshure();
-		return desc.Width;
+		return desc.Width << top_mips_skipped;
 	}
 
 	IC u32 get_Height()
 	{
 		desc_enshure();
-		return desc.Height;
+		return desc.Height << top_mips_skipped;
 	}
 
 	void video_Sync(u32 _time) { m_play_time = _time; }

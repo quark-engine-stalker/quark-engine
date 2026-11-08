@@ -49,6 +49,8 @@ namespace MemorySpace
 		float m_value;
 		u32 m_update_time;
 		u32 m_prev_time;
+		u32 m_script_step_time = 0; // when the script was asked last for this target
+		bool m_script_step_negative = true;
 	};
 
 	struct SObjectParams

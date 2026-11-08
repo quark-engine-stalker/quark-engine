@@ -90,5 +90,8 @@ XRCORE_API bool submit_scoped(job_function function, void* context, task_scope& 
     task_group* group = nullptr, priority job_priority = priority::normal);
 
 XRCORE_API void wait(task_group& group);
+// For a batch the caller could run itself, such as lanes over a shared cursor: the caller runs the group's jobs that
+// no worker has started, so the wait never depends on a free worker.
+XRCORE_API void wait_own(task_group& group);
 XRCORE_API void wait_idle();
 } // namespace xr_jobs

@@ -587,7 +587,7 @@
     <ClInclude Include="debug_output.h">
       <Filter>physics\Base\Debug</Filter>
     </ClInclude>
-    <ClInclude Include="AVX2Math.h">
+    <ClInclude Include="AVXMath.h">
       <Filter>physics\Base\Objects\Utils\Math</Filter>
     </ClInclude>
     <ClInclude Include="ActorCameraCollision.h">

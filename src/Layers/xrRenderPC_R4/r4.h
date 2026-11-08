@@ -515,7 +515,11 @@ public:
 	virtual void level_Load(IReader*);
 	virtual void level_Unload();
 
-	ID3DBaseTexture* texture_load(LPCSTR fname, u32& msize, bool bStaging = false);
+	ID3DBaseTexture* texture_load(LPCSTR fname, u32& msize, bool bStaging = false, u32* top_mips_skipped = nullptr);
+	void texture_unload(ID3DBaseTexture* surface); // before the caller releases what texture_load returned
+	ID3DBaseTexture* texture_staged_shared(ID3DBaseTexture* staging); // the GPU copy of the same image, if any
+	ID3DBaseTexture* texture_staged_publish(ID3DBaseTexture* staging, ID3DBaseTexture* target);
+	void texture_transcode_stop(); // waits for the background encoder
 	virtual HRESULT shader_compile(
 		LPCSTR name,
 		DWORD const* pSrcData,

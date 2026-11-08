@@ -40,7 +40,9 @@ public:
 	void SolveBones(SCalculateData& cd);
 	void ApplyState(SCalculateData& cd);
 	void SetGoal(SCalculateData& cd);
-	void Update(CGameObject* O, const CBlend* b, const extrapolation::points& object_pose_extrapolation);
+	void Update(CGameObject* O, const CBlend* b, const extrapolation::points& object_pose_extrapolation,
+	            bool rays_on_frame_tail);
+	void CollideOnFrameTail();
 public:
 	IC u16 get_id() const { return m_id; }
 	float ObjShiftDown(float current_shift, const SCalculateData& cd) const;
@@ -52,7 +54,9 @@ public:
 	float time_to_footstep() const { return state_predict.time_to_footstep; }
 	float footstep_shift() const { return state_predict.footstep_shift; }
 	void step_predict(CGameObject* O, const CBlend* b, ik_limb_state_predict& state,
-	                  const extrapolation::points& object_pose_extrapolation); //const;
+	                  const extrapolation::points& object_pose_extrapolation, bool rays_on_frame_tail);
+	void predict_footstep_shift(ik_limb_state_predict& state, u16 ref_b, const Fmatrix& m_ref_b,
+	                            const Fmatrix& footstep_object, CGameObject* O); //const;
 	bool foot_step() const { return sv_state.foot_step(); }
 	u16 foot_matrix_predict(Fmatrix& foot, Fmatrix& toe, float time, IKinematicsAnimated* K) const;
 #ifdef		DEBUG
@@ -101,6 +105,16 @@ private:
 
 	bool m_collide;
 	SIKCollideData collide_data;
+	// The foot rays of an NPC, between Update and the frame tail. The result reaches collide_data on the next Update.
+	SIKCollideData tail_collide;
+	ik_foot_geom tail_geom;
+	CGameObject* tail_object = nullptr;
+	bool tail_foot_step = false;
+	// The same for the ray under the predicted footstep
+	Fmatrix tail_predict_bone;
+	Fmatrix tail_predict_object;
+	u16 tail_predict_ref = 0;
+	bool tail_predict = false;
 
 	ik_anim_state anim_state;
 	ik_limb_state sv_state;

@@ -13,7 +13,7 @@ int psShedulerMaxBudgetMs = 12;
 ENGINE_API BOOL mt_Scheduler = TRUE;
 ENGINE_API int psShedulerBatchSize = 512;
 ENGINE_API int psShedulerMainBudgetMs = 6;
-ENGINE_API int psShedulerDeferredBudgetMs = 6;
+ENGINE_API int psShedulerDeferredBudgetMs = 3;
 ENGINE_API int psShedulerJitterMs = 12;
 ENGINE_API BOOL psShedulerLog = FALSE;
 ENGINE_API BOOL psShedulerAdaptive = TRUE;
@@ -997,8 +997,7 @@ void CSheduler::UpdateDeferred()
 	const u64 phase_started = CPU::QPC();
 	InterlockedExchange(&m_processing_thread_id, static_cast<LONG>(GetCurrentThreadId()));
 	cycles_start = CPU::QPC();
-	const u64 budget_ms = static_cast<u64>(_max(_min(psShedulerMaxBudgetMs, psShedulerDeferredBudgetMs), 1));
-	cycles_limit = cycles_start + CPU::qpc_freq * budget_ms / 1000u;
+	cycles_limit = cycles_start + CPU::qpc_freq * Device.FrameJobSchedulerWindowUS / 1000000u;
 	ProcessStep();
 	InterlockedExchange(&m_processing_thread_id, 0);
 	InterlockedExchangeAdd64(&m_frame_scheduler_cycles,

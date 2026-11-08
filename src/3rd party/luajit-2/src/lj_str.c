@@ -174,9 +174,19 @@ size_t LJ_FASTCALL lj_str_bufnum(char *s, cTValue *o)
 {
   if (LJ_LIKELY((o->u32.hi << 1) < 0xffe00000)) {  /* Finite? */
     lua_Number n = o->n;
+    int32_t k = lj_num2int(n);
 #if __BIONIC__
     if (tvismzero(o)) { s[0] = '-'; s[1] = '0'; return 2; }
 #endif
+    /* QUARK: mods concatenate integers all the time; same text as "%.14g" (-0 stays with sprintf) without sprintf. */
+    if ((lua_Number)k == n && !tvismzero(o)) {
+      char buf[1+10];
+      char *p = lj_str_bufint(buf, k);
+      size_t len = (size_t)(buf+sizeof(buf)-p);
+      memcpy(s, p, len);
+      s[len] = '\0';
+      return len;
+    }
     return (size_t)lua_number2str(s, n);
   } else if (((o->u32.hi & 0x000fffff) | o->u32.lo) != 0) {
     s[0] = 'n'; s[1] = 'a'; s[2] = 'n'; return 3;

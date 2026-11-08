@@ -220,6 +220,7 @@ public:
 	virtual void load(IReader& input_packet);
 
 	virtual void UpdateCL();
+	virtual u32 UpdateCL_Period() const;
 	virtual void shedule_Update(u32 dt);
 	virtual void Think();
 	virtual void SelectAnimation(const Fvector& _view, const Fvector& _move, float speed);
@@ -327,13 +328,19 @@ private:
 	bool m_can_kill_enemy;
 	float m_pick_distance;
 	u32 m_pick_frame_id;
+	u32 m_pick_time = 0;
 	collide::rq_results rq_storage;
+	Fvector m_pick_position;
+	Fvector m_pick_direction;
+	float m_pick_start_distance = 0.f;
+	bool m_pick_queued = false;
 
 private:
 	void can_kill_entity(const Fvector& position, const Fvector& direction, float distance,
 	                     collide::rq_results& rq_storage);
 	void can_kill_entity_from(const Fvector& position, Fvector direction, float distance);
 	void update_can_kill_info();
+	void can_kill_on_frame_tail();
 
 public:
 	bool can_kill_member();

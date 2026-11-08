@@ -168,12 +168,14 @@ void CTexture::ProcessStaging()
 	VERIFY(pSurface);
 	VERIFY(flags.bLoadedAsStaging);
 
-	ID3DBaseTexture* pTargetSurface = 0;
+	// The same image may be on the GPU under another name already
+	ID3DBaseTexture* pTargetSurface = ::RImplementation.texture_staged_shared(pSurface);
+	const bool bCopy = !pTargetSurface;
 
 	D3D_RESOURCE_DIMENSION type;
 	pSurface->GetType(&type);
 
-	switch (type)
+	if (bCopy) switch (type)
 	{
 	case D3D_RESOURCE_DIMENSION_TEXTURE2D:
 		{
@@ -215,7 +217,11 @@ void CTexture::ProcessStaging()
 		VERIFY(!"CTexture::ProcessStaging unsupported dimensions.");
 	}
 
-	HW.pContext->CopyResource(pTargetSurface, pSurface);
+	if (bCopy)
+	{
+		HW.pContext->CopyResource(pTargetSurface, pSurface);
+		pTargetSurface = ::RImplementation.texture_staged_publish(pSurface, pTargetSurface);
+	}
 	/*
 	for( int i=0; i<iNumSubresources; ++i)
 	{
@@ -235,6 +241,7 @@ void CTexture::ProcessStaging()
 
 	flags.bLoadedAsStaging = FALSE;
 
+	::RImplementation.texture_unload(pSurface);
 	//	Check if texture was not copied _before_ it was converted.
 	ULONG RefCnt = pSurface->Release();
 	pSurface = 0;
@@ -583,7 +590,7 @@ void CTexture::Load(bool use_staging)
 		// Normal texture
 		u32 mem = 0;
 		//pSurface = ::RImplementation.texture_load	(*cName,mem);
-		pSurface = ::RImplementation.texture_load(*cName, mem, use_staging);
+		pSurface = ::RImplementation.texture_load(*cName, mem, use_staging, &top_mips_skipped);
 
 		if (GetUsage() == D3D_USAGE_STAGING)
 		{
@@ -634,10 +641,12 @@ void CTexture::Unload()
 	flags.bLoaded = FALSE;
 	flags.bLoadedAsStaging = FALSE;
 	flags.MemoryUsage = 0;
+	top_mips_skipped = 0;
 	if (!seqDATA.empty())
 	{
 		for (u32 I = 0; I < seqDATA.size(); I++)
 		{
+			::RImplementation.texture_unload(seqDATA[I]);
 			_RELEASE(seqDATA[I]);
 			_RELEASE(m_seqSRView[I]);
 		}
@@ -657,6 +666,7 @@ void CTexture::Unload()
 #ifdef DEBUG
 	_SHOW_REF		(msg_buff, pSurface);
 #endif // DEBUG
+	::RImplementation.texture_unload(pSurface);
 	_RELEASE(pSurface);
 	_RELEASE(m_pSRView);
 

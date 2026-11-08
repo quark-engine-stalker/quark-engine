@@ -712,6 +712,7 @@ void CAI_Stalker::Load(LPCSTR section)
 
 BOOL CAI_Stalker::net_Spawn(CSE_Abstract* DC)
 {
+	PROF_EVENT();
 #ifdef DEBUG_MEMORY_MANAGER
 	size_t								start = 0;
 	if (g_bMEMO)
@@ -899,6 +900,8 @@ void CAI_Stalker::net_Destroy()
 			&CAI_Stalker::update_object_handler
 		)
 	);
+	Device.remove_from_frame_tail(fastdelegate::FastDelegate0<>(this, &CAI_Stalker::can_kill_on_frame_tail));
+	m_pick_queued = false;
 
 #ifdef DEBUG
 	fastdelegate::FastDelegate0<>	f = fastdelegate::FastDelegate0<>(this,&CAI_Stalker::update_object_handler);
@@ -1641,6 +1644,22 @@ void CAI_Stalker::aim_target(Fvector& result, const CGameObject* object)
 	VERIFY(m_aim_bone_id.size());
 
 	::aim_target(m_aim_bone_id, result, object);
+}
+
+// Who the player cannot judge frame by frame: far in view, or out of view (their shadow is coarse too).
+u32 CAI_Stalker::UpdateCL_Period() const
+{
+	if (!g_Alive())
+		return 0;
+
+	const Fvector to_object = Fvector().sub(Position(), Device.vCameraPosition);
+	const float distance = to_object.magnitude();
+	const bool in_view = to_object.dotproduct(Device.vCameraDirection) > 0.5f * distance; // 60 degrees: wider than any FOV in use
+	const float perceived = in_view ? Device.GetPerceivedDist(Position()) : distance;
+	if (perceived < (in_view ? 40.f : 12.f))
+		return 0;
+
+	return perceived < (in_view ? 100.f : 40.f) ? 33 : 66;
 }
 
 BOOL CAI_Stalker::AlwaysTheCrow()

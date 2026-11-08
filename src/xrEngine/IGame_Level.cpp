@@ -39,6 +39,8 @@ IGame_Level::~IGame_Level()
 	// The frame lane may still hold delegates into level and renderer state.
 	Device.WaitFrameParallelWork();
 	Feel::vision_async_prepare_wait_all();
+	// A precache pass may still run (vid_restart before a load or a quit); its light sits in this level's spatial tree.
+	Device.DestroyPrecacheLight();
 
 	if (strstr(Core.Params, "-nes_texture_storing"))
 		//Device.Resources->StoreNecessaryTextures();

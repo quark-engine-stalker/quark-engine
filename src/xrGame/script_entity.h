@@ -70,6 +70,18 @@ protected:
 	ref_sound* m_current_sound;
 	xr_vector<CSavedSound> m_saved_sounds;
 
+	// The last delivered sound by source and type, direct-mapped: a collision only delivers a repeat.
+	struct SRecentSound
+	{
+		u16 who;
+		int type;
+		u32 time;
+		float power;
+	};
+	static constexpr u32 recent_sounds_count = 256;
+	SRecentSound m_recent_sounds[recent_sounds_count];
+	bool repeated_sound(const CSavedSound& sound);
+
 public:
 	CScriptEntity();
 	virtual ~CScriptEntity();

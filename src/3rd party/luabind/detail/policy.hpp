@@ -781,6 +781,8 @@ namespace luabind { namespace detail
 					new(storage) object_rep(value, crep, object_rep::owner, destruct_only_s<T>::apply);
 					detail::getref(L, crep->metatable_ref());
 					lua_setmetatable(L, -2);
+					// Nothing to release: a Lua field or a dependency turns the finalizer back on before it is stored.
+					luaJIT_setudatafinalizer(L, -1, 0);
 					return;
 				}
 			}

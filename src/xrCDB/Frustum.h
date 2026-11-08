@@ -48,7 +48,7 @@ public:
 
 	fplane planes [FRUSTUM_MAXPLANES];
 	int p_count;
-	// planes[] as structure-of-arrays (n.x, n.y, n.z, d) for the AVX2 tests: lanes below
+	// planes[] as structure-of-arrays (n.x, n.y, n.z, d) for the AVX tests: lanes below
 	// p_count mirror planes[], the rest are zero. Kept by _clear(), _add() and Create*().
 	float simd[4][16];
 

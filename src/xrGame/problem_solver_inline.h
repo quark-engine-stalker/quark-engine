@@ -154,14 +154,28 @@ IC bool CProblemSolverAbstract::actual() const
 	EVALUATORS::const_iterator e = evaluators().end();
 	for (; I != E; ++I)
 	{
-		if ((*i).first < (*I).condition())
+		if (i != e && (*i).first < (*I).condition())
 			i = std::lower_bound(i, e, (*I).condition(), evaluators().value_comp());
-		VERIFY(i != e);
-		VERIFY((*i).first == (*I).condition());
-		if (evaluate_profiled((*I).condition(), (*i).second) != (*I).value())
+		const bool found = i != e && (*i).first == (*I).condition();
+		const _value_type value = found
+			                          ? evaluate_profiled((*I).condition(), (*i).second)
+			                          : missing_evaluator((*I).condition());
+		if (value != (*I).value())
 			return (false);
 	}
 	return (true);
+}
+
+// A script left a precondition whose evaluator was never added (or was removed). THROW is empty in release,
+// so this used to read evaluators().end() and fault; read it as false instead, and say so (bounded).
+TEMPLATE_SPECIALIZATION
+typename CProblemSolverAbstract::_value_type CProblemSolverAbstract::missing_evaluator(
+	const _condition_type& condition_id)
+{
+	static std::atomic<u32> reported;
+	if (reported.fetch_add(1) < 8)
+		Msg("! GOAP: no evaluator for property %u, read as false", static_cast<u32>(condition_id));
+	return false;
 }
 
 TEMPLATE_SPECIALIZATION
@@ -265,7 +279,7 @@ IC typename CProblemSolverAbstract::_condition_evaluator_ptr CProblemSolverAbstr
 {
 	EVALUATORS::const_iterator I = evaluators().find(condition_id);
 	THROW(evaluators().end() != I);
-	return ((*I).second);
+	return (evaluators().end() != I ? (*I).second : _condition_evaluator_ptr(0));
 }
 
 TEMPLATE_SPECIALIZATION
@@ -281,7 +295,8 @@ IC void CProblemSolverAbstract::evaluate_condition(typename xr_vector<COperatorC
 {
 	size_t index = I - m_current_state.conditions().begin();
 	_condition_evaluator_ptr evaluator_ptr = evaluator(condition_id);
-	m_current_state.add_condition(I, COperatorCondition(condition_id, evaluate_profiled(condition_id, evaluator_ptr)));
+	m_current_state.add_condition(I, COperatorCondition(condition_id,
+		evaluator_ptr ? evaluate_profiled(condition_id, evaluator_ptr) : missing_evaluator(condition_id)));
 	I = m_current_state.conditions().begin() + index;
 	E = m_current_state.conditions().end();
 }

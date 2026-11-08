@@ -393,7 +393,7 @@ static void q_ray_unlocked_impl(ISpatial_DB& space, result_type& result, u32 opt
 	if (!space.m_root || (mask_or && !mask) || range <= 0.f)
 		return;
 
-	// x64 guarantees SSE2, and this engine configuration targets x64/AVX2.
+	// x64 guarantees SSE2, and this engine configuration targets x64/AVX.
 	// Avoid a runtime feature branch in every spatial ray query.
 	if (options & ISpatial_DB::O_ONLYFIRST)
 	{

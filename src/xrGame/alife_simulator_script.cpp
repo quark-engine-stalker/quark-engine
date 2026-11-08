@@ -47,7 +47,20 @@ constexpr LPCSTR kQuarkAlifeObjectFallbackRegistryKey = "QUARK_ENGINE.alife_obje
 int script_alife_lua(lua_State* L)
 {
 	CALifeSimulator* const simulator = alife();
+	// Mods ask for it tens of thousands of times a second: one wrapper per simulator, kept in the upvalues of this function.
+	if (simulator && lua_touserdata(L, lua_upvalueindex(1)) == simulator)
+	{
+		lua_pushvalue(L, lua_upvalueindex(2));
+		return 1;
+	}
 	luabind::detail::convert_to_lua(L, simulator);
+	if (simulator)
+	{
+		lua_pushlightuserdata(L, simulator);
+		lua_replace(L, lua_upvalueindex(1));
+		lua_pushvalue(L, -1);
+		lua_replace(L, lua_upvalueindex(2));
+	}
 	return 1;
 }
 
@@ -267,7 +280,7 @@ CSE_Abstract* CALifeSimulator__spawn_item2(CALifeSimulator* self, LPCSTR section
 
 	CSE_Abstract* item = self->spawn_item(section, position, level_vertex_id, game_vertex_id, id_parent, false);
 	item->Spawn_Write(packet,FALSE);
-	self->server().FreeID(item->ID, 0);
+	self->server().FreeID(item->ID, Device.TimerAsync());
 	F_entity_Destroy(item);
 
 	ClientID clientID;
@@ -342,7 +355,7 @@ CSE_Abstract* CALifeSimulator__spawn_ammo(CALifeSimulator* self, LPCSTR section,
 	ammo->a_elapsed = (u16)ammo_to_spawn;
 
 	item->Spawn_Write(packet,FALSE);
-	self->server().FreeID(item->ID, 0);
+	self->server().FreeID(item->ID, Device.TimerAsync());
 	F_entity_Destroy(item);
 
 	ClientID clientID;
@@ -475,7 +488,7 @@ CSE_Abstract* reprocess_spawn(CALifeSimulator* self, CSE_Abstract* object)
 	packet.w_stringZ(object->s_name);
 
 	object->Spawn_Write(packet, FALSE);
-	self->server().FreeID(object->ID, 0);
+	self->server().FreeID(object->ID, Device.TimerAsync());
 	F_entity_Destroy(object);
 
 	ClientID clientID;
@@ -821,7 +834,9 @@ void CALifeSimulator::script_register(lua_State* L)
 
 	// Keep the public function and return type identical while bypassing the
 	// generic luabind call path used by very hot script-side ALife queries.
-	lua_pushcfunction(L, &script_alife_lua);
+	lua_pushnil(L);
+	lua_pushnil(L);
+	lua_pushcclosure(L, &script_alife_lua, 2);
 	lua_setglobal(L, "alife");
 
 	// Installed over _G.alife_object only after _G.script has loaded. Invalid

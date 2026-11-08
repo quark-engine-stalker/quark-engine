@@ -125,6 +125,7 @@ protected:
 
 private:
 	IC _value_type evaluate_profiled(const _condition_type& condition_id, _condition_evaluator_ptr evaluator) const;
+	static _value_type missing_evaluator(const _condition_type& condition_id);
 	IC bool is_goal_reached_dispatch(const _index_type& vertex_index) const
 	{
 		if constexpr (reverse_search)

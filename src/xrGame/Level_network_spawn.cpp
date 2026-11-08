@@ -12,6 +12,7 @@
 
 void CLevel::cl_Process_Spawn(NET_Packet& P)
 {
+	PROF_EVENT();
 
 	shared_str s_name;
 	P.r_stringZ(s_name);
@@ -101,6 +102,12 @@ void CLevel::g_cl_Spawn(LPCSTR name, u8 rp, u16 flags, Fvector pos)
 
 void CLevel::g_sv_Spawn(CSE_Abstract* E)
 {
+	// Back online before the budgeted queue got to its old client object: net_Spawn would refuse the ID,
+	// and the server would count an object the client does not have. Events stay in their order this way.
+	if (const CObject* old_object = Objects.net_Find(E->ID))
+		if (old_object->getDestroy())
+			Objects.ProcessDestroyQueue(true);
+
 #ifdef DEBUG_MEMORY_MANAGER
 	size_t							E_mem = 0;
 	if (g_bMEMO)	{

@@ -48,7 +48,7 @@ public:
 	virtual float shedule_Scale();
 	virtual void shedule_Update(u32 dt);
 	virtual bool shedule_Needed() { return true; };
-	virtual bool shedule_AllowDeferred() const { return false; }
+	virtual bool shedule_AllowDeferred() const { return true; }
 	void update_switch();
 	void update_scheduled(bool init_ef = true);
 	void load(LPCSTR game_name = 0, bool no_assert = false, bool new_only = false);

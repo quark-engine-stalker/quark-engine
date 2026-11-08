@@ -1003,11 +1003,14 @@ void CIKLimb::SetAnimGoal(SCalculateData& cd)
 	cd.apply = true;
 }
 
-void CIKLimb::Update(CGameObject* O, const CBlend* b, const extrapolation::points& object_pose_extrapolation)
+void CIKLimb::Update(CGameObject* O, const CBlend* b, const extrapolation::points& object_pose_extrapolation,
+	bool rays_on_frame_tail)
 {
 	if (!m_collide || !sv_state.valide())
 	{
 		collide_data.collided = false;
+		tail_object = nullptr;
+		tail_predict = false;
 		return;
 	}
 	anim_state.update(KinematicsAnimated(), b, get_id());
@@ -1023,9 +1026,38 @@ void CIKLimb::Update(CGameObject* O, const CBlend* b, const extrapolation::point
 	//Fmatrix foot = Fmatrix().mul_43( Fmatrix().invert( O->XFORM() ) ,sv_state.goal( m ).get() );
 	//m_foot.ref_bone_to_foot( foot )
 
-	m_foot.Collide(collide_data, collider, anim_foot, O->XFORM(), O, anim_state.step());
+	if (rays_on_frame_tail)
+	{
+		// The last result, while the pick direction stays the one the IK has just computed
+		if (tail_object)
+		{
+			const Fvector pick_dir = collide_data.m_pick_dir;
+			collide_data = tail_collide;
+			collide_data.m_pick_dir = pick_dir;
+		}
+		tail_collide = collide_data;
+		m_foot.SetFootGeom(tail_geom, anim_foot, O->XFORM());
+		tail_foot_step = anim_state.step();
+		tail_object = O;
+	}
+	else
+	{
+		tail_object = nullptr;
+		m_foot.Collide(collide_data, collider, anim_foot, O->XFORM(), O, anim_state.step());
+	}
 
-	step_predict(O, b, state_predict, object_pose_extrapolation);
+	tail_predict = false;
+	step_predict(O, b, state_predict, object_pose_extrapolation, rays_on_frame_tail);
+}
+
+void CIKLimb::CollideOnFrameTail()
+{
+	if (!tail_object)
+		return;
+
+	collider.collide(tail_collide, tail_geom, tail_object, tail_foot_step);
+	if (tail_predict)
+		predict_footstep_shift(state_predict, tail_predict_ref, tail_predict_bone, tail_predict_object, tail_object);
 }
 
 float CIKLimb::ObjShiftDown(float current_shift, const SCalculateData& cd) const
@@ -1123,7 +1155,7 @@ u16 CIKLimb::foot_matrix_predict(Fmatrix& foot, Fmatrix& toe, float time, IKinem
 }
 
 void CIKLimb::step_predict(CGameObject* O, const CBlend* b, ik_limb_state_predict& state,
-                           const extrapolation::points& object_pose_extrapolation) //const
+                           const extrapolation::points& object_pose_extrapolation, bool rays_on_frame_tail) //const
 {
 	if (!b)
 		return;
@@ -1137,9 +1169,6 @@ void CIKLimb::step_predict(CGameObject* O, const CBlend* b, ik_limb_state_predic
 
 	Fmatrix foot, toe;
 	u16 ref_b = foot_matrix_predict(foot, toe, state.time_to_footstep, KinematicsAnimated());
-	u16 ref_b_save = m_foot.ref_bone();
-	m_foot.set_ref_bone(ref_b);
-	SIKCollideData cld;
 	Fmatrix m_ref_b;
 	if (ref_b == 2)
 		m_ref_b = foot;
@@ -1148,11 +1177,30 @@ void CIKLimb::step_predict(CGameObject* O, const CBlend* b, ik_limb_state_predic
 		VERIFY(ref_b == 3);
 		m_ref_b = toe;
 	}
-	m_foot.Collide(cld, state.collider, m_ref_b, footstep_object, O, true);
+
+	if (rays_on_frame_tail)
+	{
+		tail_predict_bone = m_ref_b;
+		tail_predict_object = footstep_object;
+		tail_predict_ref = ref_b;
+		tail_predict = true;
+		return;
+	}
+	predict_footstep_shift(state, ref_b, m_ref_b, footstep_object, O);
+}
+
+void CIKLimb::predict_footstep_shift(ik_limb_state_predict& state, u16 ref_b, const Fmatrix& m_ref_b,
+                                     const Fmatrix& footstep_object, CGameObject* O)
+{
+	// Own copy: the render may be reading m_foot of this limb when this runs on the frame tail
+	CIKFoot foot_predict = m_foot;
+	foot_predict.set_ref_bone(ref_b);
+	SIKCollideData cld;
+	foot_predict.Collide(cld, state.collider, m_ref_b, footstep_object, O, true);
 	const Fmatrix gl_goal = Fmatrix().mul_43(footstep_object, m_ref_b);
 
 	ik_goal_matrix gl_cl_goal;
-	m_foot.GetFootStepMatrix(gl_cl_goal, gl_goal, cld, false, true);
+	foot_predict.GetFootStepMatrix(gl_cl_goal, gl_goal, cld, false, true);
 
 	//m_foot.ref_bone_to_foot
 #ifdef DEBUG
@@ -1169,8 +1217,6 @@ if( ph_dbg_draw_mask1.test( phDbgDrawIKPredict ) )
 }
 #endif
 	state.footstep_shift = gl_cl_goal.get().c.y - gl_goal.c.y;
-
-	m_foot.set_ref_bone(ref_b_save);
 }
 
 Fmatrix& CIKLimb::GetHipInvert(Fmatrix& ihip, const SCalculateData& cd)

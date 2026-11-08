@@ -43,7 +43,7 @@ void CIKLimbsController::Create(CGameObject* O)
 		LimbSetup();
 
 	bool already_has_callbacks = !O->visual_callbacks().empty();
-	O->add_visual_callback(IKVisualCallback);
+	O->add_visual_callback(IKVisualCallback, true);
 	if (already_has_callbacks)
 		std::swap(*(O->visual_callbacks().begin()), *(O->visual_callbacks().end() - 1));
 	_pose_extrapolation.init(O->XFORM());
@@ -66,11 +66,18 @@ void CIKLimbsController::LimbCalculate(SCalculateData& cd)
 	cd.m_limb->ApplyState(cd);
 }
 
-void CIKLimbsController::LimbUpdate(CIKLimb& L)
+void CIKLimbsController::LimbUpdate(CIKLimb& L, bool rays_on_frame_tail)
 {
 	IKinematicsAnimated* skeleton_animated = m_object->Visual()->dcast_PKinematicsAnimated();
 	VERIFY(skeleton_animated);
-	L.Update(m_object, m_legs_blend, _pose_extrapolation);
+	L.Update(m_object, m_legs_blend, _pose_extrapolation, rays_on_frame_tail);
+}
+
+void CIKLimbsController::CollideOnFrameTail()
+{
+	m_tail_queued = false;
+	for (CIKLimb& limb : _bone_chains)
+		limb.CollideOnFrameTail();
 }
 
 void CIKLimbsController::ValidateLegsBlend(IKinematicsAnimated* skeleton)
@@ -343,7 +350,9 @@ void CIKLimbsController::Destroy(CGameObject* O)
 	VERIFY( ik == this );
 #endif
 
-	O->remove_visual_callback(IKVisualCallback);
+	Device.remove_from_frame_tail(fastdelegate::FastDelegate0<>(this, &CIKLimbsController::CollideOnFrameTail));
+	m_tail_queued = false;
+	O->remove_visual_callback(IKVisualCallback, true);
 	xr_vector<CIKLimb>::iterator i = _bone_chains.begin(), e = _bone_chains.end();
 	for (; e != i; ++i)
 		i->Destroy();
@@ -413,9 +422,21 @@ void CIKLimbsController::Update()
 	ValidateLegsBlend(skeleton_animated);
 
 	_pose_extrapolation.update(m_object->XFORM());
+
+	// The player's own legs stay in step with the camera. A batch not run yet (no frame job) keeps its input.
+	const bool rays_on_frame_tail = m_object != smart_cast<CGameObject*>(g_actor);
+	if (m_tail_queued)
+		return;
+
 	xr_vector<CIKLimb>::iterator i = _bone_chains.begin(), e = _bone_chains.end();
 	for (; e != i; ++i)
-		LimbUpdate(*i);
+		LimbUpdate(*i, rays_on_frame_tail);
+
+	if (rays_on_frame_tail)
+	{
+		m_tail_queued = true;
+		Device.add_to_frame_tail(fastdelegate::FastDelegate0<>(this, &CIKLimbsController::CollideOnFrameTail));
+	}
 
 	/*
 	Fmatrix predict;

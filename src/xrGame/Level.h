@@ -59,6 +59,7 @@ struct prefetch_event
 {  
     NET_Packet p;  
 	models_set models;
+	models_set hud_models; // a weapon spawned to the actor: take callbacks of the mods ask for its HUD model at once
     u16 id;
     bool hasAlifeObject;
 };
@@ -316,6 +317,12 @@ public:
 	IC CAutosaveManager& autosave_manager();
     IC CDebugRenderer& debug_renderer();
 	void __stdcall script_gc(); // GC-cycle
+	void note_saved_sounds(u16 id) { m_saved_sounds_pending.push_back(id); }
+	static void flush_saved_sounds();
+	void note_actor_script_update(u32 dt) { m_actor_script_dt += dt; }
+	u32 m_actor_script_dt = 0;
+	xr_vector<u16> m_saved_sounds_pending;
+	xr_vector<u16> m_saved_sounds_flushing;
 	static int LuaGC(); // GC that will called from Device via Device.LuaGC
 	static u32 LuaGCMemory();
 	static void LuaGCStatus(SLuaGCStatus* status);

@@ -172,6 +172,7 @@ public:
 	//		void							on_active_weapon_shell_activate();
 	bool has_shell_collision_place(const CPhysicsShellHolder* obj) const;
 	virtual void on_child_shell_activate(CPhysicsShellHolder* obj);
+	void on_child_leave(CPhysicsShellHolder* obj);
 	/////////////////////////////////////////////////////////////////
 	CCharacterPhysicsSupport& operator =(CCharacterPhysicsSupport& /**asup/**/)
 	{
@@ -186,7 +187,7 @@ private:
 	void ActivateShell(CObject* who);
 	void CreateShell(CObject* who, Fvector& dp, Fvector& velocity);
 	void AddActiveWeaponCollision();
-	void RemoveActiveWeaponCollision();
+	void RemoveActiveWeaponCollision(bool give_pose = true);
 	void bone_chain_disable(u16 bone, u16 r_bone, IKinematics& K);
 	void bone_fix_clear();
 	void EndActivateFreeShell(CObject* who, const Fvector& inital_entity_position, const Fvector& dp,

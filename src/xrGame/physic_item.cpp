@@ -56,6 +56,9 @@ void CPhysicItem::OnH_B_Independent(bool just_before_destroy)
 {
 	inherited::OnH_B_Independent(just_before_destroy);
 
+	if (m_ready_to_destroy || just_before_destroy)
+		release_parent_shell_collision();
+
 	if (m_ready_to_destroy)
 		return;
 

@@ -3416,7 +3416,7 @@ void CCC_RegisterCommands()
 
     CMD4(CCC_Integer, "r__actor_shadow_in_demo_record", &r__actor_shadow_in_demo_record, 0, 1);
 
-    CMD4(CCC_Integer, "g_enemy_manager_useful_cache_time", &enemy_manager_useful_cache_time, -1, 500);
+    CMD4(CCC_Integer, "g_enemy_manager_useful_cache_time", &enemy_manager_useful_cache_time, -1, 2000);
 	CMD4(CCC_Integer, "ai_monster_relcase_selective_memory", &psMonsterRelcaseSelectiveMemory, 0, 1);
 	CMD4(CCC_Integer, "ai_visual_memory_indexed_merge", &psAIVisualMemoryIndexedMerge, 0, 2);
 

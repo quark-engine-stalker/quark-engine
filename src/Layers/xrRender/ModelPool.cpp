@@ -599,9 +599,14 @@ struct CModelPool::AsyncStorage
 		std::atomic<bool> required{true};
 		bool manifest_counted = false;
 		bool manifest_completed = false;
-		// CPU/texture preparation only. HUD shader creation must wait for the
-		// real HudItemData caller's hud_loading/current_player_hud_sect context.
+		// The item_visual of an actor's item ahead of its draw: HUD context by definition, an optional budget.
 		bool prepare_only = false;
+		// Asked for inside a HUD context: its shaders depend on that context.
+		std::atomic<bool> hud_context{false};
+		// The visual was built and registered by the worker, the finalization only publishes it.
+		bool visual_loaded = false;
+		// Textures of a required model, loaded by the worker. Kept until the shaders of the finalized model own them.
+		xr_vector<ref_texture> held_textures;
 	};
 
 	using state_ptr = std::shared_ptr<PreparedModel>;
@@ -675,9 +680,14 @@ CModelPool::AsyncStorage::state_ptr queue_model_dependency(CModelPool* owner,
 	// optional: a spawn can upgrade it while preparation is already running.
 	const bool optional = parent->from_manifest.load(std::memory_order_acquire) &&
 		!parent->required.load(std::memory_order_acquire);
-	return queue_model_preparation(owner, dependency.c_str(), dependency.c_str(), false,
+	// The child is prepared inline on this worker and belongs to the parent's context.
+	const bool previous_hud = ::Render->hud_loading;
+	::Render->hud_loading = parent->hud_context.load(std::memory_order_acquire);
+	CModelPool::AsyncStorage::state_ptr child = queue_model_preparation(owner, dependency.c_str(), dependency.c_str(), false,
 		optional, parent->prepare_only,
 		parent->prepare_only && parent->required.load(std::memory_order_acquire));
+	::Render->hud_loading = previous_hud;
+	return child;
 }
 
 void mark_manifest_complete_locked(CModelPool::AsyncStorage* storage,
@@ -693,6 +703,7 @@ void mark_manifest_complete_locked(CModelPool::AsyncStorage* storage,
 void release_prepared_payload(const CModelPool::AsyncStorage::state_ptr& state)
 {
 	state->ogf_bytes.reset();
+	xr_vector<ref_texture>().swap(state->held_textures);
 	xr_vector<prepared_motion_ptr>().swap(state->motion_blobs);
 	xr_vector<std::weak_ptr<CModelPool::AsyncStorage::PreparedModel>>().swap(state->dependencies);
 }
@@ -705,6 +716,14 @@ void publish_resident_motions(CModelPool* owner,
 		owner->AsyncStorageData()->resident_motions.emplace(blob->name);
 }
 
+// Under the waiters' mutex: a store and a notify between a waiter's check and its sleep would leave it asleep for good.
+template <class Holder, class Stage>
+void store_stage(Holder& holder, Stage stage)
+{
+	std::lock_guard<std::mutex> lock(holder.wait_mutex);
+	holder.stage.store(stage, std::memory_order_release);
+}
+
 void finish_preparation(CModelPool* owner, const CModelPool::AsyncStorage::state_ptr& state,
 	prepared_model_stage stage, LPCSTR error = nullptr)
 {
@@ -714,8 +733,8 @@ void finish_preparation(CModelPool* owner, const CModelPool::AsyncStorage::state
 	{
 		release_prepared_payload(state);
 	}
-	state->stage.store(stage, std::memory_order_release);
-	if (stage == prepared_model_stage::ready && !state->prepare_only)
+	store_stage(*state, stage);
+	if (stage == prepared_model_stage::ready && (!state->prepare_only || state->visual_loaded))
 	{
 		xrCriticalSectionGuard guard(owner->AsyncStorageData()->guard);
 		owner->AsyncStorageData()->ready_to_finalize.push_back(state);
@@ -765,18 +784,18 @@ prepared_motion_ptr acquire_prepared_motion(CModelPool* owner, LPCSTR motion_nam
 		if (!open_motion_bytes(motion_name, blob->bytes))
 		{
 			blob->error = make_string("motion file not found: %s", motion_name);
-			blob->stage.store(prepared_motion_stage::failed, std::memory_order_release);
+			store_stage(*blob, prepared_motion_stage::failed);
 		}
 		else if (!inspect_motion_blob(*blob, blob->error))
 		{
 			const xr_string details = blob->error;
 			blob->error = make_string("invalid motion file %s: %s", motion_name, details.c_str());
 			blob->bytes.reset();
-			blob->stage.store(prepared_motion_stage::failed, std::memory_order_release);
+			store_stage(*blob, prepared_motion_stage::failed);
 		}
 		else
 		{
-			blob->stage.store(prepared_motion_stage::ready, std::memory_order_release);
+			store_stage(*blob, prepared_motion_stage::ready);
 		}
 		blob->wait_condition.notify_all();
 	}
@@ -915,6 +934,32 @@ bool admit_manifest_model(CModelPool* owner, const CModelPool::AsyncStorage::sta
 			admit(costs.data(), costs.size()));
 }
 
+dxRender_Visual* load_prepared_visual(CModelPool* owner, const CModelPool::AsyncStorage::state_ptr& state)
+{
+	xr_vector<prepared_motion_source> motion_sources;
+	motion_sources.reserve(state->motion_blobs.size());
+	for (const prepared_motion_ptr& blob : state->motion_blobs)
+		motion_sources.push_back({blob->name, blob->bytes.data(), static_cast<u32>(blob->bytes.size())});
+
+	IReader reader(state->ogf_bytes.data(), static_cast<int>(state->ogf_bytes.size()));
+	prepared_motion_source_scope motion_scope(&motion_sources);
+	// Before the lock: the load waits for the render at its children (CRender::model_CreateChild) when the frame job
+	// runs it, and the render may need this lock to delete a model meanwhile.
+	Device.WaitSceneRendered();
+	xrCriticalSectionGuard load_guard(owner->ModelLoadGuard());
+	// A parent on another worker may have loaded this LOD through CreateChild while this one waited for the guard.
+	if (dxRender_Visual* loaded = owner->Instance_Find(state->key.c_str()))
+		return loaded;
+	model_load_scope loading;
+	dxRender_Visual* base = owner->Instance_Load(state->key.c_str(), &reader, FALSE);
+	if (base)
+	{
+		g_pGamePersistent->RegisterModel(base);
+		owner->Instance_Register(state->key.c_str(), base);
+	}
+	return base;
+}
+
 void prepare_model_state(CModelPool* owner, const CModelPool::AsyncStorage::state_ptr& state)
 {
 	prepared_model_stage expected = prepared_model_stage::queued;
@@ -973,7 +1018,10 @@ void prepare_model_state(CModelPool* owner, const CModelPool::AsyncStorage::stat
 		{
 			if (!texture_name.size() || !unique_textures.emplace(texture_name).second)
 				continue;
-			Device.m_pRender->ResourcesPrefetchCreateModelTexture(texture_name.c_str());
+			if (state->from_manifest.load(std::memory_order_acquire))
+				Device.m_pRender->ResourcesPrefetchCreateModelTexture(texture_name.c_str());
+			else
+				dxRenderDeviceRender::Instance().LoadRequiredModelTexture(texture_name.c_str(), state->held_textures);
 		}
 	}
 
@@ -1023,6 +1071,17 @@ void prepare_model_state(CModelPool* owner, const CModelPool::AsyncStorage::stat
 		state->dependencies.push_back(queue_model_dependency(owner, state, dependency));
 	}
 
+	// Motions, geometry and shaders on this worker as well: this is the frame spike of a model seen for the first
+	// time. Every registry on the way has its own lock, no ID3D11DeviceContext call and no Lua on the way.
+	if (xr_jobs::is_worker_thread() && RImplementation.driver_concurrent_creates())
+	{
+		// A prepare-only state is an item_visual of the actor's weapon, the same HUD context as HudItemData.
+		const bool previous_hud = ::Render->hud_loading;
+		::Render->hud_loading = state->prepare_only || state->hud_context.load(std::memory_order_acquire);
+		state->visual_loaded = load_prepared_visual(owner, state) != nullptr;
+		::Render->hud_loading = previous_hud;
+	}
+
 	finish_preparation(owner, state, prepared_model_stage::ready);
 }
 
@@ -1041,6 +1100,7 @@ CModelPool::AsyncStorage::state_ptr queue_model_preparation(CModelPool* owner,
 {
 	CModelPool::AsyncStorage* storage = owner->AsyncStorageData();
 	const shared_str key = normalized_name;
+	const bool hud_context = ::Render->hud_loading;
 	CModelPool::AsyncStorage::state_ptr state;
 	{
 		xrCriticalSectionGuard guard(storage->guard);
@@ -1059,6 +1119,8 @@ CModelPool::AsyncStorage::state_ptr queue_model_preparation(CModelPool* owner,
 		}
 		if (existing != storage->in_flight.end())
 		{
+			if (hud_context)
+				existing->second->hud_context.store(true, std::memory_order_release);
 			if (!from_manifest && (!prepare_only || imminent_hud))
 				existing->second->required.store(true, std::memory_order_release);
 			existing->second->assert_on_missing = existing->second->assert_on_missing || assert_on_missing;
@@ -1100,6 +1162,7 @@ CModelPool::AsyncStorage::state_ptr queue_model_preparation(CModelPool* owner,
 		state->from_manifest.store(from_manifest, std::memory_order_relaxed);
 		state->required.store(!from_manifest && (!prepare_only || imminent_hud), std::memory_order_relaxed);
 		state->prepare_only = prepare_only;
+		state->hud_context.store(hud_context, std::memory_order_relaxed);
 		storage->in_flight.emplace(key, state);
 		if (from_manifest)
 		{
@@ -1182,6 +1245,7 @@ void erase_in_flight(CModelPool* owner, const CModelPool::AsyncStorage::state_pt
 
 bool finalize_prepared_model(CModelPool* owner, const CModelPool::AsyncStorage::state_ptr& state)
 {
+	PROF_EVENT();
 	prepared_model_stage expected = prepared_model_stage::ready;
 	if (!state->stage.compare_exchange_strong(expected, prepared_model_stage::finalizing,
 		std::memory_order_acq_rel))
@@ -1212,12 +1276,16 @@ bool finalize_prepared_model(CModelPool* owner, const CModelPool::AsyncStorage::
 			finalize_prepared_model(owner, dependency);
 	}
 
-	// Another path may have loaded the model while worker preparation was active.
-	if (owner->Instance_Find(state->key.c_str()))
+	// Built by the worker, or another path loaded the model while worker preparation was active.
+	// Not found with visual_loaded: a parent took this LOD as its child, no second copy.
+	dxRender_Visual* const loaded = owner->Instance_Find(state->key.c_str());
+	if (state->visual_loaded || loaded)
 	{
+		if (state->visual_loaded && loaded && !state->required.load(std::memory_order_acquire))
+			owner->MarkManifestBase(loaded);
 		publish_resident_motions(owner, state);
 		release_prepared_payload(state);
-		state->stage.store(prepared_model_stage::finalized, std::memory_order_release);
+		store_stage(*state, prepared_model_stage::finalized);
 		state->wait_condition.notify_all();
 		{
 			CModelPool::AsyncStorage* storage = owner->AsyncStorageData();
@@ -1228,22 +1296,7 @@ bool finalize_prepared_model(CModelPool* owner, const CModelPool::AsyncStorage::
 		return true;
 	}
 
-	xr_vector<prepared_motion_source> motion_sources;
-	motion_sources.reserve(state->motion_blobs.size());
-	for (const prepared_motion_ptr& blob : state->motion_blobs)
-		motion_sources.push_back({blob->name, blob->bytes.data(), static_cast<u32>(blob->bytes.size())});
-
-	IReader reader(state->ogf_bytes.data(), static_cast<int>(state->ogf_bytes.size()));
-	dxRender_Visual* base = nullptr;
-	{
-		prepared_motion_source_scope motion_scope(&motion_sources);
-		xrCriticalSectionGuard load_guard(owner->ModelLoadGuard());
-		model_load_scope loading;
-		base = owner->Instance_Load(state->key.c_str(), &reader, TRUE);
-		if (base)
-			g_pGamePersistent->RegisterModel(base);
-	}
-
+	dxRender_Visual* const base = load_prepared_visual(owner, state);
 	if (!base)
 	{
 		finish_preparation(owner, state, prepared_model_stage::failed,
@@ -1259,7 +1312,7 @@ bool finalize_prepared_model(CModelPool* owner, const CModelPool::AsyncStorage::
 	// another copy of the same animation pack.
 	publish_resident_motions(owner, state);
 	release_prepared_payload(state);
-	state->stage.store(prepared_model_stage::finalized, std::memory_order_release);
+	store_stage(*state, prepared_model_stage::finalized);
 	state->wait_condition.notify_all();
 	{
 		CModelPool::AsyncStorage* storage = owner->AsyncStorageData();
@@ -1400,6 +1453,8 @@ dxRender_Visual* CModelPool::Instance_Load(const char* N, BOOL allow_register, b
 
 dxRender_Visual* CModelPool::Instance_Load(LPCSTR name, IReader* data, BOOL allow_register)
 {
+	PROF_EVENT();
+	PROF_TEXT(name);
 	dxRender_Visual* V;
 
 	ogf_header H;
@@ -1580,7 +1635,8 @@ dxRender_Visual* CModelPool::CreateFromPrepared(LPCSTR normalized_name, LPCSTR r
 
 void CModelPool::RecordLevelModel(LPCSTR normalized_name)
 {
-	if (!psModelPrefetchManifest || !is_prefetch_model_name_safe(normalized_name))
+	// A manifest entry is built outside any HUD context, the wrong shaders for a HUD model.
+	if (!psModelPrefetchManifest || ::Render->hud_loading || !is_prefetch_model_name_safe(normalized_name))
 		return;
 
 	xrCriticalSectionGuard guard(asyncStorage->guard);
@@ -2070,7 +2126,8 @@ void CModelPool::BeginLevelPrefetch(LPCSTR level_name)
 
 		string_path normalized;
 		normalize_model_name(value.c_str(), normalized);
-		if (!is_prefetch_model_name_safe(normalized))
+		// Older manifests list HUD models too: built here they would miss the HUD shader elements.
+		if (!is_prefetch_model_name_safe(normalized) || strstr(normalized, "_hud"))
 			continue;
 		const shared_str name = normalized;
 		if (unique_names.emplace(name).second)
@@ -2260,6 +2317,9 @@ void CModelPool::Prefetch()
 
 void CModelPool::Prefetch_One(LPCSTR name, bool assert)
 {
+	// The frame job loads a prefetched model itself (see below) and the load holds the model lock: start it once the
+	// render is done, so the render neither waits for this model nor for that lock.
+	Device.WaitSceneRendered();
 	if (psModelAsyncPrepare && xr_jobs::worker_count() > 0 && xr_jobs::is_worker_thread())
 	{
 		string_path normalized;

@@ -307,23 +307,23 @@ BOOL CAviPlayerCustom::DecompressFrame(DWORD dwFrameNum)
 		u32* dst = reinterpret_cast<u32*>(m_pDecompressedBuf);
 		const u32* src = reinterpret_cast<const u32*>(alpha_buf);
 		const u32 pixel_count = u32(m_dwWidth * m_dwHeight);
-		const __m256i channel_mask = _mm256_set1_epi32(255);
-		const __m256i rgb_mask = _mm256_set1_epi32(0x00ffffff);
-		const __m256i divide_by_three = _mm256_set1_epi32(21846);
+		const __m128i channel_mask = _mm_set1_epi32(255);
+		const __m128i rgb_mask = _mm_set1_epi32(0x00ffffff);
+		const __m128i divide_by_three = _mm_set1_epi32(21846);
 
 		u32 i = 0;
-		for (; i + 8 <= pixel_count; i += 8)
+		for (; i + 4 <= pixel_count; i += 4)
 		{
-			const __m256i source = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + i));
-			const __m256i destination = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(dst + i));
-			const __m256i red = _mm256_and_si256(_mm256_srli_epi32(source, 16), channel_mask);
-			const __m256i green = _mm256_and_si256(_mm256_srli_epi32(source, 8), channel_mask);
-			const __m256i blue = _mm256_and_si256(source, channel_mask);
-			const __m256i sum = _mm256_add_epi32(_mm256_add_epi32(red, green), blue);
-			const __m256i alpha_value = _mm256_srli_epi32(_mm256_mullo_epi32(sum, divide_by_three), 16);
-			const __m256i result = _mm256_or_si256(_mm256_and_si256(destination, rgb_mask),
-				_mm256_slli_epi32(alpha_value, 24));
-			_mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i), result);
+			const __m128i source = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + i));
+			const __m128i destination = _mm_loadu_si128(reinterpret_cast<const __m128i*>(dst + i));
+			const __m128i red = _mm_and_si128(_mm_srli_epi32(source, 16), channel_mask);
+			const __m128i green = _mm_and_si128(_mm_srli_epi32(source, 8), channel_mask);
+			const __m128i blue = _mm_and_si128(source, channel_mask);
+			const __m128i sum = _mm_add_epi32(_mm_add_epi32(red, green), blue);
+			const __m128i alpha_value = _mm_srli_epi32(_mm_mullo_epi32(sum, divide_by_three), 16);
+			const __m128i result = _mm_or_si128(_mm_and_si128(destination, rgb_mask),
+				_mm_slli_epi32(alpha_value, 24));
+			_mm_storeu_si128(reinterpret_cast<__m128i*>(dst + i), result);
 		}
 		for (; i < pixel_count; ++i)
 		{
@@ -331,7 +331,6 @@ BOOL CAviPlayerCustom::DecompressFrame(DWORD dwFrameNum)
 			const u32 alpha_value = (color_get_R(source) + color_get_G(source) + color_get_B(source)) / 3;
 			dst[i] = subst_alpha(dst[i], alpha_value);
 		}
-		_mm256_zeroupper();
 	}
 
 	return TRUE;

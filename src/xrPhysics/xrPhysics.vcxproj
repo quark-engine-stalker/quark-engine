@@ -40,7 +40,7 @@
     <ClCompile>
       <AdditionalIncludeDirectories>$(xrSdkDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;dSINGLE;_USRDLL;XRPHYSICS_EXPORTS;MSVC;_SECURE_SCL=0;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
+      <EnableEnhancedInstructionSet>AdvancedVectorExtensions</EnableEnhancedInstructionSet>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <BrowseInformation>
       </BrowseInformation>
@@ -140,7 +140,7 @@
   <ItemGroup>
     <ClInclude Include="..\xrServerEntities\PHNetState.h" />
     <ClInclude Include="ActorCameraCollision.h" />
-    <ClInclude Include="AVX2Math.h" />
+    <ClInclude Include="AVXMath.h" />
     <ClInclude Include="BlockAllocator.h" />
     <ClInclude Include="CalculateTriangle.h" />
     <ClInclude Include="console_vars.h" />

@@ -71,6 +71,8 @@ extern ECORE_API xr_token qmsaa__atest_token[];
 
 extern ECORE_API u32 ps_r3_minmax_sm; //	=	0;
 extern ECORE_API xr_token qminmax_sm_token[];
+extern ECORE_API u32 ps_r__low_latency;
+extern ECORE_API xr_token qlow_latency_token[];
 
 extern ENGINE_API int ps_r__Supersample;
 extern ECORE_API int ps_r__LightSleepFrames;

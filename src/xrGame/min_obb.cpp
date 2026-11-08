@@ -21,9 +21,6 @@ public:
 
 namespace
 {
-static_assert(offsetof(Fvector, x) == 0, "AVX2 point gather expects x first");
-static_assert(offsetof(Fvector, y) == sizeof(float), "AVX2 point gather expects packed x/y");
-static_assert(offsetof(Fvector, z) == sizeof(float) * 2, "AVX2 point gather expects packed x/y/z");
 static_assert((sizeof(Fvector) % sizeof(float)) == 0, "Fvector stride must be float-addressable");
 
 IC __m256 transform_component(__m256 x, __m256 y, __m256 z,
@@ -74,11 +71,6 @@ void transformed_bounds(const int quantity, const Fvector* points, const Fmatrix
 		return;
 	}
 
-	constexpr int point_stride = sizeof(Fvector) / sizeof(float);
-	const __m256i gather_indices = _mm256_setr_epi32(
-		0 * point_stride, 1 * point_stride, 2 * point_stride, 3 * point_stride,
-		4 * point_stride, 5 * point_stride, 6 * point_stride, 7 * point_stride);
-
 	const __m256 m11 = _mm256_set1_ps(matrix._11);
 	const __m256 m21 = _mm256_set1_ps(matrix._21);
 	const __m256 m31 = _mm256_set1_ps(matrix._31);
@@ -102,10 +94,10 @@ void transformed_bounds(const int quantity, const Fvector* points, const Fmatrix
 	int i = 0;
 	for (; i + 8 <= quantity; i += 8)
 	{
-		const float* base = &points[i].x;
-		const __m256 x = _mm256_i32gather_ps(base, gather_indices, sizeof(float));
-		const __m256 y = _mm256_i32gather_ps(base + 1, gather_indices, sizeof(float));
-		const __m256 z = _mm256_i32gather_ps(base + 2, gather_indices, sizeof(float));
+		const Fvector* p = points + i;
+		const __m256 x = _mm256_setr_ps(p[0].x, p[1].x, p[2].x, p[3].x, p[4].x, p[5].x, p[6].x, p[7].x);
+		const __m256 y = _mm256_setr_ps(p[0].y, p[1].y, p[2].y, p[3].y, p[4].y, p[5].y, p[6].y, p[7].y);
+		const __m256 z = _mm256_setr_ps(p[0].z, p[1].z, p[2].z, p[3].z, p[4].z, p[5].z, p[6].z, p[7].z);
 		const __m256 tx = transform_component(x, y, z, m11, m21, m31, m41);
 		const __m256 ty = transform_component(x, y, z, m12, m22, m32, m42);
 		const __m256 tz = transform_component(x, y, z, m13, m23, m33, m43);

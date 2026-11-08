@@ -42,7 +42,7 @@
     <ClCompile>
       <AdditionalIncludeDirectories>.;$(SolutionDir)3rd party\imgui\;$(SolutionDir)3rd party\luajit-2\src\;$(SolutionDir)3rd party\luabind\;$(SolutionDir)xrCore;$(xrSdkDir)include;$(XRAY_16X_LIBS)OpenAutomate\inc;$(XRAY_16X_LIBS)nvapi;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>XRAY_ALLOW_RELEASE_CPP_EXCEPTIONS;USE_DX11;WIN32;NDEBUG;_WINDOWS;_USRDLL;XRRENDER_R4_EXPORTS;_SECURE_SCL=0;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
+      <EnableEnhancedInstructionSet>AdvancedVectorExtensions</EnableEnhancedInstructionSet>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>stdafx.h</PrecompiledHeaderFile>
       <PrecompiledHeaderOutputFile>$(IntDir)$(ProjectName).pch</PrecompiledHeaderOutputFile>
@@ -280,7 +280,7 @@
     <ClInclude Include="r4_rendertarget.h" />
     <ClInclude Include="r4_rendertarget_wallmarks.h" />
     <ClInclude Include="r4_R_sun_support.h" />
-    <ClInclude Include="r4_avx2_math.h" />
+    <ClInclude Include="r4_avx_math.h" />
     <ClInclude Include="R_Backend_LOD.h" />
     <ClInclude Include="SMAP_Allocator.h" />
     <ClInclude Include="stdafx.h" />
@@ -305,6 +305,7 @@
     <ClCompile Include="..\xrRenderDX10\dx10ConstantBuffer.cpp" />
     <ClCompile Include="..\xrRenderDX10\dx10DetailManager_VS.cpp" />
     <ClCompile Include="..\xrRenderDX10\dx10HW.cpp" />
+    <ClCompile Include="..\xrRenderDX10\dx10LowLatency.cpp" />
     <ClCompile Include="..\xrRenderDX10\dx10ResourceManager_Resources.cpp" />
     <ClCompile Include="..\xrRenderDX10\dx10ResourceManager_Scripting.cpp" />
     <ClCompile Include="..\xrRenderDX10\dx10r_constants.cpp" />

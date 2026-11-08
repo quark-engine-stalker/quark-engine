@@ -125,6 +125,7 @@ const shared_str CParticlesObject::Name()
 
 void CParticlesObject::Play(bool bHudMode)
 {
+	Device.WaitSceneRendered();
 	if (g_dedicated_server) return;
 
 	IParticleCustom* V = smart_cast<IParticleCustom*>(renderable.visual);
@@ -157,6 +158,7 @@ void CParticlesObject::play_at_pos(const Fvector& pos, BOOL xform)
 
 void CParticlesObject::Stop(BOOL bDefferedStop)
 {
+	Device.WaitSceneRendered();
 	if (g_dedicated_server) return;
 
 	IParticleCustom* V = smart_cast<IParticleCustom*>(renderable.visual);

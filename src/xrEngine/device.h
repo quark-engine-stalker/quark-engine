@@ -57,6 +57,7 @@ public:
 
 struct SLuaGCStatus
 {
+	bool host_managed = false;
 	u32 state = 0;
 	u32 total_kb = 0;
 	u32 debt_kb = 0;
@@ -249,6 +250,7 @@ public:
 	// CRegistrator <pureAppEnd > seqAppEnd;
 	//CRegistrator <pureFrame > seqFrame;
 	CRegistrator<pureFrame> seqFrameMT;
+	CRegistrator<pureFrame> seqFrameOverGC; // the end of the frame job, may overlap the Lua GC pass
 	CRegistrator<pureDeviceReset> seqDeviceReset;
 	// Independent frame-compute callbacks are allowed to run concurrently with
 	// each other, but complete before the legacy sequential secondary lane.
@@ -524,11 +526,32 @@ public:
 	BOOL Begin();
 	void Clear();
 	void End();
+	void DestroyPrecacheLight();
 	void FrameMove();
 	void QueueSchedulerDeferredWork();
 	void SubmitFrameParallelWork();
 	void WaitFrameParallelWork();
+	// What the NPC scheduler may spend on the frame job so that the job ends with the render, microseconds.
+	u32 FrameJobSchedulerWindowUS = 3000;
+	u64 mt_frame_submit_ticks = 0;
+	u64 mt_frame_render_end_ticks = 0;
+	u64 mt_frame_job_other_ticks = 0; // the job without the scheduler's budget, written by the job before its end
+	float mt_frame_window_us = 3000.f;
+
+	// While the 3D scene renders, the deferred scheduler overlaps it on one worker. The rare operations that change
+	// what the render reads wait here until the main thread has left the scene. Call it with no lock held.
+	IC bool IsFrameJobThread() const
+	{
+		const LONG thread = static_cast<LONG>(GetCurrentThreadId());
+		return mt_overlap_thread == thread || mt_overlap_tail_thread == thread;
+	}
+	ENGINE_API void WaitSceneRendered();
+	// The VM belongs to that worker until the join: the main thread entering Lua during the scene joins it first.
+	void* ShaderScriptsVM = nullptr; // lua_State of the shader scripts
+	fastdelegate::FastDelegate0<> FrameJobLuaPrelude; // runs first on the frame job's lane, with the VM handed over
+	ENGINE_API void JoinFrameJobForLua();
 	void ProcessFrameParallelWork();
+	void ProcessFrameTail();
 	void ProcessRenderPrepParallelWork();
 	void ProcessLuaGCWork(bool allow_deferred_phase);
 	void UpdateLuaGCCycleFeedback(u32 memory_after_kb);
@@ -672,6 +695,13 @@ public:
 	xr_jobs::task_group mt_frame_group;
 	volatile LONG mt_frame_submitted;
 	volatile LONG mt_scheduler_deferred_pending;
+	volatile bool mt_frame_lua_gc = false; // the frame job ends with the bounded Lua GC pass
+	volatile LONG mt_scene_rendering = FALSE;
+	volatile LONG mt_overlap_thread = 0;
+	volatile LONG mt_overlap_tail_thread = 0;
+	xr_vector<fastdelegate::FastDelegate0<>> seqFrameTail;
+	xr_vector<fastdelegate::FastDelegate0<>> seqAfterPoses; // the main thread only
+	xrCriticalSection seqFrameTailLock;
 	volatile LONG mt_bMustExit;
 	u32 lua_gc_baseline_kb;
 	u32 lua_gc_last_memory_kb;
@@ -684,6 +714,28 @@ public:
 	u32 lua_gc_cycle_start_frame;
 	u64 lua_gc_udata_baseline_serial;
 	bool lua_gc_cycle_started;
+
+	// Read-only native queries (rays) of this frame, run at the end of the frame job beside the Lua GC pass: no Lua runs
+	// then and only the render moves. The results are for the next frame. Add from the game thread of the frame;
+	// the removal waits for a running batch, so an object removing itself on destruction is safe.
+	// Once this frame's poses are built, before the frame job starts. The queue ends in that frame.
+	ICF void add_after_poses(const fastdelegate::FastDelegate0<>& delegate) { seqAfterPoses.push_back(delegate); }
+	ICF void remove_after_poses(const fastdelegate::FastDelegate0<>& delegate)
+	{
+		seqAfterPoses.erase(std::remove(seqAfterPoses.begin(), seqAfterPoses.end(), delegate), seqAfterPoses.end());
+	}
+
+	ICF void add_to_frame_tail(const fastdelegate::FastDelegate0<>& delegate)
+	{
+		xrCriticalSectionGuard guard(seqFrameTailLock);
+		seqFrameTail.push_back(delegate);
+	}
+
+	ICF void remove_from_frame_tail(const fastdelegate::FastDelegate0<>& delegate)
+	{
+		xrCriticalSectionGuard guard(seqFrameTailLock);
+		seqFrameTail.erase(std::remove(seqFrameTail.begin(), seqFrameTail.end(), delegate), seqFrameTail.end());
+	}
 
 	ICF void remove_from_seq_parallel(const fastdelegate::FastDelegate0<>& delegate)
 	{
@@ -792,13 +844,17 @@ public:
 	}
 
 	// demonized: Perceivable distance depending on FOV, so that objects will behave normal in binoculars
-	IC float GetPerceivedDist(const Fvector& p, float* real_dist = nullptr)
+	IC float GetPerceivedDist(const Fvector& p)
 	{
-		float dist = vCameraPosition.distance_to(p);
-		float fov_rad = deg2rad(fFOV);
-		float perceived_dist = dist * tanf(fov_rad * 0.5f);
-		if (real_dist) *real_dist = dist;
-		return perceived_dist;
+		// One tan() per FOV change instead of one per skeleton; a slot per thread, render workers call this too.
+		thread_local float cached_fov = -1.f;
+		thread_local float cached_tan = 0.f;
+		if (cached_fov != fFOV)
+		{
+			cached_fov = fFOV;
+			cached_tan = tanf(deg2rad(fFOV) * 0.5f);
+		}
+		return vCameraPosition.distance_to(p) * cached_tan;
 	}
 
 	IC float CalcSSADynamic(const Fvector& C, float R)

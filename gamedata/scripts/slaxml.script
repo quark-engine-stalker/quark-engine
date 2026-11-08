@@ -113,7 +113,7 @@ function SLAXML()
 			while not s:r_eof() do
 				lua_s = lua_s .. string.char(s:r_u8())
 			end
-			-- getFS():r_close(s)
+			getFS():r_close(s)
 			for line in lua_s:gmatch('[^\r\n]+') do
 				res = res .. parse_include_line(line) .. "\n"
 			end

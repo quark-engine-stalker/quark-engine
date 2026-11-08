@@ -178,6 +178,7 @@ public:
 	// whose bone callbacks need data that is unsafe to read from a worker prepares it here.
 	virtual void on_prepare_bones_main() {}
 	void queue_skeleton_update();
+	virtual void UpdateCL_Skipped() { queue_skeleton_update(); }
 
 	virtual BOOL UsedAI_Locations();
 	BOOL TestServerFlag(u32 Flag) const;
@@ -246,10 +247,12 @@ public:
 	typedef CALLBACK_VECTOR::iterator CALLBACK_VECTOR_IT;
 
 	CALLBACK_VECTOR m_visual_callback;
+	u32 m_main_only_visual_callbacks = 0;
 
 public:
-	void add_visual_callback(visual_callback* callback);
-	void remove_visual_callback(visual_callback* callback);
+	// worker_safe: the callback changes nothing but this object and its attached items, it may run on a skeleton job
+	void add_visual_callback(visual_callback* callback, bool worker_safe = false);
+	void remove_visual_callback(visual_callback* callback, bool worker_safe = false);
 	void SetKinematicsCallback(bool set);
 
 	IC CALLBACK_VECTOR& visual_callbacks()

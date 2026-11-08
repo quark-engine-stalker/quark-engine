@@ -69,6 +69,7 @@ void CObject::cNameSect_set(shared_str N)
 //#include "SkeletonCustom.h"
 void CObject::cNameVisual_set(shared_str N)
 {
+	Device.WaitSceneRendered();
 	// check if equal
 	if (*N && *NameVisual)
 		if (N == NameVisual) return;
@@ -530,6 +531,11 @@ Fvector CObject::get_last_local_point_on_mesh(Fvector const& local_point, u16 co
 	mS.scale(r);
 	mE.mul_43(mR, mS);
 	mE.transform_tiny(result, local_point);
+
+	// A broken box or a blown physics shell gives infinities here. A ray to such a point walks the whole static model
+	// holding the ObjectSpace lock, the render waits for it: 50 ms a frame while the object stays seen.
+	if (!_valid(result) || result.distance_to_sqr(Position()) > 1000.f * 1000.f)
+		return Position();
 
 	return result;
 }

@@ -72,6 +72,7 @@ public:
 	IC const CEntityAlive* last_enemy() const;
 	IC USEFULE_CALLBACK& useful_callback();
 	void remove_links(CObject* object);
+	void forget_useful(u16 enemy_id) { m_useful_cache.erase(enemy_id); }
 
 public:
 	void ignore_monster_threshold(const float& ignore_monster_threshold);

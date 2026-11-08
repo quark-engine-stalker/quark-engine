@@ -6,8 +6,8 @@
 
 namespace
 {
-constexpr u32 kAvx2Fill32Minimum = 1024;
-constexpr u32 kAvx2Fill32Maximum = 32 * 1024;
+constexpr u32 kAvxFill32Minimum = 1024;
+constexpr u32 kAvxFill32Maximum = 32 * 1024;
 constexpr u32 kFill32BlockCount = 64;
 
 __forceinline void fill32_scalar(u32* destination, const u32 value, u32 count)
@@ -16,7 +16,7 @@ __forceinline void fill32_scalar(u32* destination, const u32 value, u32 count)
         destination[i] = value;
 }
 
-__forceinline void fill32_block_avx2(u32* destination, const __m256i value)
+__forceinline void fill32_block_avx(u32* destination, const __m256i value)
 {
     _mm256_store_si256(reinterpret_cast<__m256i*>(destination + 0), value);
     _mm256_store_si256(reinterpret_cast<__m256i*>(destination + 8), value);
@@ -34,9 +34,9 @@ void __stdcall xrMemFill32_x86(LPVOID dest, u32 value, u32 count)
     fill32_scalar(static_cast<u32*>(dest), value, count);
 }
 
-void __stdcall xrMemFill32_AVX2(LPVOID dest, u32 value, u32 count)
+void __stdcall xrMemFill32_AVX(LPVOID dest, u32 value, u32 count)
 {
-    if (count < kAvx2Fill32Minimum || count > kAvx2Fill32Maximum)
+    if (count < kAvxFill32Minimum || count > kAvxFill32Maximum)
     {
         fill32_scalar(static_cast<u32*>(dest), value, count);
         return;
@@ -66,7 +66,7 @@ void __stdcall xrMemFill32_AVX2(LPVOID dest, u32 value, u32 count)
     {
         while (remaining >= kFill32BlockCount)
         {
-            fill32_block_avx2(destination, fillValue);
+            fill32_block_avx(destination, fillValue);
             destination += kFill32BlockCount;
             remaining -= kFill32BlockCount;
         }

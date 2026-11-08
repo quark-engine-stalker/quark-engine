@@ -222,7 +222,7 @@ public:
 
 public:
 	// options
-	bool hud_loading;
+	static thread_local bool hud_loading; // of the thread creating a visual: workers build world models meanwhile
 	s32 m_skinning;
 	s32 m_MSAASample;
 

@@ -607,6 +607,7 @@ void CScriptStorage::reinit()
 	}
 	g_logged_vm = m_virtual_machine;
 	EngineErrorLogger::SetLuaStackWriter(&write_lua_stack);
+	lua_gc(m_virtual_machine, LUA_GCDEFER, 1); // until CGamePersistent::game_loaded
 
 	// Grow the main VM stack once during initialization instead of paying for a
 	// relocation/copy in the middle of a deep C++ -> Lua callback chain.

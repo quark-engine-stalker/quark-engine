@@ -1157,6 +1157,15 @@ LUA_API int lua_gc(lua_State *L, int what, int data)
   case LUA_GCCOLLECT:
     lj_gc_fullgc(L);
     break;
+  case LUA_GCDEFER: {
+    /* A loading VM only grows: cycles there mark the same live tables again and again. Past this size GC runs as usual. */
+    const MSize hold_bytes = (MSize)512 << 20;
+    if (data)
+      g->gc.threshold = hold_bytes;
+    else if (g->gc.threshold == hold_bytes)
+      g->gc.threshold = (g->gc.total/100)*g->gc.pause;
+    break;
+  }
   case LUA_GCCOUNT:
     res = (int)(g->gc.total >> 10);
     break;

@@ -397,12 +397,23 @@ void CConsole::OnRender()
 	}
 
 	// ---------------------
+	// The latency line sits on the top row, the log stops under it. In a level only: the menu's frame limit would falsify it.
+	const bool latency_line = g_pGameLevel && g_pGameLevel->bReady &&
+		!(g_pGamePersistent && g_pGamePersistent->m_pMainMenu && g_pGamePersistent->m_pMainMenu->IsActive());
+	if (latency_line)
+	{
+		string256 line;
+		Device.m_pRender->LatencyStatus(line, sizeof(line));
+		pFont->SetColor(cmd_font_color);
+		pFont->OutI(-1.0f, -1.0f, "%s", line);
+	}
+
 	u32 log_line = LogFile.size() - 1;
 	ypos -= LDIST;
 	for (int i = log_line - scroll_delta; i >= 0; --i)
 	{
 		ypos -= LDIST;
-		if (ypos < -1.0f)
+		if (ypos < (latency_line ? -1.0f + LDIST : -1.0f))
 		{
 			break;
 		}
@@ -601,6 +612,7 @@ void CConsole::ExecuteCommand(LPCSTR cmd_str, bool record_cmd)
 	}
 	if (record_cmd)
 	{
+		Device.WaitSceneRendered();
 		scroll_delta = 0;
 		reset_cmd_history_idx();
 		reset_selected_tip();
@@ -623,6 +635,8 @@ void CConsole::ExecuteCommand(LPCSTR cmd_str, bool record_cmd)
 	if (it != Commands.end())
 	{
 		IConsole_Command* cc = it->second;
+		if (!cc || !cc->RenderIndependent())
+			Device.WaitSceneRendered();
 		if (cc && cc->bEnabled)
 		{
 			if (cc->bLowerCaseArgs)

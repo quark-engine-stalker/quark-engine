@@ -227,10 +227,11 @@ LPCSTR CKinematicsAnimated::LL_MotionDefName_dbg	(LPVOID ptr)
 MotionID CKinematicsAnimated::LL_MotionID(LPCSTR B)
 {
 	MotionID motion_ID;
+	const shared_str key = B; // not per slot: docking a string takes the lock of the string container
 	for (int k = int(m_Motions.size()) - 1; k >= 0; --k)
 	{
 		shared_motions* s_mots = &m_Motions[k].motions;
-		auto I = s_mots->motion_hash()->find(LPSTR(B));
+		auto I = s_mots->motion_hash()->find(key);
 		if (I != s_mots->motion_hash()->end())
 		{
 			motion_ID.set(u16(k), I->second);
@@ -256,10 +257,11 @@ u16 CKinematicsAnimated::LL_PartID(LPCSTR B)
 MotionID CKinematicsAnimated::ID_Cycle_Safe(LPCSTR N)
 {
 	MotionID motion_ID;
+	const shared_str key = N; // not per slot: a HUD item load asks for ~9 names of each anm_ in every slot of the hands
 	for (int k = int(m_Motions.size()) - 1; k >= 0; --k)
 	{
 		shared_motions* s_mots = &m_Motions[k].motions;
-		auto I = s_mots->cycle_hash()->find(LPSTR(N));
+		auto I = s_mots->cycle_hash()->find(key);
 		if (I != s_mots->cycle_hash()->end())
 		{
 			motion_ID.set(u16(k), I->second);
@@ -301,6 +303,7 @@ MotionID CKinematicsAnimated::ID_Cycle(LPCSTR N)
 
 void CKinematicsAnimated::LL_FadeCycle(u16 part, float falloff, u8 mask_channel /*= (1<<0)*/)
 {
+	RDEVICE.WaitSceneRendered();
 	BlendSVec& Blend = blend_cycles[part];
 
 	for (u32 I = 0; I < Blend.size(); I++)
@@ -318,6 +321,7 @@ void CKinematicsAnimated::LL_FadeCycle(u16 part, float falloff, u8 mask_channel 
 
 void CKinematicsAnimated::LL_CloseCycle(u16 part, u8 mask_channel /*= (1<<0)*/)
 {
+	RDEVICE.WaitSceneRendered();
 	if (BI_NONE == part) return;
 	if (part >= MAX_PARTS) return;
 
@@ -429,6 +433,7 @@ CBlend* CKinematicsAnimated::LL_PlayCycle(u16 part, MotionID motion_ID, BOOL bMi
                                           float blendFalloff, float Speed, BOOL noloop, PlayCallback Callback,
                                           LPVOID CallbackParam, u8 channel/*=0*/)
 {
+	RDEVICE.WaitSceneRendered();
 	// validate and unroll
 	if (!motion_ID.valid()) return 0;
 	if (BI_NONE == part)
@@ -525,10 +530,11 @@ CBlend* CKinematicsAnimated::PlayCycle(u16 partition, MotionID motion_ID, BOOL b
 MotionID CKinematicsAnimated::ID_FX_Safe(LPCSTR N)
 {
 	MotionID motion_ID;
+	const shared_str key = N;
 	for (int k = int(m_Motions.size()) - 1; k >= 0; --k)
 	{
 		shared_motions* s_mots = &m_Motions[k].motions;
-		auto I = s_mots->fx_hash()->find(LPSTR(N));
+		auto I = s_mots->fx_hash()->find(key);
 		if (I != s_mots->fx_hash()->end())
 		{
 			motion_ID.set(u16(k), I->second);
@@ -567,6 +573,7 @@ CBlend* CKinematicsAnimated::PlayFX(LPCSTR N, float power_scale)
 CBlend* CKinematicsAnimated::LL_PlayFX(u16 bone, MotionID motion_ID, float blendAccrue, float blendFalloff, float Speed,
                                        float Power)
 {
+	RDEVICE.WaitSceneRendered();
 	if (!motion_ID.valid()) return 0;
 	if (blend_fx.size() >= MAX_BLENDED) return 0;
 	if (BI_NONE == bone) bone = iRoot;

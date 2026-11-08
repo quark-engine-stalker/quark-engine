@@ -3,6 +3,7 @@
 #include "dxRenderDeviceRender.h"
 
 #include "ResourceManager.h"
+#include "../xrRenderDX10/dx10LowLatency.h"
 
 dxRenderDeviceRender::dxRenderDeviceRender()
 	: Resources(0), m_lastPresentResult(S_OK)
@@ -208,6 +209,46 @@ void dxRenderDeviceRender::ResourcesPrefetchCreateModelTexture(LPCSTR name)
 	}
 }
 
+// The demand path of a model about to spawn: not limited by the speculative budgets, the main thread would load the same
+// textures in the finalization otherwise. No ID3D11DeviceContext method runs here (see above).
+void dxRenderDeviceRender::LoadRequiredModelTexture(LPCSTR name, xr_vector<ref_texture>& hold)
+{
+	if (!name || !name[0] || !xr_strcmp(name, "null") || strstr(name, "$user$"))
+		return;
+
+	if (!RImplementation.driver_concurrent_creates())
+		return;
+
+	string_path resolved;
+	if (!FS.exist(resolved, "$level$", name, ".dds") &&
+		!FS.exist(resolved, "$game_saves$", name, ".dds") &&
+		!FS.exist(resolved, "$game_textures$", name, ".dds"))
+		return; // video and user textures stay on the render thread
+
+	if (!RImplementation.acquire_worker_resource_creation_lane())
+		return;
+	struct lane_release
+	{
+		~lane_release() { RImplementation.release_worker_resource_creation_lane(); }
+	} release_lane;
+
+	hold.push_back(Resources->CreateTextureRef(name));
+	const shared_str bump = Resources->m_textures_description.GetBumpName(shared_str(name));
+	if (!bump.size())
+		return;
+
+	if (FS.exist(resolved, "$game_textures$", bump.c_str(), ".dds"))
+		hold.push_back(Resources->CreateTextureRef(bump.c_str()));
+	string_path bump_x;
+	xr_strcpy(bump_x, bump.c_str());
+	if (xr_strlen(bump_x) + 1 < sizeof(bump_x))
+	{
+		xr_strcat(bump_x, sizeof(bump_x), "#");
+		if (FS.exist(resolved, "$game_textures$", bump_x, ".dds"))
+			hold.push_back(Resources->CreateTextureRef(bump_x));
+	}
+}
+
 void dxRenderDeviceRender::ResourcesPinTexture(LPCSTR name)
 {
 	Resources->PinTexture(name);
@@ -304,6 +345,21 @@ void dxRenderDeviceRender::Clear()
 
 void DoAsyncScreenshot();
 
+bool dxRenderDeviceRender::LatencyFrameBegin(int fps_limit)
+{
+	return low_latency::frame_begin(fps_limit);
+}
+
+void dxRenderDeviceRender::LatencyRenderBegin()
+{
+	low_latency::render_begin();
+}
+
+void dxRenderDeviceRender::LatencyStatus(char* text, u32 size)
+{
+	low_latency::status_line(text, size);
+}
+
 void dxRenderDeviceRender::End()
 {
 	VERIFY(HW.pDevice);
@@ -342,7 +398,9 @@ void dxRenderDeviceRender::End()
 		{
 
             const HRESULT previousResult = m_lastPresentResult;
+            low_latency::present_begin();
             m_lastPresentResult = HW.m_pSwapChain->Present(present_interval, present_flags);
+            low_latency::present_end();
             if (FAILED(m_lastPresentResult) && m_lastPresentResult != previousResult)
                 EngineErrorLogger::ReportRenderFailure(m_lastPresentResult,
                     HW.pDevice ? HW.pDevice->GetDeviceRemovedReason() : m_lastPresentResult,

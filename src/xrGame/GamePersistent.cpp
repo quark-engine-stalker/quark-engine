@@ -603,6 +603,7 @@ void CGamePersistent::game_loaded()
 		}
 
 		m_intro_event = 0;
+		lua_gc(ai().script_engine().lua(), LUA_GCDEFER, 0);
 	}
 }
 

@@ -382,6 +382,54 @@ public:
         }
     }
 
+    static void claimed_job(void*) {}
+
+    // A record of the group still in a queue: the caller runs it, the record left behind does nothing when popped.
+    bool try_claim_queued(task_group& group, job_record& claimed)
+    {
+        for (u32 queue_index = 0; queue_index < priority_count; ++queue_index)
+        {
+            priority_queue& queue = queues_[queue_index];
+            EnterCriticalSection(&queue.lock);
+            for (u32 n = 0, i = queue.head; n < queue.size; ++n, i = (i + 1) % queue_capacity)
+            {
+                job_record& record = queue.records[i];
+                if (record.group != &group || record.scope)
+                    continue;
+                claimed = record;
+                record.function = &claimed_job;
+                record.context = nullptr;
+                record.group = nullptr;
+                LeaveCriticalSection(&queue.lock);
+                return true;
+            }
+            LeaveCriticalSection(&queue.lock);
+        }
+        return false;
+    }
+
+    void wait_own(task_group& group)
+    {
+        for (;;)
+        {
+            const LONG pending = InterlockedCompareExchange(&group.pending_, 0, 0);
+            if (pending == 0)
+                break;
+
+            job_record job;
+            if (try_claim_queued(group, job))
+            {
+                job.function(job.context);
+                if (InterlockedDecrement(&group.pending_) == 0)
+                    wake_address_waiters(&group.pending_);
+                continue;
+            }
+
+            LONG expected = pending;
+            wait_for_address_change(&group.pending_, expected);
+        }
+    }
+
     void wait_idle()
     {
 
@@ -1037,6 +1085,17 @@ void wait(task_group& group)
     }
 
     system->wait(group);
+}
+
+void wait_own(task_group& group)
+{
+    job_system_impl* system = get_system();
+    if (!system)
+    {
+        wait(group);
+        return;
+    }
+    system->wait_own(group);
 }
 
 void wait_idle()

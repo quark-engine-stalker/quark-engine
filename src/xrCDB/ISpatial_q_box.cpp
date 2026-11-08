@@ -1,29 +1,29 @@
 #include "stdafx.h"
 #include "ISpatial.h"
 
-#if defined(__AVX2__) || defined(_M_AVX2)
+#if defined(__AVX__)
 #	include <immintrin.h>
 #endif
 
 extern Fvector c_spatial_offset[8];
 
-#if defined(__AVX2__) || defined(_M_AVX2)
+#if defined(__AVX__)
 namespace
 {
-	constexpr u32 spatial_box_avx2_batch_size = 8;
+	constexpr u32 spatial_box_avx_batch_size = 8;
 
 	// Keep the pointer-based ISpatial storage compatible with every game object and
 	// addon.  Only the transient culling input is converted to a tiny SoA batch.
-	u32 test_box_batch_avx2(ISpatial* const* items, const u32 type_mask, const Fvector& box_min,
+	u32 test_box_batch_avx(ISpatial* const* items, const u32 type_mask, const Fvector& box_min,
 		const Fvector& box_max)
 	{
-		alignas(32) float center_x[spatial_box_avx2_batch_size];
-		alignas(32) float center_y[spatial_box_avx2_batch_size];
-		alignas(32) float center_z[spatial_box_avx2_batch_size];
-		alignas(32) float radius[spatial_box_avx2_batch_size];
+		alignas(32) float center_x[spatial_box_avx_batch_size];
+		alignas(32) float center_y[spatial_box_avx_batch_size];
+		alignas(32) float center_z[spatial_box_avx_batch_size];
+		alignas(32) float radius[spatial_box_avx_batch_size];
 		u32 active_mask = 0;
 
-		for (u32 lane = 0; lane < spatial_box_avx2_batch_size; ++lane)
+		for (u32 lane = 0; lane < spatial_box_avx_batch_size; ++lane)
 		{
 			const ISpatial* spatial = items[lane];
 			const Fsphere& sphere = spatial->spatial.sphere;
@@ -89,12 +89,12 @@ public:
 		u32 item_index = 0;
 		const u32 item_count = static_cast<u32>(N->items.size());
 
-#if defined(__AVX2__) || defined(_M_AVX2)
-		for (; item_index + spatial_box_avx2_batch_size <= item_count; item_index += spatial_box_avx2_batch_size)
+#if defined(__AVX__)
+		for (; item_index + spatial_box_avx_batch_size <= item_count; item_index += spatial_box_avx_batch_size)
 		{
-			const u32 visible_mask = test_box_batch_avx2(
+			const u32 visible_mask = test_box_batch_avx(
 				&N->items[item_index], mask, box_min, box_max);
-			for (u32 lane = 0; lane < spatial_box_avx2_batch_size; ++lane)
+			for (u32 lane = 0; lane < spatial_box_avx_batch_size; ++lane)
 			{
 				if (!(visible_mask & (1u << lane)))
 					continue;

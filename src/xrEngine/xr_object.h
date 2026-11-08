@@ -90,6 +90,13 @@ public:
 
 	ICF void IAmNotACrowAnyMore() { Props.crow = false; }
 	virtual BOOL AlwaysTheCrow() { return FALSE; }
+
+	// Time slicing of UpdateCL: a period (ms) > 0 lets the object skip frames, the skipped time is added to its next update.
+	virtual u32 UpdateCL_Period() const { return 0; }
+	virtual void UpdateCL_Skipped() {}
+	u32 UpdateCL_Bucket = 0;
+	u32 UpdateCL_DebtMs = 0;
+	float UpdateCL_Debt = 0.f;
 	ICF bool AmICrow() const { return !!Props.crow; }
 
 	// Network

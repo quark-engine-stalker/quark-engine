@@ -1,4 +1,6 @@
 #include "pch_script.h"
+#include "Actor.h"
+#include "CustomMonster.h"
 #include "../xrEngine/frame_stats.h"
 #include "sound_collection_storage.h"
 #include <iterator>
@@ -588,32 +590,39 @@ void CLevel::ProcessPrefetchEvents(void* args)
 		bool stop_requested = false;
 		for (const auto& event : saved_prefetch_events)
 		{
-			for (const auto& model : event.models)
+			for (const models_set* models : {&event.models, &event.hud_models})
 			{
-				if (_InterlockedCompareExchange(&level->closeSignal, FALSE, FALSE) != FALSE)
+				::Render->hud_loading = models == &event.hud_models;
+				for (const auto& model : *models)
 				{
-					stop_requested = true;
-					break;
-				}
-
-				bool not_prefetched = false;
-				{
-					xrSRWLockGuard guard(level->prefetch_lock, true);
-					not_prefetched = level->prefetched_models->find(model) == level->prefetched_models->end();
-				}
-
-				if (not_prefetched)
-				{
-					if (spawn_antifreeze_debug)
-						Msg("[ProcessPrefetchEvents] Prefetching model '%s' for spawn event", model.c_str());
-
-					::Render->models_PrefetchOne(model.c_str(), false);
-
+					if (_InterlockedCompareExchange(&level->closeSignal, FALSE, FALSE) != FALSE)
 					{
-						xrSRWLockGuard guard(level->prefetch_lock);
-						level->prefetched_models->insert(model);
+						stop_requested = true;
+						break;
+					}
+
+					bool not_prefetched = false;
+					{
+						xrSRWLockGuard guard(level->prefetch_lock, true);
+						not_prefetched = level->prefetched_models->find(model) == level->prefetched_models->end();
+					}
+
+					if (not_prefetched)
+					{
+						if (spawn_antifreeze_debug)
+							Msg("[ProcessPrefetchEvents] Prefetching model '%s' for spawn event", model.c_str());
+
+						::Render->models_PrefetchOne(model.c_str(), false);
+
+						{
+							xrSRWLockGuard guard(level->prefetch_lock);
+							level->prefetched_models->insert(model);
+						}
 					}
 				}
+				::Render->hud_loading = false;
+				if (stop_requested)
+					break;
 			}
 
 			if (stop_requested)
@@ -713,6 +722,15 @@ void CLevel::ProcessSpawnEvents()
         {
             // demonized: this is a sin, but its an easy way
             goto spawn;
+        }
+
+        // Gone from the server while its spawn waited: its destroy event found no client object, so this one would
+        // never be destroyed, and its net export breaks the server when the ID goes to another object.
+        if (Server)
+        {
+            const CSE_Abstract* entity = Server->ID_to_entity(obj_id);
+            if (!entity || entity->s_name != section)
+                goto budget_check;
         }
 
         // If the object was in alife, but now its absent, skip it
@@ -920,6 +938,12 @@ void CLevel::ProcessGameEvents()
 							auto& E = events_to_prefetch.back();
 							E.p = P;
 							E.models = std::move(models);
+							if (g_actor && parent_id == g_actor->ID() && pSettings->line_exist(section, "hud"))
+							{
+								LPCSTR hud_section = pSettings->r_string(section, "hud");
+								if (pSettings->section_exist(hud_section) && pSettings->line_exist(hud_section, "item_visual"))
+									safe_insert(E.hud_models, pSettings->r_string(hud_section, "item_visual"));
+							}
 							E.id = obj_id;
 							E.hasAlifeObject = obj != nullptr;
 
@@ -1386,6 +1410,30 @@ bool lua_gc_allow_host_managed_deferral(
 }
 }
 
+// The ids are swapped out first: a hear callback can make its NPC hear again.
+void CLevel::flush_saved_sounds()
+{
+	if (!g_pGameLevel)
+		return;
+
+	CLevel& level = Level();
+	if (level.m_actor_script_dt)
+	{
+		const u32 dt = level.m_actor_script_dt;
+		level.m_actor_script_dt = 0;
+		if (CActor* actor = Actor())
+			actor->CScriptBinder::shedule_Update(dt);
+	}
+	level.m_saved_sounds_flushing.swap(level.m_saved_sounds_pending);
+	for (const u16 id : level.m_saved_sounds_flushing)
+	{
+		CCustomMonster* monster = smart_cast<CCustomMonster*>(level.Objects.net_Find(id));
+		if (monster && !monster->getDestroy())
+			monster->process_sound_callbacks();
+	}
+	level.m_saved_sounds_flushing.clear();
+}
+
 void CLevel::script_gc()
 {
 	if (!(psLua_ParallelGC && Device.LuaGC))
@@ -1434,6 +1482,7 @@ bool CLevel::Load(u32 dwNum)
 
     Msg("Device.LuaGC bind");
     Device.LuaGC = fastdelegate::FastDelegate0<int>(&CLevel::LuaGC);
+	Device.FrameJobLuaPrelude = fastdelegate::FastDelegate0<>(&CLevel::flush_saved_sounds);
 	Device.LuaGCMemory = fastdelegate::FastDelegate0<u32>(&CLevel::LuaGCMemory);
 	Device.LuaGCStatus = fastdelegate::FastDelegate1<SLuaGCStatus*>(&CLevel::LuaGCStatus);
     Device.LuaGCDebug = fastdelegate::FastDelegate0<void>(&CLevel::LuaGCDebug);
@@ -1609,6 +1658,7 @@ void CLevel::LuaGCStatus(SLuaGCStatus* status)
 		status->total_kb, status->pool_reserved_kb, status->pool_committed_kb,
 		status->pool_fallback_kb, status->pool_allocation_failures);
 	luaJIT_setgchostmanaged(lua_state, allow_host_managed_deferral ? 1 : 0);
+	status->host_managed = allow_host_managed_deferral;
 	status->cycle_active = info.active != 0;
 }
 
@@ -1818,6 +1868,7 @@ void CLevel::OnRender()
 		CUIPdaWnd* pda = &CurrentGameUI()->GetPdaMenu();
 		if (psActorFlags.test(AF_3D_PDA) && pda->IsShown())
 		{
+			Device.WaitFrameParallelWork(); // the same UI as in HUD().RenderUI() below
 			ps_r4_hdr10_pda = 1; // !!! HACK !!!
 
 			pda->Draw();
@@ -1881,6 +1932,12 @@ void CLevel::OnRender()
 
 	if (use_reshade)
 		render_reshade_effects();
+
+	// Scripts of the deferred scheduler change UI windows: the 2D part is drawn after them.
+	{
+		SFrameScope stats_scope(fsJobsWait);
+		Device.WaitFrameParallelWork();
+	}
 
 	HUD().RenderUI();
 

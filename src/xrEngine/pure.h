@@ -80,13 +80,15 @@ class CRegistrator // the registrator itself
 	public:
 		explicit processing_guard(CRegistrator& registrator) : owner(registrator)
 		{
-			++owner.processing_depth;
+			if (owner.processing_depth++ == 0)
+				owner.processing_thread = GetCurrentThreadId();
 		}
 
 		~processing_guard()
 		{
 			VERIFY(owner.processing_depth != 0);
-			--owner.processing_depth;
+			if (--owner.processing_depth == 0)
+				owner.processing_thread = 0;
 
 			// Apply deferred Add/Remove operations only after the outermost Process call.
 			if (owner.processing_depth == 0 && owner.changed)
@@ -97,6 +99,7 @@ class CRegistrator // the registrator itself
 	// CRITICAL_SECTION is recursive: callbacks are allowed to Add/Remove themselves.
 	CRITICAL_SECTION registry_lock;
 	u32 processing_depth;
+	DWORD processing_thread = 0;
 	bool changed;
 	xr_vector<_REG_INFO> R;
 
@@ -127,6 +130,18 @@ public:
 		LeaveCriticalSection(&registry_lock);
 		DeleteCriticalSection(&registry_lock);
 	}
+
+	// The thread inside Process lets the others register while it waits for them (the render waits for the frame job,
+	// whose Lua may add or remove a renderable). Process reads entries by index and sorts only after the pass.
+	bool UnlockForWait()
+	{
+		if (processing_depth != 1 || processing_thread != GetCurrentThreadId())
+			return false;
+		LeaveCriticalSection(&registry_lock);
+		return true;
+	}
+
+	void RelockAfterWait() { EnterCriticalSection(&registry_lock); }
 
 	void Add(T* obj, int priority = REG_PRIORITY_NORMAL, u32 flags = 0)
 	{

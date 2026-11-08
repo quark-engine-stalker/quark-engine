@@ -28,7 +28,7 @@ cd quark-engine
 2. Select the **`DX11-AVX`** configuration and **`x64`** platform.
 3. Build the entire solution: **Build → Build Solution**.
 
-The internal projects use `ReleaseR4-AVX` and `Release-AVX`; the solution already provides the required configuration mappings. The configuration name is retained for compatibility, but the main build uses **AVX2**.
+The internal projects use `ReleaseR4-AVX` and `Release-AVX`; the solution already provides the required configuration mappings. The configuration name is retained for compatibility, but the main build uses **AVX**.
 
 ## Building with MSBuild
 

@@ -8,6 +8,7 @@
 
 #include "pch_script.h"
 #include "script_entity.h"
+#include "Level.h"
 #include "CustomMonster.h"
 #include "../xrEngine/feel_vision.h"
 #include "../xrEngine/motion.h"
@@ -46,6 +47,7 @@ CScriptEntity::~CScriptEntity()
 void CScriptEntity::init()
 {
 	m_current_sound = 0;
+	ZeroMemory(m_recent_sounds, sizeof(m_recent_sounds));
 	ResetScriptData();
 }
 
@@ -733,6 +735,8 @@ void CScriptEntity::sound_callback(const CObject* object, int sound_type, const 
 			sound_power
 		)
 	);
+	if (m_saved_sounds.size() == 1)
+		Level().note_saved_sounds(this->object().ID());
 }
 
 CEntity* CScriptEntity::GetCurrentEnemy()
@@ -750,12 +754,32 @@ int CScriptEntity::get_enemy_strength()
 	return (0);
 }
 
+// A firefight makes an NPC hear hundreds of sounds a second, nearly all of them repeats of the same source. A repeat within
+// the window reaches the scripts only when it is louder; the sound memory of the NPC has seen them all.
+bool CScriptEntity::repeated_sound(const CSavedSound& sound)
+{
+	const u32 hash = (u32(sound.m_game_object_id) * 0x9E3779B1u) ^ (u32(sound.m_sound_type) * 0x85EBCA6Bu);
+	SRecentSound& slot = m_recent_sounds[(hash >> 16) & (recent_sounds_count - 1)];
+	const u32 now = Device.dwTimeGlobal;
+	const u32 window = g_actor && sound.m_game_object_id == g_actor->ID() ? 200u : 1000u;
+	if (slot.who == sound.m_game_object_id && slot.type == sound.m_sound_type &&
+		now - slot.time < window && sound.m_sound_power <= slot.power * 1.25f)
+		return true;
+	slot.who = sound.m_game_object_id;
+	slot.type = sound.m_sound_type;
+	slot.time = now;
+	slot.power = sound.m_sound_power;
+	return false;
+}
+
 void CScriptEntity::process_sound_callbacks()
 {
 	xr_vector<CSavedSound>::const_iterator I = m_saved_sounds.begin();
 	xr_vector<CSavedSound>::const_iterator E = m_saved_sounds.end();
 	for (; I != E; ++I)
 	{
+		if (repeated_sound(*I))
+			continue;
 		object().callback(GameObject::eSound)(
 			object().lua_game_object(),
 			(*I).m_game_object_id,

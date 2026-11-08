@@ -162,9 +162,6 @@ void CALifeUpdateManager::shedule_Update(u32 dt)
 	if (!initialized())
 		return;
 
-	// ALife switching/registration can invoke mod Lua callbacks. Keep the whole
-	// update on the scheduler/main thread so the single LuaJIT state is never
-	// entered concurrently with frame/render script work.
 	m_first_time = false;
 
 	START_PROFILE("ALife/update")

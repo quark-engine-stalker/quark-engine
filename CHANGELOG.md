@@ -2,6 +2,43 @@
 
 **English** & [Русский](CHANGELOG.ru.md)
 
+VER 1.5.0 [BUG FIXES AND PERFORMANCE]
+
+NEW:
+
+- Added NVIDIA Reflex support (recommended when GPU-bound). While the console is open, the latency in ms is shown at the very top, from the start of frame simulation on the CPU to the end of its render on the GPU (mouse and monitor latency are not included).
+
+Enter in the console (the value persists across restarts):
+`r__low_latency off` (disabled, default)
+`r__low_latency on` (**recommended**: 1-frame queue and a pause before reading input. Noticeably lower latency (the mouse feels snappier) with no FPS loss, works on NVIDIA & AMD)
+`r__low_latency reflex` (true NVIDIA Reflex with even lower latency than `on`, but a slight FPS drop is possible)
+`r__low_latency reflex_boost` (Reflex + maximum GPU clocks)
+
+FIXES:
+
+- Fixed crashes related to looting NPC corpses and using weapons taken from them
+- Fixed the weapon shadow display in the player's hands
+- Fixed freezes when NPCs see an item with incorrect physics, e.g. one that has fallen under the level
+- Fixed a game hang that could occur when compiling a shader during gameplay
+- Fixed detected data races and memory leaks
+- Several other fixes
+
+OPTIMIZATION:
+
+- NPC and A-Life logic now runs on a separate thread in parallel with rendering
+- Player scripts (actor updates from mods) now run in parallel with rendering
+- Most of the Lua garbage collection and NPC hearing events were moved to a worker
+- NPC raycasts, foot placement (IK), and NPC item handling were moved to a worker
+- Hit marks on NPC bodies (holes, blood) are calculated on workers
+- Distant and invisible NPCs are updated less often
+- Reduced overhead in NPC-vs-NPC firefights
+- Freezes on NPC spawns almost eliminated
+- Fixed freezes on sharp camera movement (e.g. when teleporting around a location)
+- Faster save loading and location transitions (i.e. loads faster than before)
+- Reduced Lua load in combat (scripts are called less often for repeated sounds, already spotted targets, and enemy checks)
+- Lua garbage collection runs less often and takes less time
+- Reduced VRAM usage
+
 VER 1.0.2 [BUG FIXES]
 
 FIXES:

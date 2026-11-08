@@ -56,6 +56,7 @@ public:
 	virtual void ResourcesDumpMemoryUsage();
 	virtual void ResourcesPrefetchCreateTexture(LPCSTR name);
 	virtual void ResourcesPrefetchCreateModelTexture(LPCSTR name);
+	void LoadRequiredModelTexture(LPCSTR name, xr_vector<ref_texture>& hold);
 	virtual void ResourcesPinTexture(LPCSTR name);
 
 	//	HWSupport
@@ -68,6 +69,9 @@ public:
 	virtual void Begin();
 	virtual void Clear();
 	virtual void End();
+	virtual bool LatencyFrameBegin(int fps_limit);
+	virtual void LatencyRenderBegin();
+	virtual void LatencyStatus(char* text, u32 size);
 	virtual void ClearTarget();
 	virtual void SetCacheXform(Fmatrix& mView, Fmatrix& mProject);
 	virtual void SetCacheXform_prev(Fmatrix& mView, Fmatrix& mProject);

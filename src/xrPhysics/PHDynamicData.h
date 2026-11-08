@@ -7,7 +7,7 @@
 //#include "../3rd party/ode/include/ode/common.h"
 #include "PHInterpolation.h"
 #include "MathUtilsOde.h"
-#include "AVX2Math.h"
+#include "AVXMath.h"
 #if !defined(AFX_PHDynamicData_H__ACC01646_B581_4639_B78C_30311432021B__INCLUDED_)
 #define AFX_PHDynamicData_H__ACC01646_B581_4639_B78C_30311432021B__INCLUDED_
 
@@ -94,7 +94,7 @@ public:
 
 	static inline void DMXPStoFMX(const dReal* R, const dReal* pos, Fmatrix& aTransform)
 	{
-		static_assert(sizeof(dReal) == sizeof(float), "xrPhysics AVX2 path requires ODE dSINGLE");
+		static_assert(sizeof(dReal) == sizeof(float), "xrPhysics AVX path requires ODE dSINGLE");
 		xr_physics_simd::ode_transform_to_fmatrix(
 			reinterpret_cast<const float*>(R), reinterpret_cast<const float*>(pos),
 			reinterpret_cast<float*>(&aTransform));
@@ -102,7 +102,7 @@ public:
 
 	static inline void DMXtoFMX(const dReal* R, Fmatrix& aTransform)
 	{
-		static_assert(sizeof(dReal) == sizeof(float), "xrPhysics AVX2 path requires ODE dSINGLE");
+		static_assert(sizeof(dReal) == sizeof(float), "xrPhysics AVX path requires ODE dSINGLE");
 		xr_physics_simd::ode_rotation_to_fmatrix(
 			reinterpret_cast<const float*>(R), reinterpret_cast<float*>(&aTransform));
 		aTransform._44 = 1.f;
@@ -125,7 +125,7 @@ public:
 
 	static inline void FMXtoDMX(const Fmatrix& aTransform, dReal* R)
 	{
-		static_assert(sizeof(dReal) == sizeof(float), "xrPhysics AVX2 path requires ODE dSINGLE");
+		static_assert(sizeof(dReal) == sizeof(float), "xrPhysics AVX path requires ODE dSINGLE");
 		xr_physics_simd::fmatrix_rotation_to_ode(
 			reinterpret_cast<const float*>(&aTransform), reinterpret_cast<float*>(R));
 	};

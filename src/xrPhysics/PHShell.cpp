@@ -1,7 +1,7 @@
 /////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 #include "StdAfx.h"
-#include "AVX2Math.h"
+#include "AVXMath.h"
 #include "PHDynamicData.h"
 #include "Physics.h"
 #include "tri-colliderknoopc/dTriList.h"
@@ -704,7 +704,7 @@ void CPHShell::SmoothElementsInertia(float k)
 	int n = (int)elements.size();
 	const float average_factor = k / float(n);
 	m_avrg.mass *= average_factor;
-	static_assert(sizeof(dReal) == sizeof(float), "xrPhysics AVX2 path requires ODE dSINGLE");
+	static_assert(sizeof(dReal) == sizeof(float), "xrPhysics AVX path requires ODE dSINGLE");
 	xr_physics_simd::scale_12(reinterpret_cast<float*>(m_avrg.I), average_factor);
 
 	for (i = elements.begin(); elements.end() != i; ++i)

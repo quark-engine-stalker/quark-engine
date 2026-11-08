@@ -28,6 +28,7 @@ namespace luabind { namespace detail
 {
 	namespace
 	{
+		void (*g_pcall_gate)(lua_State* L) = nullptr;
 		pcall_profile_begin_callback g_profile_begin = nullptr;
 		pcall_profile_end_callback g_profile_end = nullptr;
 		lua_to_cpp_profile_begin_callback g_lua_to_cpp_profile_begin = nullptr;
@@ -59,6 +60,11 @@ namespace luabind { namespace detail
 	}
 
 	thread_local unsigned int g_lua_to_cpp_profile_scope_depth = 0;
+
+	void set_pcall_gate(void (*gate)(lua_State* L))
+	{
+		g_pcall_gate = gate;
+	}
 
 	void set_pcall_profile_callbacks(
 		pcall_profile_begin_callback begin_callback,
@@ -101,6 +107,9 @@ namespace luabind { namespace detail
 
 	int pcall(lua_State *L, int nargs, int nresults)
 	{
+		if (g_pcall_gate)
+			g_pcall_gate(L);
+
 		void* profile_context = nullptr;
 		pcall_profile_end_callback profile_end = nullptr;
 		if (g_profile_begin && g_profile_end)

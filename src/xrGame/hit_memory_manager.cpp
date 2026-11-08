@@ -21,6 +21,7 @@
 #include "profiler.h"
 #include "client_spawn_manager.h"
 #include "memory_manager.h"
+#include "enemy_manager.h"
 #include "../xrEngine/IGame_Persistent.h"
 
 #ifndef MASTER_GOLD
@@ -113,6 +114,7 @@ void CHitMemoryManager::add(float amount, const Fvector& vLocalDir, const CObjec
 	if (who && !fis_zero(amount))
 	{
 		m_last_hit_object_id = who->ID();
+		m_object->memory().enemy().forget_useful(who->ID()); // the shooter is judged anew, not after the cached verdict
 		m_last_hit_time = Device.dwTimeGlobal;
 	}
 

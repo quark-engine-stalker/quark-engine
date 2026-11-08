@@ -2208,7 +2208,11 @@ void CActor::renderable_Render()
                     {
                         auto& v = pItem->object();
                         if (needAdjust)
+                        {
+                            // renderable_Render rebuilds the xform once per frame: do it before the shift, or it wipes the shift
+                            pItem->UpdateXForm();
                             v.XFORM().c.mad(diff, m);
+                        }
                         v.renderable_Render();
                     }
 

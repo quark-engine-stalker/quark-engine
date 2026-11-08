@@ -343,6 +343,7 @@ void CResourceManager::LS_Load()
 		Msg("! ERROR : Cannot initialize LUA VM!");
 		return;
 	}
+	Device.ShaderScriptsVM = LSVM;
 
 	// initialize lua standard library functions 
 	luaopen_base(LSVM);
@@ -496,6 +497,7 @@ void CResourceManager::LS_Unload()
 	luabind::weak_ref::invalidate(LSVM);
 	lua_close(LSVM);
 	LSVM = NULL;
+	Device.ShaderScriptsVM = nullptr;
 }
 
 BOOL CResourceManager::_lua_HasShader(LPCSTR s_shader)

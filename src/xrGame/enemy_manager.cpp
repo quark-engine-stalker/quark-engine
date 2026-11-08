@@ -77,7 +77,7 @@ bool CEnemyManager::is_useful(const CEntityAlive* entity_alive) const
 	return (m_object->useful(this, entity_alive));
 }
 
-int enemy_manager_useful_cache_time = 250;
+int enemy_manager_useful_cache_time = 1000;
 
 bool CEnemyManager::useful_native(const CEntityAlive* entity_alive) const
 {
@@ -157,7 +157,12 @@ bool CEnemyManager::useful(const CEntityAlive* entity_alive) const
 	// approximately +/-97 ms jitter range while decorrelating squad members.
 	const int jitter = static_cast<int>(enemy_useful_pair_hash(m_object->ID(), enemy_id) % 195u) - 97;
 	found->second.result = result;
-	found->second.check_time = current_time + _max(0, enemy_manager_useful_cache_time + jitter);
+	// An enemy stays an enemy for long, and mods walk their whole config on this call. The actor is what mods change
+	// verdicts about (disguise, stealth), and an ignored NPC must notice soon.
+	constexpr int enemy_cache_time = 3000;
+	const int cache_time = result && !(g_actor && entity_alive->ID() == g_actor->ID()) ?
+		_max(enemy_manager_useful_cache_time, enemy_cache_time) : enemy_manager_useful_cache_time;
+	found->second.check_time = current_time + _max(0, cache_time + jitter);
 	return result;
 }
 

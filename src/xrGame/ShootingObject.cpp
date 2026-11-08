@@ -212,6 +212,8 @@ void CShootingObject::Light_Render(const Fvector& P)
 	float light_scale = light_time / light_lifetime;
 	R_ASSERT(light_render);
 
+	// A flash lives 1-2 frames and its shadow costs six cube faces: only where the player can see the shadow.
+	light_render->set_shadow(Device.vCameraPosition.distance_to_sqr(P) < _sqr(20.f));
 	light_render->set_position(P);
 	light_render->set_color(light_build_color.r * light_scale, light_build_color.g * light_scale,
 	                        light_build_color.b * light_scale);

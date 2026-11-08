@@ -539,6 +539,8 @@ void CRender::Render()
 		r_pmask(true, false); // disable priority "1"
 		Device.Statistic->RenderCALC.End();
 	}
+	if (Wallmarks)
+		Wallmarks->PrepareSkeletonWallmarks();
 
 	/*if (RImplementation.o.ssfx_core) // SSS23: DEPRECATED
 	{

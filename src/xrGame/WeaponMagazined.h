@@ -65,6 +65,7 @@ protected:
 	virtual void UpdateSounds();
 	virtual void UpdateSoundsPositionsImpl();
 	void __stdcall UpdateSoundsPositions();
+	void __stdcall UpdateSoundsAfterPoses();
 
 	bool TryReload();
 

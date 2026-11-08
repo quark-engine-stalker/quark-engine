@@ -102,6 +102,7 @@ void CGameObject::Load(LPCSTR section)
 void CGameObject::reinit()
 {
 	m_visual_callback.clear();
+	m_main_only_visual_callbacks = 0;
 	m_skeleton_job_frame = u32(-1);
 	if (!g_dedicated_server)
 		ai_location().reinit();
@@ -272,6 +273,7 @@ void VisualCallback(IKinematics* tpKinematics);
 
 BOOL CGameObject::net_Spawn(CSE_Abstract* DC)
 {
+	PROF_EVENT();
 	VERIFY(!m_spawned);
 	m_spawned = true;
 	m_spawn_time = Device.dwFrame;
@@ -1025,21 +1027,25 @@ BOOL CGameObject::TestServerFlag(u32 Flag) const
 	return (m_server_flags.test(Flag));
 }
 
-void CGameObject::add_visual_callback(visual_callback* callback)
+void CGameObject::add_visual_callback(visual_callback* callback, bool worker_safe)
 {
 	if (!smart_cast<IKinematics*>(Visual())) return;
 	CALLBACK_VECTOR_IT I = std::find(visual_callbacks().begin(), visual_callbacks().end(), callback);
 	if (I != visual_callbacks().end()) return;
 	if (m_visual_callback.empty()) SetKinematicsCallback(true);
 	m_visual_callback.push_back(callback);
+	if (!worker_safe)
+		++m_main_only_visual_callbacks;
 }
 
-void CGameObject::remove_visual_callback(visual_callback* callback)
+void CGameObject::remove_visual_callback(visual_callback* callback, bool worker_safe)
 {
 	if (!smart_cast<IKinematics*>(Visual())) return;
 	CALLBACK_VECTOR_IT I = std::find(m_visual_callback.begin(), m_visual_callback.end(), callback);
 	if (I == m_visual_callback.end()) return;
 	m_visual_callback.erase(I);
+	if (!worker_safe)
+		--m_main_only_visual_callbacks;
 	if (m_visual_callback.empty()) SetKinematicsCallback(false);
 }
 
@@ -1118,7 +1124,13 @@ void CGameObject::shedule_Update(u32 dt)
 	inherited::shedule_Update(dt);
 
 	if (!g_dedicated_server)
-		CScriptBinder::shedule_Update(dt);
+	{
+		extern ENGINE_API BOOL mt_Scheduler;
+		if (mt_Scheduler && static_cast<CGameObject*>(Actor()) == this)
+			Level().note_actor_script_update(dt); // CLevel::flush_saved_sounds, on the frame job
+		else
+			CScriptBinder::shedule_Update(dt);
+	}
 }
 
 BOOL CGameObject::net_SaveRelevant()
@@ -1331,8 +1343,14 @@ void CGameObject::calculate_bones_parallel()
 		return;
 
 	IKinematics* kinematics = smart_cast<IKinematics*>(Visual());
-	if (kinematics)
-		kinematics->CalculateBonesOnWorker(TRUE);
+	if (!kinematics)
+		return;
+
+	kinematics->CalculateBonesOnWorker(TRUE);
+
+	// IK and attached items of an NPC work on this pose only. The rest stays owed to finish_bones_main().
+	if (!m_main_only_visual_callbacks && this != smart_cast<CGameObject*>(g_actor))
+		kinematics->FinishBonesOnMain();
 }
 
 // Main-thread half of the skeleton job. Runs serially at the render-preparation

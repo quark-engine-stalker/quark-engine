@@ -735,9 +735,21 @@ bool CVisualMemoryManager::visible(const CGameObject* game_object, float time_de
 	}
 
 	object->m_update_time = Device.dwTimeGlobal;
-	object->m_value += get_visible_value(game_object, distance, object_distance, time_delta,
+	// Already seen: with a non-negative step the value stays clamped at the threshold, whatever the step. The actor is not
+	// skipped, mods react to what the actor does at once.
+	constexpr u32 seen_script_period = 2000;
+	if (callback && !object->m_script_step_negative && object->m_value >= parameters.m_visibility_threshold &&
+		Device.dwTimeGlobal - object->m_script_step_time < seen_script_period && !(g_actor && game_object->ID() == g_actor->ID()))
+	{
+		object->m_prev_time = get_prev_time(game_object);
+		return true;
+	}
+	const float step = get_visible_value(game_object, distance, object_distance, time_delta,
 	                                     get_object_velocity(game_object, *object),
 	                                     object_luminocity(game_object, parameters), parameters, callback);
+	object->m_script_step_time = Device.dwTimeGlobal;
+	object->m_script_step_negative = step < 0.f;
+	object->m_value += step;
 	const CVisionParameters& result_parameters = current_state();
 	clamp(object->m_value, 0.f, result_parameters.m_visibility_threshold + EPS_L);
 	object->m_prev_time = get_prev_time(game_object);

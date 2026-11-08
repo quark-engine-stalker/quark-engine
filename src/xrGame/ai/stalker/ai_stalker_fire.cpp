@@ -830,14 +830,38 @@ void CAI_Stalker::update_can_kill_info()
 	if (m_pick_frame_id == Device.dwFrame)
 		return;
 
+	// Up to five rays per shooter. A rifle shoots every 60+ ms: the check does not need the frame rate.
+	if (m_pick_frame_id && Device.dwTimeGlobal - m_pick_time < 50)
+		return;
+
+	const bool first_check = !m_pick_frame_id;
+	m_pick_time = Device.dwTimeGlobal;
 	m_pick_frame_id = Device.dwFrame;
+
+	VERIFY(inventory().ActiveItem());
+	g_fireParams(0, m_pick_position, m_pick_direction);
+	m_pick_start_distance = start_pick_distance();
+
+	if (first_check)
+	{
+		can_kill_on_frame_tail();
+		return;
+	}
+
+	// Rays only, the verdict is used by the next frame: every 50 ms anyway.
+	if (!m_pick_queued)
+	{
+		m_pick_queued = true;
+		Device.add_to_frame_tail(fastdelegate::FastDelegate0<>(this, &CAI_Stalker::can_kill_on_frame_tail));
+	}
+}
+
+void CAI_Stalker::can_kill_on_frame_tail()
+{
+	m_pick_queued = false;
 	m_can_kill_member = false;
 	m_can_kill_enemy = false;
-
-	Fvector position, direction;
-	VERIFY(inventory().ActiveItem());
-	g_fireParams(0, position, direction);
-	can_kill_entity_from(position, direction, start_pick_distance());
+	can_kill_entity_from(m_pick_position, m_pick_direction, m_pick_start_distance);
 }
 
 bool CAI_Stalker::undetected_anomaly()

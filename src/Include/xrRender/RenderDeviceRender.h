@@ -58,6 +58,9 @@ public:
 	virtual void Begin() = 0;
 	virtual void Clear() = 0;
 	virtual void End() = 0;
+	virtual bool LatencyFrameBegin(int fps_limit) = 0;
+	virtual void LatencyRenderBegin() = 0;
+	virtual void LatencyStatus(char* text, u32 size) = 0;
 	virtual void ClearTarget() = 0;
 	virtual void SetCacheXform(Fmatrix& mView, Fmatrix& mProject) = 0;
 	virtual void SetCacheXform_prev(Fmatrix& mView, Fmatrix& mProject) = 0;

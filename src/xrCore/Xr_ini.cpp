@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <sstream>
 #include "mezz_stringbuffer.h"
+#include "adaptive_memory_policy.h"
 
 XRCORE_API CInifile const* pSettings = NULL;
 XRCORE_API CInifile const* pSettingsAuth = NULL;
@@ -114,8 +115,18 @@ xrCriticalSection CInifile::CacheCS;
 
 namespace
 {
-constexpr size_t dltx_cache_budget_bytes = 32u * 1024u * 1024u;
-constexpr size_t dltx_cache_max_entry_bytes = 8u * 1024u * 1024u;
+// Scripts open about 800 inis on every save load, system.ltx among them. An entry shares its strings with the
+// live inifiles while the estimate below counts them in full, so the real cost is well under these numbers.
+size_t dltx_cache_budget_bytes()
+{
+	static const xr_memory_policy::tier mode = xr_memory_policy::query().mode;
+	return size_t(mode >= xr_memory_policy::tier::performance ? 512u : mode == xr_memory_policy::tier::balanced ? 128u : 32u) * 1024u * 1024u;
+}
+
+size_t dltx_cache_max_entry_bytes()
+{
+	return dltx_cache_budget_bytes() / 2u;
+}
 
 size_t estimate_ini_root_bytes(const CInifile::Root& root)
 {
@@ -533,6 +544,7 @@ void CInifile::LTXLoad (
 	static shared_str DLTX_DELETE = "DLTX_DELETE";
 	Sect* CurrentBase = 0;
 	Sect* CurrentOverride = 0;
+	shared_str itemFilename; // one per file: building it per line took a stream split and three string copies
 	MezzStringBuffer str;
 	MezzStringBuffer str2;
 
@@ -920,8 +932,9 @@ void CInifile::LTXLoad (
 			}
 			I.second = bIsDelete ? DLTX_DELETE.c_str() : (str2[0] ? str2.GetBuffer() : NULL);
 
-			auto fname = toLowerCaseCopy(trimCopy(getFilename(std::string(currentFileName))));
-			I.filename = fname.c_str();
+			if (!itemFilename)
+				itemFilename = toLowerCaseCopy(trimCopy(getFilename(std::string(currentFileName)))).c_str();
+			I.filename = itemFilename;
 			I.depth = depth;
 
 			if (*I.first || *I.second)
@@ -1483,7 +1496,7 @@ void CInifile::Load(IReader* F, LPCSTR path
 	if (dltx_use_cache && IsValidFileNameForCache())
 	{
 		const size_t approx_bytes = estimate_ini_root_bytes(DATA);
-		if (approx_bytes <= dltx_cache_max_entry_bytes)
+		if (approx_bytes <= dltx_cache_max_entry_bytes())
 		{
 			Root cached_copy = DATA;
 			xr_string FileName(m_file_name);
@@ -1493,7 +1506,7 @@ void CInifile::Load(IReader* F, LPCSTR path
 			auto existing = CachedData.find(FileName);
 			if (existing == CachedData.end())
 			{
-				while (!CachedData.empty() && CachedDataBytes + approx_bytes > dltx_cache_budget_bytes)
+				while (!CachedData.empty() && CachedDataBytes + approx_bytes > dltx_cache_budget_bytes())
 				{
 					auto oldest = CachedData.begin();
 					for (auto it = CachedData.begin(); it != CachedData.end(); ++it)

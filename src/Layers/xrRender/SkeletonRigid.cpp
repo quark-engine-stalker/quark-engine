@@ -199,8 +199,8 @@ void CKinematics::CalculateBonesOnWorker(BOOL bForceExact)
 
 bool CKinematics::FinishBonesOnMain()
 {
-	// Main thread only, after xr_jobs::wait(): every worker of the batch has finished
-	// and its writes (including UCalc_CallbackOwed) are visible.
+	// After xr_jobs::wait() on the main thread, or on the worker that has just built this pose:
+	// nothing else touches this skeleton then.
 	if (!UCalc_CallbackOwed)
 	{
 		return false;
@@ -216,7 +216,7 @@ bool CKinematics::FinishBonesOnMain()
 	// Same lock the lazy path holds while it runs the callback.
 	xrCriticalSectionGuard guard(UCalc_Mutex);
 	callback(this);
-	++RDEVICE.SkeletonJobStats.post_callbacks;
+	InterlockedIncrement(reinterpret_cast<volatile LONG*>(&RDEVICE.SkeletonJobStats.post_callbacks));
 	return true;
 }
 
@@ -255,6 +255,11 @@ void CKinematics::CalculateBonesInternal(BOOL bForceExact, bool on_worker)
 		return; // early out for "fast" update
 	}
 
+	// The scheduler overlapping the render reads the pose as it is. It must not take a skeleton lock: the main
+	// thread holds one while its IK casts rays against other skeletons, or while it joins this job from a callback.
+	if (RDEVICE.IsFrameJobThread())
+		return;
+
 	// After the per-pass repeats above: ~1000 of them a frame would bury the real work in Tracy.
 	PROF_EVENT("CKinematics::CalculateBones");
 
@@ -273,9 +278,7 @@ void CKinematics::CalculateBonesInternal(BOOL bForceExact, bool on_worker)
 		{
 			auto& sphere = spatialParent->spatial.sphere;
 
-			float dist = 0.f;
-			float perceived_dist = Device.GetPerceivedDist(sphere.P, &dist);
-			float dist_k = dist / perceived_dist;
+			float perceived_dist = Device.GetPerceivedDist(sphere.P);
 			float ssa = Device.CalcSSADynamic(sphere.P, sphere.R);
 			float ssa_k = IK_CALC_SSA / ssa;
 			update_rate_k = _max(1.f, ssa_k);

@@ -283,6 +283,7 @@ void CEnvironment::ChangeGameTime(float game_time)
 
 void CEnvironment::SetGameTime(float game_time, float time_factor)
 {
+	Device.WaitSceneRendered();
 #ifndef _EDITOR
 	if (m_paused)
 	{
@@ -305,6 +306,7 @@ float CEnvironment::NormalizeTime(float tm)
 
 void CEnvironment::SetWeather(shared_str name, bool forced)
 {
+	Device.WaitSceneRendered();
 	//. static BOOL bAlready = FALSE;
 	//. if(bAlready) return;
 	if (name.size())

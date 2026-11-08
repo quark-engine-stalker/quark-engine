@@ -216,7 +216,7 @@
     <ClInclude Include="r4_R_sun_support.h">
       <Filter>Core</Filter>
     </ClInclude>
-    <ClInclude Include="r4_avx2_math.h">
+    <ClInclude Include="r4_avx_math.h">
       <Filter>Core</Filter>
     </ClInclude>
     <ClInclude Include="..\xrRender\r__dsgraph_structure.h">
@@ -1140,6 +1140,9 @@
       <Filter>Core_Target\ColorMap</Filter>
     </ClCompile>
     <ClCompile Include="..\xrRenderDX10\dx10HW.cpp">
+      <Filter>Refactored\HW</Filter>
+    </ClCompile>
+    <ClCompile Include="..\xrRenderDX10\dx10LowLatency.cpp">
       <Filter>Refactored\HW</Filter>
     </ClCompile>
     <ClCompile Include="..\xrRender\HWCaps.cpp">

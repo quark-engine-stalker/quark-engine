@@ -9,11 +9,11 @@
 
 namespace
 {
-constexpr u32 kAvx2CopyMinimum = 1024;
-constexpr u32 kAvx2CopyMaximum = 16 * 1024;
+constexpr u32 kAvxCopyMinimum = 1024;
+constexpr u32 kAvxCopyMaximum = 16 * 1024;
 constexpr u32 kCopyBlockSize = 256;
 
-__forceinline void copy_block_avx2(u8* destination, const u8* source)
+__forceinline void copy_block_avx(u8* destination, const u8* source)
 {
     const __m256i v0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(source + 0));
     const __m256i v1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(source + 32));
@@ -40,12 +40,12 @@ void __stdcall xrMemCopy_x86(LPVOID dest, const void* src, u32 n)
     memcpy(dest, src, n);
 }
 
-void __stdcall xrMemCopy_AVX2(LPVOID dest, const void* src, u32 n)
+void __stdcall xrMemCopy_AVX(LPVOID dest, const void* src, u32 n)
 {
     // Modern CRT implementations are better for tiny copies and for blocks that
-    // escape the private caches. Use the explicit AVX2 loop only in its tested
+    // escape the private caches. Use the explicit AVX loop only in its tested
     // cache-resident range instead of forcing streaming stores globally.
-    if (n < kAvx2CopyMinimum || n > kAvx2CopyMaximum)
+    if (n < kAvxCopyMinimum || n > kAvxCopyMaximum)
     {
         memcpy(dest, src, n);
         return;
@@ -67,7 +67,7 @@ void __stdcall xrMemCopy_AVX2(LPVOID dest, const void* src, u32 n)
 
     while (remaining >= kCopyBlockSize)
     {
-        copy_block_avx2(destination, source);
+        copy_block_avx(destination, source);
         destination += kCopyBlockSize;
         source += kCopyBlockSize;
         remaining -= kCopyBlockSize;

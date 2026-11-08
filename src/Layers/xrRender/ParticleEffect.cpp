@@ -624,7 +624,7 @@ void CParticleEffect::Render(float)
 
 				// The render thread owns one coarse lane and never waits idly.
 				particle_render_worker(&context);
-				xr_jobs::wait(group);
+				xr_jobs::wait_own(group); // see CRender::run_parallel
 			}
 			else
 			{

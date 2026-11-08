@@ -3,6 +3,8 @@
 //////////////////////////////////////////////////////////////////////
 #pragma once
 
+#include "SkeletonCustom.h"
+
 namespace WallmarksEngine
 {
 	struct wm_slot;
@@ -46,6 +48,19 @@ private:
 	xr_vector<u32> sml_adjacency;
 
 	xrCriticalSection lock;
+
+	// Skeleton wallmarks skinned ahead on the workers, while the main thread draws the G-buffer.
+	struct skin_job
+	{
+		intrusive_ptr<CSkeletonWallmark> wallmark;
+		u32 offset;
+	};
+	xr_vector<skin_job> skin_jobs;
+	xr_vector<FVF::LIT> skin_verts;
+	xr_jobs::task_group skin_group;
+	volatile LONG skin_next = 0;
+	static void skin_chunks(void* context);
+	void skin_finish();
 private:
 	wm_slot* FindSlot(ref_shader shader);
 	wm_slot* AppendSlot(ref_shader shader);
@@ -70,6 +85,8 @@ public:
 	void AddStaticWallmark(CDB::TRI* pTri, const Fvector* pVerts, const Fvector& contact_point, ref_shader hTexture, float sz, float ttl, bool ignore_opt, float rotation);
 
 	void AddSkeletonWallmark(intrusive_ptr<CSkeletonWallmark> wm);
+	// After the main view's visibility pass: everything Render() will skin is known and the poses are built.
+	void PrepareSkeletonWallmarks();
 	void AddSkeletonWallmark(const Fmatrix* xf, CKinematics* obj, ref_shader& sh, const Fvector& start,
 	                         const Fvector& dir, float size, float ttl = 0.f, bool ignore_opt = false);
 

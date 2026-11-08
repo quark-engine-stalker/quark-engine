@@ -136,7 +136,7 @@ ICF void pack_detail_instance(const CDetailManager::SlotItem& instance, float sc
 ICF void copy_detail_rows(Fvector4* destination, const Fvector4* source, u32 rows)
 {
 	u32 i = 0;
-#if defined(__AVX2__) || defined(_M_AVX2)
+#if defined(__AVX__)
 	for (; i + 2 <= rows; i += 2)
 		_mm256_storeu_ps(&destination[i].x, _mm256_loadu_ps(&source[i].x));
 #endif

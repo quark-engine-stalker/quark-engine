@@ -196,6 +196,13 @@ void CPhysicsShellHolder::on_child_shell_activate(CPhysicsShellHolder* obj)
 }
 
 
+void CPhysicsShellHolder::release_parent_shell_collision()
+{
+	CPhysicsShellHolder* P = smart_cast<CPhysicsShellHolder*>(H_Parent());
+	if (P && P->character_physics_support())
+		P->character_physics_support()->on_child_leave(this);
+}
+
 void CPhysicsShellHolder::correct_spawn_pos()
 {
 	VERIFY(PPhysicsShell());

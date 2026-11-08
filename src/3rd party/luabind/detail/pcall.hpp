@@ -33,6 +33,9 @@ namespace luabind { namespace detail
 	using lua_to_cpp_profile_begin_callback = void* (*)(lua_State* L, const char* owner_name, const char* function_name);
 	using lua_to_cpp_profile_end_callback = void (*)(void* context);
 
+	// Called before every protected call into Lua.
+	LUABIND_API void set_pcall_gate(void (*gate)(lua_State* L));
+
 	LUABIND_API void set_pcall_profile_callbacks(
 		pcall_profile_begin_callback begin_callback,
 		pcall_profile_end_callback end_callback);

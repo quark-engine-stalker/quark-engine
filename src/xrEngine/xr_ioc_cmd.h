@@ -61,6 +61,7 @@ public:
 	}
 
 	virtual void Execute(LPCSTR args) = 0;
+	virtual bool RenderIndependent() const { return false; } // may run on the frame job while the frame is being rendered
 	virtual void Status(TStatus& S) { S[0] = 0; }
 	virtual void Info(TInfo& I) { xr_strcpy(I, "(no arguments)"); }
 
@@ -281,6 +282,9 @@ public:
 		fmax = max;
 	}
 
+	// One float: a frame being rendered reads the old or the new value. Subclasses have side effects and stay behind the gate.
+	bool RenderIndependent() const override { return typeid(*this) == typeid(CCC_Float); }
+
 	virtual void Execute(LPCSTR args)
 	{
 		float v = float(atof(args));
@@ -386,6 +390,8 @@ protected:
 	};
 	const Fvector4 GetValue() const { return *value; };
 	Fvector4* GetValuePtr() const { return value; };
+	// Four shader constants: a frame being rendered reads the old or the new values, mods set them from the NPC updates.
+	bool RenderIndependent() const override { return true; }
 
 	virtual void Execute(LPCSTR args)
 	{

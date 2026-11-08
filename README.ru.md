@@ -13,7 +13,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/status-OPEN_BETA-c2df77?style=flat-square&amp;labelColor=171d20" alt="Open beta">
   <img src="https://img.shields.io/badge/platform-Windows_x64-8ca6b8?style=flat-square&amp;labelColor=171d20" alt="Windows x64">
-  <img src="https://img.shields.io/badge/renderer-DX11_%2F_AVX2-8ca6b8?style=flat-square&amp;labelColor=171d20" alt="DirectX 11 / AVX2">
+  <img src="https://img.shields.io/badge/renderer-DX11_%2F_AVX-8ca6b8?style=flat-square&amp;labelColor=171d20" alt="DirectX 11 / AVX">
 </p>
 
 <p align="center">
@@ -36,7 +36,7 @@
 
 ## Установка и требования
 
-Ваш процессор должен быть с поддержкой **AVX2**, также установите & обновите библиотеки [Microsoft Visual C++ Redistributable x64](https://aka.ms/vs/17/release/vc_redist.x64.exe).
+Ваш процессор должен быть с поддержкой **AVX**, также установите & обновите библиотеки [Microsoft Visual C++ Redistributable x64](https://aka.ms/vs/17/release/vc_redist.x64.exe).
 
 1. Убедитесь, что STALKER: Anomaly 1.5.3 и STALKER: GAMMA 0.9.5 установлены корректно. Инструкции по их установке есть у соответствующих авторов.
 2. **Сделайте резервную копию** папки `Anomaly\bin` и папки `Anomaly\gamedata`.

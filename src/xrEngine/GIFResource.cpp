@@ -57,7 +57,7 @@ static IC void copy_gif_image_rect(GifFileType* gif, u8* dstImage, const u8* src
                                    GifWord width, GifWord height)
 {
     const size_t row_bytes = static_cast<size_t>(width) * 4;
-    const bool use_avx2 = row_bytes >= 32;
+    const bool use_avx = row_bytes >= 32;
     for (GifWord y = 0; y < height; ++y)
     {
         const size_t offset = (static_cast<size_t>(top + y) * static_cast<size_t>(gif->SWidth) +
@@ -73,7 +73,7 @@ static IC void copy_gif_image_rect(GifFileType* gif, u8* dstImage, const u8* src
         if (byte < row_bytes)
             std::memcpy(destination + byte, source + byte, row_bytes - byte);
     }
-    if (use_avx2)
+    if (use_avx)
         _mm256_zeroupper();
 }
 
@@ -84,7 +84,7 @@ static IC void fill_gif_image_rect(GifFileType* gif, u8* dstImage,
     const u32 packed_pixel = static_cast<u32>(red) | static_cast<u32>(green) << 8 |
         static_cast<u32>(blue) << 16 | static_cast<u32>(alpha) << 24;
     const __m256i pixels = _mm256_set1_epi32(static_cast<int>(packed_pixel));
-    const bool use_avx2 = width >= 8;
+    const bool use_avx = width >= 8;
     for (GifWord y = 0; y < height; ++y)
     {
         u32* destination = reinterpret_cast<u32*>(dstImage) +
@@ -95,7 +95,7 @@ static IC void fill_gif_image_rect(GifFileType* gif, u8* dstImage,
         for (; x < width; ++x)
             destination[x] = packed_pixel;
     }
-    if (use_avx2)
+    if (use_avx)
         _mm256_zeroupper();
 }
 

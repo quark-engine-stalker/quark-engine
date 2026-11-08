@@ -234,6 +234,9 @@ CDetailManager::CDetailManager()
 
 CDetailManager::~CDetailManager()
 {
+	// CRender::OnFrame queues MT_CALC for this object at the start of the frame. A device reset later in the same
+	// frame (vid_restart with changed grass settings) deletes the manager before that queue runs.
+	RDEVICE.remove_from_seq_parallel_independent(fastdelegate::FastDelegate0<>(this, &CDetailManager::MT_CALC));
 	if (dtFS)
 	{
 		FS.r_close(dtFS);

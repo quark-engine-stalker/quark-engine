@@ -1,5 +1,5 @@
 #include "StdAfx.h"
-#include "AVX2Math.h"
+#include "AVXMath.h"
 #include "PHDynamicData.h"
 #include "Physics.h"
 #include "tri-colliderknoopc/dTriList.h"
@@ -482,7 +482,7 @@ void dMassSub(dMass* a, const dMass* b)
 	dReal denom = dRecip(a->mass-b->mass);
 	for (int i = 0; i < 3; ++i) a->c[i] = (a->c[i] * a->mass - b->c[i] * b->mass) * denom;
 	a->mass -= b->mass;
-	static_assert(sizeof(dReal) == sizeof(float), "xrPhysics AVX2 path requires ODE dSINGLE");
+	static_assert(sizeof(dReal) == sizeof(float), "xrPhysics AVX path requires ODE dSINGLE");
 	xr_physics_simd::subtract_12(reinterpret_cast<float*>(a->I), reinterpret_cast<const float*>(b->I));
 }
 

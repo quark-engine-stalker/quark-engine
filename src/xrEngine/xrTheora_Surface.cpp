@@ -185,69 +185,71 @@ u32 CTheoraSurface::Height(bool bRealSize)
 
 namespace
 {
-IC __m256i load_8_luma(const u8* source)
-{
-    return _mm256_cvtepu8_epi32(_mm_loadl_epi64(reinterpret_cast<const __m128i*>(source)));
-}
-
-IC __m256i load_4_chroma_duplicated(const u8* source)
+IC __m128i load_4_luma(const u8* source)
 {
     int packed;
     std::memcpy(&packed, source, sizeof(packed));
+    return _mm_cvtepu8_epi32(_mm_cvtsi32_si128(packed));
+}
+
+IC __m128i load_2_chroma_duplicated(const u8* source)
+{
+    u16 packed;
+    std::memcpy(&packed, source, sizeof(packed));
     __m128i bytes = _mm_cvtsi32_si128(packed);
     bytes = _mm_unpacklo_epi8(bytes, bytes);
-    return _mm256_cvtepu8_epi32(bytes);
+    return _mm_cvtepu8_epi32(bytes);
 }
 
-IC __m256i clamp_byte_epi32(__m256i value)
+IC __m128i clamp_byte_epi32(__m128i value)
 {
-    const __m256i zero = _mm256_setzero_si256();
-    const __m256i maximum = _mm256_set1_epi32(255);
-    return _mm256_min_epi32(_mm256_max_epi32(value, zero), maximum);
+    const __m128i zero = _mm_setzero_si128();
+    const __m128i maximum = _mm_set1_epi32(255);
+    return _mm_min_epi32(_mm_max_epi32(value, zero), maximum);
 }
 
-IC __m256i yuv420_to_rgba8(const u8* y_source, const u8* u_source, const u8* v_source)
+IC __m128i yuv420_to_rgba4(const u8* y_source, const u8* u_source, const u8* v_source)
 {
-    const __m256i y = load_8_luma(y_source);
-    const __m256i u = load_4_chroma_duplicated(u_source);
-    const __m256i v = load_4_chroma_duplicated(v_source);
+    const __m128i y = load_4_luma(y_source);
+    const __m128i u = load_2_chroma_duplicated(u_source);
+    const __m128i v = load_2_chroma_duplicated(v_source);
 
-    const __m256i c = _mm256_sub_epi32(y, _mm256_set1_epi32(16));
-    const __m256i d = _mm256_sub_epi32(u, _mm256_set1_epi32(128));
-    const __m256i e = _mm256_sub_epi32(v, _mm256_set1_epi32(128));
-    const __m256i rounding = _mm256_set1_epi32(128);
+    const __m128i c = _mm_sub_epi32(y, _mm_set1_epi32(16));
+    const __m128i d = _mm_sub_epi32(u, _mm_set1_epi32(128));
+    const __m128i e = _mm_sub_epi32(v, _mm_set1_epi32(128));
+    const __m128i rounding = _mm_set1_epi32(128);
 
-    __m256i red = _mm256_add_epi32(_mm256_mullo_epi32(c, _mm256_set1_epi32(298)),
-        _mm256_mullo_epi32(e, _mm256_set1_epi32(409)));
-    red = _mm256_srai_epi32(_mm256_add_epi32(red, rounding), 8);
+    __m128i red = _mm_add_epi32(_mm_mullo_epi32(c, _mm_set1_epi32(298)),
+        _mm_mullo_epi32(e, _mm_set1_epi32(409)));
+    red = _mm_srai_epi32(_mm_add_epi32(red, rounding), 8);
 
-    __m256i green = _mm256_sub_epi32(_mm256_mullo_epi32(c, _mm256_set1_epi32(298)),
-        _mm256_mullo_epi32(d, _mm256_set1_epi32(100)));
-    green = _mm256_sub_epi32(green, _mm256_mullo_epi32(e, _mm256_set1_epi32(208)));
-    green = _mm256_srai_epi32(_mm256_add_epi32(green, rounding), 8);
+    __m128i green = _mm_sub_epi32(_mm_mullo_epi32(c, _mm_set1_epi32(298)),
+        _mm_mullo_epi32(d, _mm_set1_epi32(100)));
+    green = _mm_sub_epi32(green, _mm_mullo_epi32(e, _mm_set1_epi32(208)));
+    green = _mm_srai_epi32(_mm_add_epi32(green, rounding), 8);
 
-    __m256i blue = _mm256_add_epi32(_mm256_mullo_epi32(c, _mm256_set1_epi32(298)),
-        _mm256_mullo_epi32(d, _mm256_set1_epi32(516)));
-    blue = _mm256_srai_epi32(_mm256_add_epi32(blue, rounding), 8);
+    __m128i blue = _mm_add_epi32(_mm_mullo_epi32(c, _mm_set1_epi32(298)),
+        _mm_mullo_epi32(d, _mm_set1_epi32(516)));
+    blue = _mm_srai_epi32(_mm_add_epi32(blue, rounding), 8);
 
     red = clamp_byte_epi32(red);
     green = clamp_byte_epi32(green);
     blue = clamp_byte_epi32(blue);
 
-    return _mm256_or_si256(_mm256_set1_epi32(static_cast<int>(0xff000000u)),
-        _mm256_or_si256(_mm256_slli_epi32(red, 16),
-            _mm256_or_si256(_mm256_slli_epi32(green, 8), blue)));
+    return _mm_or_si128(_mm_set1_epi32(static_cast<int>(0xff000000u)),
+        _mm_or_si128(_mm_slli_epi32(red, 16),
+            _mm_or_si128(_mm_slli_epi32(green, 8), blue)));
 }
 
-IC __m256i pack_yuv420_shader8(const u8* y_source, const u8* u_source, const u8* v_source)
+IC __m128i pack_yuv420_shader4(const u8* y_source, const u8* u_source, const u8* v_source)
 {
-    const __m256i y = load_8_luma(y_source);
-    const __m256i u = load_4_chroma_duplicated(u_source);
-    const __m256i v = load_4_chroma_duplicated(v_source);
+    const __m128i y = load_4_luma(y_source);
+    const __m128i u = load_2_chroma_duplicated(u_source);
+    const __m128i v = load_2_chroma_duplicated(v_source);
 
-    return _mm256_or_si256(_mm256_set1_epi32(static_cast<int>(0xff000000u)),
-        _mm256_or_si256(_mm256_slli_epi32(y, 16),
-            _mm256_or_si256(_mm256_slli_epi32(u, 8), v)));
+    return _mm_or_si128(_mm_set1_epi32(static_cast<int>(0xff000000u)),
+        _mm_or_si128(_mm_slli_epi32(y, 16),
+            _mm_or_si128(_mm_slli_epi32(u, 8), v)));
 }
 }
 
@@ -259,8 +261,6 @@ void CTheoraSurface::DecompressFrame(u32* data, u32 _width, int& _pos)
 
 	u32 width = Width(true);
 	u32 height = Height(true);
-
-	static const float K = 0.256788f + 0.504129f + 0.097906f;
 
 	// we use ffmpeg2theora for encoding, so only OC_PF_420 valid
 	// u32 pixelformat = m_rgb->t_info.pixelformat;
@@ -284,10 +284,10 @@ void CTheoraSurface::DecompressFrame(u32* data, u32 _width, int& _pos)
 				u32* destination = data + h * destination_stride;
 
 				u32 w = 0;
-				for (; w + 8 <= width; w += 8)
+				for (; w + 4 <= width; w += 4)
 				{
-					const __m256i rgba = yuv420_to_rgba8(Y + w, U + (w >> 1), V + (w >> 1));
-					_mm256_storeu_si256(reinterpret_cast<__m256i*>(destination + w), rgba);
+					const __m128i rgba = yuv420_to_rgba4(Y + w, U + (w >> 1), V + (w >> 1));
+					_mm_storeu_si128(reinterpret_cast<__m128i*>(destination + w), rgba);
 				}
 
 				for (; w < width; ++w)
@@ -320,13 +320,13 @@ void CTheoraSurface::DecompressFrame(u32* data, u32 _width, int& _pos)
 				u32* destination1 = destination0 + buff_step;
 
 				u32 y_w = 0;
-				for (; y_w + 8 <= width; y_w += 8)
+				for (; y_w + 4 <= width; y_w += 4)
 				{
 					const u32 uv_w = y_w >> 1;
-					_mm256_storeu_si256(reinterpret_cast<__m256i*>(destination0 + y_w),
-						pack_yuv420_shader8(Y0 + y_w, U + uv_w, V + uv_w));
-					_mm256_storeu_si256(reinterpret_cast<__m256i*>(destination1 + y_w),
-						pack_yuv420_shader8(Y1 + y_w, U + uv_w, V + uv_w));
+					_mm_storeu_si128(reinterpret_cast<__m128i*>(destination0 + y_w),
+						pack_yuv420_shader4(Y0 + y_w, U + uv_w, V + uv_w));
+					_mm_storeu_si128(reinterpret_cast<__m128i*>(destination1 + y_w),
+						pack_yuv420_shader4(Y1 + y_w, U + uv_w, V + uv_w));
 				}
 
 				for (; y_w < width; y_w += 2)
@@ -340,7 +340,6 @@ void CTheoraSurface::DecompressFrame(u32* data, u32 _width, int& _pos)
 				}
 			}
 		}
-		_mm256_zeroupper();
 		_pos = pos;
 	}
 
@@ -357,27 +356,15 @@ void CTheoraSurface::DecompressFrame(u32* data, u32 _width, int& _pos)
 		}();
 
 		yuv_buffer& yuv = *yuv_alpha;
-		const __m256i rgb_mask = _mm256_set1_epi32(0x00ffffff);
 		u32 pos = 0;
 		for (u32 h = 0; h < height; ++h)
 		{
 			const u8* Y = yuv.y + yuv.y_stride * h;
 			u32* destination = data + pos + 1;
-			u32 w = 0;
-			for (; w + 8 <= width; w += 8)
-			{
-				const __m256i indices = load_8_luma(Y + w);
-				const __m256i alpha_values = _mm256_i32gather_epi32(
-					reinterpret_cast<const int*>(alpha_table.data()), indices, sizeof(u32));
-				const __m256i colors = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(destination + w));
-				_mm256_storeu_si256(reinterpret_cast<__m256i*>(destination + w),
-					_mm256_or_si256(_mm256_and_si256(colors, rgb_mask), alpha_values));
-			}
-			for (; w < width; ++w)
-				destination[w] = subst_alpha(destination[w], iFloor(float((Y[w] - 16)) / K));
+			for (u32 w = 0; w < width; ++w)
+				destination[w] = (destination[w] & 0x00ffffff) | alpha_table[Y[w]];
 			pos += width;
 		}
-		_mm256_zeroupper();
 	}
 }
 

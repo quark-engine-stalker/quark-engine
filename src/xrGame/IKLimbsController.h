@@ -22,6 +22,7 @@ public:
 public:
 	void PlayLegs(CBlend* b);
 	void Update();
+	void CollideOnFrameTail();
 	float Shift() { return _object_shift.shift(); }
 private:
 	void Calculate();
@@ -31,7 +32,7 @@ private:
 	float LegLengthShiftLimit(float current_shift, const SCalculateData cd[max_size]);
 	bool PredictObjectShift(const SCalculateData cd[max_size]);
 	void ObjectShift(float static_shift, const SCalculateData cd[max_size]);
-	void LimbUpdate(CIKLimb& L);
+	void LimbUpdate(CIKLimb& L, bool rays_on_frame_tail);
 	void LimbSetup();
 	void ValidateLegsBlend(IKinematicsAnimated* skeleton);
 
@@ -41,6 +42,7 @@ private:
 private:
 	CBlend* m_legs_blend;
 	u32 m_legs_motion_id;
+	bool m_tail_queued = false;
 	CGameObject* m_object;
 	IKinematicsAnimated* m_skeleton;
 	xr_vector<CIKLimb> _bone_chains;

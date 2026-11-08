@@ -97,6 +97,15 @@ xr_token qmsaa__atest_token [ ] = {
 };
 
 u32 ps_r3_minmax_sm = 3; //	=	0;
+u32 ps_r__low_latency = 0;
+xr_token qlow_latency_token [ ] = {
+	{"off", 0},
+	{"on", 1},
+	{"reflex", 2},
+	{"reflex_boost", 3},
+	{0, 0}
+};
+
 xr_token qminmax_sm_token [ ] = {
 	{"off", 0},
 	{"on", 1},
@@ -538,6 +547,22 @@ int opt_dynamic = 2;
 #ifndef _EDITOR
 #include	"../../xrEngine/xr_ioconsole.h"
 #include	"../../xrEngine/xr_ioc_cmd.h"
+
+// A change is saved at once, not only on a clean exit: a crash must not bring the old mode back.
+// Frame 0 is user.ltx itself being executed at startup.
+class CCC_TokenSaved : public CCC_Token
+{
+public:
+	CCC_TokenSaved(LPCSTR N, u32* V, xr_token* T) : CCC_Token(N, V, T) {}
+
+	virtual void Execute(LPCSTR args)
+	{
+		const u32 previous = *value;
+		CCC_Token::Execute(args);
+		if (*value != previous && Device.dwFrame)
+			Console->Execute("cfg_save");
+	}
+};
 
 // Shader night vision is an active gameplay effect controlled by scripts, not
 // a persistent graphics preference. Saving a configuration must not turn the
@@ -1563,6 +1588,7 @@ void xrRender_initconsole()
 	//CMD3(CCC_Mask,		"r3_msaa_alphatest",			&ps_r2_ls_flags,			(u32)R3FLAG_MSAA_ALPHATEST);
 	CMD3(CCC_Token, "r3_msaa_alphatest", &ps_r3_msaa_atest, qmsaa__atest_token);
 	CMD3(CCC_Token, "r3_minmax_sm", &ps_r3_minmax_sm, qminmax_sm_token);
+	CMD3(CCC_TokenSaved, "r__low_latency", &ps_r__low_latency, qlow_latency_token);
 
 #ifdef DETAIL_RADIUS
 	CMD4(CCC_detail_radius, "r__detail_radius", &ps_r__detail_radius, 0, 250);

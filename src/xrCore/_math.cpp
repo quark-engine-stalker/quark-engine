@@ -156,7 +156,6 @@ namespace CPU
 	XRCORE_API float clk_to_microsec;
 	XRCORE_API u64 qpc_freq = 0;
 	XRCORE_API u64 qpc_overhead = 0;
-	XRCORE_API u32 qpc_counter = 0;
 
 	XRCORE_API _processor_info ID;
 
@@ -164,7 +163,6 @@ namespace CPU
 	{
 		u64 _dest;
 		QueryPerformanceCounter((PLARGE_INTEGER)&_dest);
-		qpc_counter++;
 		return _dest;
 	}
 

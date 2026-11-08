@@ -14,12 +14,12 @@ ICF bool equal_16_bytes(const BYTE* left, const BYTE* right)
 	return _mm_testz_si128(difference, difference) != 0;
 }
 
-#if defined(__AVX2__) || defined(_M_AVX2)
+#if defined(__AVX__)
 ICF bool equal_32_bytes(const BYTE* left, const BYTE* right)
 {
-	const __m256i difference = _mm256_xor_si256(
-		_mm256_loadu_si256(reinterpret_cast<const __m256i*>(left)),
-		_mm256_loadu_si256(reinterpret_cast<const __m256i*>(right)));
+	const __m256i difference = _mm256_castps_si256(_mm256_xor_ps(
+		_mm256_loadu_ps(reinterpret_cast<const float*>(left)),
+		_mm256_loadu_ps(reinterpret_cast<const float*>(right))));
 	return _mm256_testz_si256(difference, difference) != 0;
 }
 #else

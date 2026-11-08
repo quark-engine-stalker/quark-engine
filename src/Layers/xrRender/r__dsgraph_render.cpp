@@ -399,7 +399,7 @@ void opaque_sort_worker(void* parameter)
 bool R_dsgraph_structure::r_dsgraph_prepare_opaque_sort(u32 priority)
 {
 	if (m_opaque_sort_items[priority] < opaque_sort_min_items || m_opaque_sort_leaves[priority] < 4 ||
-		!xr_jobs::worker_count() || !xr_jobs::idle())
+		!xr_jobs::worker_count())
 		return false;
 
 	m_opaque_sort_ranges.clear();
@@ -426,19 +426,14 @@ bool R_dsgraph_structure::r_dsgraph_prepare_opaque_sort(u32 priority)
 		[](const OpaqueSortRange& a, const OpaqueSortRange& b) { return a.count > b.count; });
 	OpaqueSortContext context{m_opaque_sort_ranges.data(), u32(m_opaque_sort_ranges.size())};
 	xr_jobs::task_group group;
+	// Not only on an idle pool: the frame job runs beside every render, so that never happened in play.
 	const u32 lanes = _min(large_leaves, _min(xr_jobs::available_thread_count(),
 		_max(2u, u32(CPU::ID.n_cores))));
-	if (!xr_jobs::try_submit_many_idle(&opaque_sort_worker, &context, lanes - 1, &group, xr_jobs::priority::high))
-	{
-		m_opaque_sort_ranges.clear();
-		return false;
-	}
+	xr_jobs::submit_many(&opaque_sort_worker, &context, lanes - 1, &group, xr_jobs::priority::high);
 	opaque_sort_worker(&context);
 	// Join every borrowed range before rendering callbacks, SSA resets, graph
 	// clearing, arena reset, device reset, or resource destruction.
-	{
-		xr_jobs::wait(group);
-	}
+	xr_jobs::wait_own(group); // see CRender::run_parallel
 	m_opaque_sort_ranges.clear();
 	return true;
 }

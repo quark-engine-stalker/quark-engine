@@ -89,6 +89,9 @@ void CAgentMemberManager::remove(CEntity* member)
 	if (registered_in_combat(stalker))
 		unregister_in_combat(stalker);
 
+	// Above 64 members the mask bits alias and stop following positions, a cached member may read as out of combat.
+	m_actuality = false;
+
 	squad_mask_type m = mask(stalker);
 	object().memory().update_memory_masks(m);
 	object().memory().update_memory_mask(m, m_combat_mask);

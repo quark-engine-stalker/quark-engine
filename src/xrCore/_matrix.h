@@ -1,7 +1,7 @@
 #ifndef __M__
 #define __M__
 
-#if defined(__AVX2__) || defined(_M_AVX2)
+#if defined(__AVX__)
 #include <immintrin.h>
 #include <type_traits>
 #endif
@@ -121,7 +121,7 @@ public:
 	ICF SelfRef mul(const Self& A, const Self& B)
 	{
 		VERIFY((this != &A) && (this != &B));
-#if defined(__AVX2__) || defined(_M_AVX2)
+#if defined(__AVX__)
 		if constexpr (std::is_same_v<T, float>)
 		{
 			// Compute two result rows per register. Fmatrix only guarantees float
@@ -178,7 +178,7 @@ public:
 	ICF SelfRef mul_43(const Self& A, const Self& B)
 	{
 		VERIFY((this != &A) && (this != &B));
-#if defined(__AVX2__) || defined(_M_AVX2)
+#if defined(__AVX__)
 		if constexpr (std::is_same_v<T, float>)
 		{
 			const float* const a = &A.m[0][0];

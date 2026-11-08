@@ -164,41 +164,53 @@ void CDetailManager::cache_Update(int v_x, int v_z, Fvector& view, int limit)
 	}
 
 	// Task performer
-	BOOL bFullUnpack = FALSE;
-	if (cache_task.size() == dm_cache_size)
+	// The whole cache at once (a jump of the camera) is ~60k slots, 180 ms the frame waits for. Nearest first, by time
+	// slices: the grass grows from the camera in under a second. The loading screen has no player to wait for it.
+	if (cache_task.size() == dm_cache_size && !m_cache_full_unpack)
 	{
-		limit = dm_cache_size;
-		bFullUnpack = TRUE;
+		m_cache_full_unpack = true;
+		std::sort(cache_task.begin(), cache_task.end(), [&view](Slot* a, Slot* b)
+		{
+			Fvector ca, cb;
+			a->vis.box.getcenter(ca);
+			b->vis.box.getcenter(cb);
+			return view.distance_to_sqr(ca) > view.distance_to_sqr(cb);
+		});
 	}
 
+	if (m_cache_full_unpack)
+	{
+		const u64 started = CPU::QPC();
+		const u64 slice = RDEVICE.dwPrecacheFrame ? u64(-1) : CPU::qpc_freq * 3 / 1000;
+		while (cache_task.size() && CPU::QPC() - started < slice)
+		{
+			cache_Decompress(cache_task.back());
+			cache_task.pop_back();
+		}
+		m_cache_full_unpack = cache_task.size() != 0;
+	}
+	else
 	for (int iteration = 0; cache_task.size() && (iteration < limit); iteration++)
 	{
 		u32 best_id = 0;
 		float best_dist = flt_max;
 
-		if (bFullUnpack)
+		for (u32 entry = 0; entry < cache_task.size(); entry++)
 		{
-			best_id = cache_task.size() - 1;
-		}
-		else
-		{
-			for (u32 entry = 0; entry < cache_task.size(); entry++)
+			// Gain access to data
+			Slot* S = cache_task[entry];
+			VERIFY(stPending == S->type);
+
+			// Estimate
+			Fvector C;
+			S->vis.box.getcenter(C);
+			float D = view.distance_to_sqr(C);
+
+			// Select
+			if (D < best_dist)
 			{
-				// Gain access to data
-				Slot* S = cache_task[entry];
-				VERIFY(stPending == S->type);
-
-				// Estimate
-				Fvector C;
-				S->vis.box.getcenter(C);
-				float D = view.distance_to_sqr(C);
-
-				// Select
-				if (D < best_dist)
-				{
-					best_dist = D;
-					best_id = entry;
-				}
+				best_dist = D;
+				best_id = entry;
 			}
 		}
 

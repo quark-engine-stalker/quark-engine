@@ -17,6 +17,7 @@ private:
 
 private:
 	Objects destroy_queue;
+	bool processing_destroy_queue = false;
 	Objects objects_active;
 	Objects objects_sleeping;
 	Objects m_crows[2];
@@ -77,6 +78,8 @@ public:
 
 		return (map_NETID[ID]);
 	}
+
+	void ProcessDestroyQueue(bool everything);
 
 	void o_crow(CObject* O);
 	void o_remove(Objects& v, CObject* O);

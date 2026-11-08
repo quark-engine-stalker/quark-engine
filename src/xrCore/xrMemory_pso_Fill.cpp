@@ -7,11 +7,11 @@
 
 namespace
 {
-constexpr u32 kAvx2FillMinimum = 8 * 1024;
-constexpr u32 kAvx2FillMaximum = 128 * 1024;
+constexpr u32 kAvxFillMinimum = 8 * 1024;
+constexpr u32 kAvxFillMaximum = 128 * 1024;
 constexpr u32 kFillBlockSize = 256;
 
-__forceinline void fill_block_avx2(u8* destination, const __m256i value)
+__forceinline void fill_block_avx(u8* destination, const __m256i value)
 {
     _mm256_store_si256(reinterpret_cast<__m256i*>(destination + 0), value);
     _mm256_store_si256(reinterpret_cast<__m256i*>(destination + 32), value);
@@ -29,9 +29,9 @@ void __stdcall xrMemFill_x86(void* dest, int value, u32 count)
     memset(dest, value, count);
 }
 
-void __stdcall xrMemFill_AVX2(void* dest, int value, u32 count)
+void __stdcall xrMemFill_AVX(void* dest, int value, u32 count)
 {
-    if (count < kAvx2FillMinimum || count > kAvx2FillMaximum)
+    if (count < kAvxFillMinimum || count > kAvxFillMaximum)
     {
         memset(dest, value, count);
         return;
@@ -53,7 +53,7 @@ void __stdcall xrMemFill_AVX2(void* dest, int value, u32 count)
 
     while (remaining >= kFillBlockSize)
     {
-        fill_block_avx2(destination, fillValue);
+        fill_block_avx(destination, fillValue);
         destination += kFillBlockSize;
         remaining -= kFillBlockSize;
     }

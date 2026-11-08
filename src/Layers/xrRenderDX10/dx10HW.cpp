@@ -10,6 +10,7 @@
 # include <dxgi1_5.h>
 #pragma warning(default:4995)
 #include "../xrRender/HW.h"
+#include "dx10LowLatency.h"
 #include "../../xrEngine/XR_IOConsole.h"
 #include "../../Include/xrAPI/xrAPI.h"
 #include "../xrRender/xrRender_console.h"
@@ -566,6 +567,8 @@ void CHW::DestroyDevice()
         g_tracy_d3d11 = nullptr;
     }
 #endif
+    low_latency::device_destroyed();
+
     // Release context-held references before destroying swap-chain resources.
     if (pContext) pContext->ClearState();
     //	Destroy state managers

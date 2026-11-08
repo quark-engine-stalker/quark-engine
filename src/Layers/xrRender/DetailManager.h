@@ -221,6 +221,7 @@ public:
 	//CacheSlot1 					cache_level1[dm_cache1_line][dm_cache1_line];
 	//Slot*							cache		[dm_cache_line][dm_cache_line];	// grid-cache itself
 	//svector<Slot*,dm_cache_size>	cache_task;									// non-unpacked slots
+	bool m_cache_full_unpack = false; // a whole-cache task is being unpacked by slices
 	//Slot							cache_pool	[dm_cache_size];				// just memory for slots
 
 #ifdef DETAIL_RADIUS

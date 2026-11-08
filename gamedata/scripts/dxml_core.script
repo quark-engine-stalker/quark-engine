@@ -241,6 +241,34 @@ function xml_object(xml_file_name, xml_string, xml_table)
 		xml_table = xml_table,
 	}
 
+	-- QUARK: a query walks the whole document, and the walk parsed every tag anew through str_explode
+	-- (ui\map_spots_16.xml: 110 queries, 1.6 s on every save load). One parse per distinct tag text is enough:
+	-- a changed attribute makes a new key. These tables stay private, callers still get a fresh getElement.
+	local parsed_tags = {}
+	local function parsed_tag(self, el)
+		local tag = el.el
+		local parsed = parsed_tags[tag]
+		if parsed == nil then
+			parsed = self:getElement(el) or false
+			parsed_tags[tag] = parsed
+		end
+		return parsed
+	end
+
+	local function tag_matches(parsed, arg)
+		if arg.name and arg.name ~= parsed.name then
+			return false
+		end
+		if arg.attr then
+			for arg_key, arg_value in pairs(arg.attr) do
+				if arg_value ~= parsed.attr[arg_key] then
+					return false
+				end
+			end
+		end
+		return true
+	end
+
 	local function setParent(node, parent)
 		node.parent = parent
 		if node.kids then
@@ -370,20 +398,23 @@ function xml_object(xml_file_name, xml_string, xml_table)
 		where = where and where.kids or self:getRoot().kids		
 		local res = {}
 
-		xml_walk(where, function(v)
-			local el = self:getElement(v)
-			if not el then
-				return
-			end
-
-			for i = 1, #args do
-				local arg = args[i]
-				if self:checkElement(v, arg) then
-					res[#res + 1] = v
-					break
+		local function walk(kids)
+			for _, v in ipairs(kids) do
+				local parsed = parsed_tag(self, v)
+				if parsed then
+					for i = 1, #args do
+						if tag_matches(parsed, args[i]) then
+							res[#res + 1] = v
+							break
+						end
+					end
+				end
+				if v.kids then
+					walk(v.kids)
 				end
 			end
-		end)
+		end
+		walk(where)
 
 		if is_empty(res) then
 			if xml_string_debug_enabled then
@@ -398,32 +429,9 @@ function xml_object(xml_file_name, xml_string, xml_table)
 	-- Check if element is fulfilling the args table query
 	-- Args structure is similar to findElement function
 	t.checkElement = function(self, el, args)
-		-- Filter element to match query
-		local check_table = {}
-		local arg = args
-		local v = el
-		local el = self:getElement(v)
-		if not el then return end
-
-		for key, value in pairs(el) do
-			if arg[key] then
-				check_table[key] = value
-			end
-		end
-
-		-- If arg table and filtered element is equal - found element
-		local found = true
-		if arg.name and arg.name ~= check_table.name then
-			found = false
-		elseif check_table.attr then
-			for arg_key, arg_value in pairs(arg.attr) do
-				if arg_value ~= check_table.attr[arg_key] then
-					found = false
-				end
-			end
-		end
-		if found then
-			return el
+		local parsed = parsed_tag(self, el)
+		if parsed and tag_matches(parsed, args) then
+			return self:getElement(el)
 		end
 	end
 
@@ -1076,6 +1084,7 @@ function openXMLFile(xml_file_name)
 			while not file_reader:r_eof() do
 				lua_s = lua_s .. string.char(file_reader:r_u8())
 			end
+			getFS():r_close(file_reader)
 			return lua_s
 		end
 	end

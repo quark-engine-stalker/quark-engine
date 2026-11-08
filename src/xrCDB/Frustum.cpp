@@ -4,7 +4,7 @@
 #include "Frustum.h"
 #include <intrin.h>
 
-#if defined(__AVX2__) || defined(_M_AVX2)
+#if defined(__AVX__)
 #	include <immintrin.h>
 #endif
 
@@ -86,7 +86,7 @@ u32 frustum_aabb_remap [8][6] =
 	{mx,my,mz,Mx,My,Mz}
 };
 
-#if defined(__AVX2__) || defined(_M_AVX2)
+#if defined(__AVX__)
 namespace
 {
 	// Classifies the volume against eight planes at once, without the per-plane branches
@@ -105,7 +105,7 @@ namespace
 
 	// testSphere / testAABB / testSAABB of the scalar code, eight planes per pass
 	template <bool use_sphere, bool use_box>
-	EFC_Visible test_planes_avx2(const CFrustum& F, const Fvector& c, float r, const float* mM, u32& test_mask)
+	EFC_Visible test_planes_avx(const CFrustum& F, const Fvector& c, float r, const float* mM, u32& test_mask)
 	{
 		const u32 active = test_mask & F.getMask();
 		u32 rejected = 0;
@@ -157,7 +157,7 @@ namespace
 
 	// The vector pass costs the same for any number of planes; with four or fewer active
 	// planes the scalar loop and its early exits are cheaper (measured on the stand).
-	IC bool use_avx2(const CFrustum& F, u32 test_mask)
+	IC bool use_avx(const CFrustum& F, u32 test_mask)
 	{
 		return ps_frustum_simd && __popcnt(test_mask & F.getMask()) > 4;
 	}
@@ -167,9 +167,9 @@ namespace
 //////////////////////////////////////////////////////////////////////
 EFC_Visible CFrustum::testSphere(const Fvector& c, float r, u32& test_mask) const
 {
-#if defined(__AVX2__) || defined(_M_AVX2)
-	if (use_avx2(*this, test_mask))
-		return test_planes_avx2<true, false>(*this, c, r, nullptr, test_mask);
+#if defined(__AVX__)
+	if (use_avx(*this, test_mask))
+		return test_planes_avx<true, false>(*this, c, r, nullptr, test_mask);
 #endif
 	u32 active_mask = test_mask & ((1u << p_count) - 1u);
 	while (active_mask)
@@ -214,9 +214,9 @@ BOOL CFrustum::testSphere_dirty(const Fvector& c, float r) const
 
 EFC_Visible CFrustum::testAABB(const float* mM, u32& test_mask) const
 {
-#if defined(__AVX2__) || defined(_M_AVX2)
-	if (use_avx2(*this, test_mask))
-		return test_planes_avx2<false, true>(*this, Fvector(), 0.f, mM, test_mask);
+#if defined(__AVX__)
+	if (use_avx(*this, test_mask))
+		return test_planes_avx<false, true>(*this, Fvector(), 0.f, mM, test_mask);
 #endif
 	// go for trivial rejection or acceptance using "faster overlap test"
 	u32 active_mask = test_mask & ((1u << p_count) - 1u);
@@ -240,9 +240,9 @@ EFC_Visible CFrustum::testAABB(const float* mM, u32& test_mask) const
 
 EFC_Visible CFrustum::testSAABB(const Fvector& c, float r, const float* mM, u32& test_mask) const
 {
-#if defined(__AVX2__) || defined(_M_AVX2)
-	if (use_avx2(*this, test_mask))
-		return test_planes_avx2<true, true>(*this, c, r, mM, test_mask);
+#if defined(__AVX__)
+	if (use_avx(*this, test_mask))
+		return test_planes_avx<true, true>(*this, c, r, mM, test_mask);
 #endif
 	u32 active_mask = test_mask & ((1u << p_count) - 1u);
 	while (active_mask)

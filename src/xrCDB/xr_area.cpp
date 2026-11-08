@@ -86,9 +86,11 @@ int CObjectSpace::GetNearest(xr_vector<ISpatial*>& q_spatial, xr_vector<CObject*
 //----------------------------------------------------------------------
 int CObjectSpace::GetNearest(xr_vector<CObject*>& q_nearest, const Fvector& point, float range, CObject* ignore_object)
 {
+	// Not r_spatial: that one belongs to the ray queries under Lock, and NPC updates get here beside the render's rays.
+	thread_local xr_vector<ISpatial*> q_spatial;
 	return (
 		GetNearest(
-			r_spatial,
+			q_spatial,
 			q_nearest,
 			point,
 			range,
