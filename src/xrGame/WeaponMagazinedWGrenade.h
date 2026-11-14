@@ -74,7 +74,13 @@ public:
 	//Script exports
 	void SetAmmoElapsed2(int ammo_count);
 	void AmmoTypeForEach2(const ::luabind::functor<bool>& funct);
-	virtual void SetAmmoType2(u8 type) { m_ammoType2 = type; };
+	virtual void SetAmmoType2(u8 type)
+	{
+		if (type < m_ammoTypes2.size())
+			m_ammoType2 = type;
+		else
+			Msg("![%s] ERROR: script SetAmmoType2(%d) past grenade_class (%d types), ignored", Name(), type, u32(m_ammoTypes2.size()));
+	};
 	u8 GetAmmoType2() { return m_ammoType2; };
 	int GetAmmoCount2(u8 ammo2_type) const;
 

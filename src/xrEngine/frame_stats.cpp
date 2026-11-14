@@ -92,6 +92,8 @@ u32 sort_classes(const SFrameClassStat* table, SFrameClassStat* sorted)
 }
 }
 
+const SFrameStageInfo& frame_stage_info(const u32 stage) { return stage_info[stage]; }
+
 void SFrameReportSink::line(const char* format, ...)
 {
 	char buffer[512];

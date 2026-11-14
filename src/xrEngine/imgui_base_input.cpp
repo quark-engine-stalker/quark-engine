@@ -126,7 +126,8 @@ namespace xr_imgui
     void ide::IR_OnMouseWheel(int direction)
     {
         ImGuiIO& io = ImGui::GetIO();
-        io.AddMouseWheelEvent(0.f, static_cast<float>(direction));
+        // DirectInput counts the wheel in WHEEL_DELTA (120) a notch, ImGui in notches: 120 scrolled any list to its end
+        io.AddMouseWheelEvent(0.f, static_cast<float>(direction) / WHEEL_DELTA);
     }
 
     void ide::IR_OnMouseMove(int /*x*/, int /*y*/)

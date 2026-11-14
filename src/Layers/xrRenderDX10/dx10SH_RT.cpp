@@ -209,6 +209,17 @@ void CRT::reset_end()
 	create(*cName, dwWidth, dwHeight, fmt, m_sample_count, m_use_uav);
 }
 
+void CRT::swap(CRT& other)
+{
+	std::swap(pSurface, other.pSurface);
+	std::swap(pRT, other.pRT);
+	std::swap(pZRT, other.pZRT);
+	std::swap(pUAView, other.pUAView);
+	std::swap(dwWidth, other.dwWidth);
+	std::swap(dwHeight, other.dwHeight);
+	pTexture->swap_surface(*other.pTexture);
+}
+
 void resptrcode_crt::create(LPCSTR Name, u32 w, u32 h, D3DFORMAT f, u32 SampleCount, bool useUAV)
 {
 	_set(DEV->_CreateRT(Name, w, h, f, SampleCount, useUAV));

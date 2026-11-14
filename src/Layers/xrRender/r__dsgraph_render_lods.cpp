@@ -12,8 +12,6 @@
 extern float r_ssaLOD_A;
 extern float r_ssaLOD_B;
 
-ICF bool pred_dot(const std::pair<float, u32>& _1, const std::pair<float, u32>& _2) { return _1.first < _2.first; }
-
 void R_dsgraph_structure::r_dsgraph_render_lods(bool _setup_zb, bool _clear)
 {
 	PROF_EVENT();
@@ -70,15 +68,34 @@ void R_dsgraph_structure::r_dsgraph_render_lods(bool _setup_zb, bool _clear)
 
 			// gen geometry
 			FLOD::_face* facets = lodV->facets;
-			svector<std::pair<float, u32>, 8> selector;
-			for (u32 s = 0; s < 8; s++) selector.push_back(mk_pair(Ldir.dotproduct(facets[s].N), s));
-			std::sort(selector.begin(), selector.end(), pred_dot);
+			// The three facets facing the camera most, as the end of the stable sort of the eight dot products left
+			// them (8 elements: insertion sort): a later facet with the same dot product ranks higher.
+			float best_dot[3];
+			u32 best_id[3];
+			u32 best_count = 0;
+			for (u32 s = 0; s < 8; s++)
+			{
+				const float dot = Ldir.dotproduct(facets[s].N);
+				u32 pos = best_count;
+				while (pos > 0 && dot >= best_dot[pos - 1])
+					--pos;
+				if (pos == 3)
+					continue;
+				for (u32 k = _min(best_count, 2u); k > pos; --k)
+				{
+					best_dot[k] = best_dot[k - 1];
+					best_id[k] = best_id[k - 1];
+				}
+				best_dot[pos] = dot;
+				best_id[pos] = s;
+				best_count = _min(best_count + 1, 3u);
+			}
 
-			float dot_best = selector[selector.size() - 1].first;
-			float dot_next = selector[selector.size() - 2].first;
-			float dot_next_2 = selector[selector.size() - 3].first;
-			u32 id_best = selector[selector.size() - 1].second;
-			u32 id_next = selector[selector.size() - 2].second;
+			float dot_best = best_dot[0];
+			float dot_next = best_dot[1];
+			float dot_next_2 = best_dot[2];
+			u32 id_best = best_id[0];
+			u32 id_next = best_id[1];
 
 			// Now we have two "best" planes, calculate factor, and approx normal
 			float fA = dot_best, fB = dot_next, fC = dot_next_2;

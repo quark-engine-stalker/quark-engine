@@ -48,6 +48,28 @@ void dxImGuiRender::Render(ImDrawData* data)
     ImGui_ImplDX11_RenderDrawData(data);
 }
 
+void* dxImGuiRender::CreateTexture(const void* rgba, unsigned width, unsigned height)
+{
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = width;
+    desc.Height = height;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_IMMUTABLE;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    const D3D11_SUBRESOURCE_DATA data = {rgba, width * 4, 0};
+    ID3D11Texture2D* texture = nullptr;
+    ID3D11ShaderResourceView* view = nullptr;
+    if (SUCCEEDED(HW.pDevice->CreateTexture2D(&desc, &data, &texture)))
+        HW.pDevice->CreateShaderResourceView(texture, nullptr, &view);
+    _RELEASE(texture);
+    if (view)
+        m_textures.push_back(view);
+    return view;
+}
+
 void dxImGuiRender::OnDeviceCreate(ImGuiContext* context)
 {
     ImGui::SetAllocatorFunctions(
@@ -66,6 +88,9 @@ void dxImGuiRender::OnDeviceCreate(ImGuiContext* context)
 }
 void dxImGuiRender::OnDeviceDestroy()
 {
+    for (ID3D11ShaderResourceView*& view : m_textures)
+        _RELEASE(view);
+    m_textures.clear();
     ImGui_ImplDX11_Shutdown();
 }
 

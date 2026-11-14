@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "../xrRenderPC_R4/upscaler.h"
 
 
 IC bool SortLights(light* i, light* j)
@@ -164,8 +165,8 @@ void CRenderTarget::phase_ssfx_ssr()
 
 	float d_Z = EPS_S;
 	float d_W = 1.0f;
-	float w = float(Device.dwWidth);
-	float h = float(Device.dwHeight);
+	float w = float(upscaler::width());
+	float h = float(upscaler::height());
 
 	float ScaleFactor = std::min(std::max(ps_ssfx_ssr.x, 1.0f), 2.0f);
 
@@ -228,8 +229,8 @@ void CRenderTarget::phase_ssfx_ssr()
 	// Preserve only the SSR viewport. Both resources are single-sampled; copying the untouched
 	// remainder of the full-resolution texture only wastes GPU memory bandwidth.
 	D3D11_BOX ssrCopyBox = {};
-	ssrCopyBox.right = (UINT)clampr(iCeil(scale_X), 1, (int)Device.dwWidth);
-	ssrCopyBox.bottom = (UINT)clampr(iCeil(scale_Y), 1, (int)Device.dwHeight);
+	ssrCopyBox.right = (UINT)clampr(iCeil(scale_X), 1, (int)upscaler::width());
+	ssrCopyBox.bottom = (UINT)clampr(iCeil(scale_Y), 1, (int)upscaler::height());
 	ssrCopyBox.back = 1;
 	HW.pContext->CopySubresourceRegion(rt_ssfx_ssr->pSurface, 0, 0, 0, 0,
 		rt_ssfx->pSurface, 0, &ssrCopyBox);
@@ -331,8 +332,8 @@ void CRenderTarget::phase_ssfx_volumetric_blur()
 	u32 C = color_rgba(0, 0, 0, 255);
 
 	FVF::TL* pv;
-	float w = float(Device.dwWidth);
-	float h = float(Device.dwHeight);
+	float w = float(upscaler::width());
+	float h = float(upscaler::height());
 
 	Fvector2 p0, p1;
 	p0.set(0.0f, 0.0f);
@@ -399,8 +400,8 @@ void CRenderTarget::phase_ssfx_water_blur()
 
 	float d_Z = EPS_S;
 	float d_W = 1.0f;
-	float w = float(Device.dwWidth);
-	float h = float(Device.dwHeight);
+	float w = float(upscaler::width());
+	float h = float(upscaler::height());
 
 	Fvector2 p0, p1;
 	p0.set(0.0f, 0.0f);
@@ -490,8 +491,8 @@ void CRenderTarget::phase_ssfx_water_waves()
 
 	float d_Z = EPS_S;
 	float d_W = 1.0f;
-	u32 w = Device.dwWidth;
-	u32 h = Device.dwHeight;
+	u32 w = upscaler::width();
+	u32 h = upscaler::height();
 
 
 	Fvector2 p0, p1;
@@ -529,8 +530,8 @@ void CRenderTarget::phase_ssfx_sss()
 
 	float d_Z = EPS_S;
 	float d_W = 1.0f;
-	float w = float(Device.dwWidth);
-	float h = float(Device.dwHeight);
+	float w = float(upscaler::width());
+	float h = float(upscaler::height());
 
 	Fvector2 p0, p1;
 	p0.set(0.0f, 0.0f);
@@ -631,8 +632,8 @@ void CRenderTarget::phase_ssfx_sss_ext(light_Package& LP)
 
 	float d_Z = EPS_S;
 	float d_W = 1.0f;
-	float w = Device.dwWidth;
-	float h = Device.dwHeight;
+	float w = upscaler::width();
+	float h = upscaler::height();
 
 	Fvector2 p0, p1;
 	p0.set(0.0f, 0.0f);

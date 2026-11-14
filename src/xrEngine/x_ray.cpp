@@ -802,6 +802,40 @@ static IStream* LoadPngResource(HINSTANCE instance, int resource_id)
 	return image_stream;
 }
 
+// A PNG resource of the executable as 32-bit RGBA rows (QUARK-PANEL's logo, imgui_base.cpp)
+bool LoadPngResourceRGBA(int resource_id, xr_vector<u32>& pixels, u32& width, u32& height)
+{
+	const HRESULT com_result = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+	IStream* stream = LoadPngResource(GetModuleHandle(NULL), resource_id);
+	IWICImagingFactory* factory = NULL;
+	IWICBitmapDecoder* decoder = NULL;
+	IWICBitmapFrameDecode* frame = NULL;
+	IWICFormatConverter* converter = NULL;
+	UINT w = 0, h = 0;
+	bool done = stream &&
+		SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory1, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory))) &&
+		SUCCEEDED(factory->CreateDecoderFromStream(stream, NULL, WICDecodeMetadataCacheOnLoad, &decoder)) &&
+		SUCCEEDED(decoder->GetFrame(0, &frame)) && SUCCEEDED(factory->CreateFormatConverter(&converter)) &&
+		SUCCEEDED(converter->Initialize(frame, GUID_WICPixelFormat32bppRGBA, WICBitmapDitherTypeNone, NULL, 0.0,
+			WICBitmapPaletteTypeCustom)) &&
+		SUCCEEDED(converter->GetSize(&w, &h)) && w && h;
+	if (done)
+	{
+		pixels.resize(size_t(w) * h);
+		done = SUCCEEDED(converter->CopyPixels(NULL, w * 4, w * h * 4, reinterpret_cast<BYTE*>(pixels.data())));
+		width = w;
+		height = h;
+	}
+	ReleaseComObject(converter);
+	ReleaseComObject(frame);
+	ReleaseComObject(decoder);
+	ReleaseComObject(factory);
+	ReleaseComObject(stream);
+	if (SUCCEEDED(com_result))
+		CoUninitialize();
+	return done;
+}
+
 static bool GetScaledSplashSize(UINT source_width, UINT source_height,
 	u32 screen_width, u32 screen_height,
 	int& target_width, int& target_height)
@@ -1525,19 +1559,6 @@ int APIENTRY WinMain_impl(HINSTANCE hInstance,
 	return 0;
 }
 
-int stack_overflow_exception_filter(int exception_code)
-{
-	if (exception_code == EXCEPTION_STACK_OVERFLOW)
-	{
-		// Do not call _resetstkoflw here, because
-		// at this point, the stack is not yet unwound.
-		// Instead, signal that the handler (the __except block)
-		// is to be executed.
-		return EXCEPTION_EXECUTE_HANDLER;
-	}
-	else
-		return EXCEPTION_CONTINUE_SEARCH;
-}
 
 //extern BOOL DllMainOpenAL32(HANDLE module, DWORD reason, LPVOID reserved);
 extern BOOL DllMainXrCore(HANDLE hinstDLL, DWORD ul_reason_for_call, LPVOID lpvReserved);
@@ -1594,15 +1615,9 @@ int APIENTRY WinMain(HINSTANCE hInstance,
 
 	DllMainXrCore(NULL, DLL_THREAD_ATTACH, NULL);
 
-	__try
-	{
-		WinMain_impl(hInstance, hPrevInstance, lpCmdLine, nCmdShow);
-	}
-	__except (stack_overflow_exception_filter(GetExceptionCode()))
-	{
-		_resetstkoflw();
-		FATAL("stack overflow");
-	}
+	// A stack overflow goes to the crash handler like on any other thread: catching it here unwound the
+	// stack before the record, which then showed only WinMain.
+	WinMain_impl(hInstance, hPrevInstance, lpCmdLine, nCmdShow);
 
 	DllMainXrPhysics(NULL, DLL_PROCESS_DETACH, NULL);
 	DllMainXrCore(NULL, DLL_PROCESS_DETACH, NULL);
@@ -1886,6 +1901,8 @@ void CApplication::LoadEnd()
 		}
 
 		g_appLoaded = TRUE;
+		if (g_pGameLevel)
+			EngineErrorLogger::SetContext(EngineErrorLogger::Context::Level, g_pGameLevel->name().c_str());
 		QUARK_DIAGNOSTIC_BREADCRUMB("loading finished");
 		// DUMP_PHASE;
 	}

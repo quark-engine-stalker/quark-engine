@@ -26,10 +26,45 @@ namespace EngineErrorLogger
     XRCORE_API void AddBreadcrumb(LPCSTR message);
 
     // Writes the running Lua call stack as "  #NN source:line (function)\r\n"
-    // lines. It is registered on the Lua VM thread and called only on that
-    // thread, under SEH, by fatal and crash records.
+    // lines. Fatal and crash records call it on the failing thread, under SEH;
+    // it writes nothing unless that thread may walk the VM.
     using LuaStackWriter = void (*)(char* output, size_t capacity);
     XRCORE_API void SetLuaStackWriter(LuaStackWriter writer);
+
+    // The Lua stack of whatever script runs now, asked from another thread (hang records): the sampler
+    // arms a hook, waits up to timeoutMs for the VM to reach it and names the thread it ran on.
+    using LuaHangSampler = bool (*)(char* output, size_t capacity, unsigned timeoutMs, DWORD* threadId);
+    XRCORE_API void SetLuaHangSampler(LuaHangSampler sampler);
+
+    // The object the calling thread works on ("Object: wpn_pm1117 [wpn_pm] id 1117 (UpdateCL)").
+    // Hot paths: the scope stores two pointers and a literal; the describer formats the object only
+    // when a record is written, under SEH, and must not allocate or lock.
+    using ObjectDescriber = void (*)(const void* object, char* output, size_t capacity);
+    class XRCORE_API ObjectScope
+    {
+    public:
+        ObjectScope(LPCSTR action, const void* object, ObjectDescriber describer);
+        ~ObjectScope();
+        ObjectScope(const ObjectScope&) = delete;
+        ObjectScope& operator=(const ObjectScope&) = delete;
+    private:
+        LPCSTR previousAction_;
+        const void* previousObject_;
+        ObjectDescriber previousDescriber_;
+    };
+
+    // The "Game" line of fatal, crash and hang records.
+    enum class Context : unsigned char { Level, Save };
+    XRCORE_API void SetContext(Context item, LPCSTR value);
+
+    // The freeze watchdog: threadId has not finished a frame for frozenMs (one record per freeze).
+    XRCORE_API void ReportHang(DWORD threadId, unsigned frozenMs, bool loading);
+    XRCORE_API void ReportHangEnd(unsigned frozenMs);
+    // From inside a catch(...) that goes on (luabind turns a native fault into a Lua error, "Busy
+    // Hands"): a hardware fault is recorded with the stack where it happened; thrown errors are skipped.
+    XRCORE_API void ReportCaughtException(LPCSTR where);
+    // Crash and fatal minidumps (CRASH-DUMP.dmp); -no_crash_dump turns them off.
+    XRCORE_API void SetDumpsEnabled(bool enabled);
 
     XRCORE_API void Report(
         Severity severity,

@@ -172,8 +172,8 @@ private:
 	CMatrix*						matrices	[8	];	// matrices are supported only for FFP
 #endif
 
-	void Invalidate();
 public:
+	void Invalidate(); // public for the upscaler: its passes and target swaps change the device behind the caches
 	struct _stats
 	{
 		u32 polys;

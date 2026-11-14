@@ -52,8 +52,20 @@ void CObject::MakeMeCrow()
 
 	VERIFY(dwFrame_AsCrow == device_frame_id);
 
-	Props.crow = 1;
+	// The render marks it while the frame job may write the other bits of this word (an NPC's item activated in its
+	// inventory): a plain bitfield store would write back their old values
+	ObjectProperties crow = {};
+	crow.crow = 1;
+	_InterlockedOr(reinterpret_cast<volatile long*>(&Props.storage), long(crow.storage));
 	g_pGameLevel->Objects.o_crow(this);
+}
+
+void CObject::describe_for_log(const void* object, char* output, size_t capacity)
+{
+	const CObject* O = static_cast<const CObject*>(object);
+	LPCSTR name = O->NameObject.c_str(), section = O->NameSection.c_str();
+	_snprintf_s(output, capacity, _TRUNCATE, "%s [%s] id %u", name ? name : "<no name>", section ? section : "<no section>",
+		u32(O->ID()));
 }
 
 void CObject::cName_set(shared_str N)
@@ -514,6 +526,10 @@ Fvector CObject::get_new_local_point_on_mesh(u16& bone_id) const
 Fvector CObject::get_last_local_point_on_mesh(Fvector const& local_point, u16 const bone_id) const
 {
 	VERIFY(bone_id == u16(-1));
+
+	// An item whose section has no cform line (FDDA items_anm_dummy, device_flare) has no collision form: nothing to aim at
+	if (!CFORM())
+		return Position();
 
 	Fvector result;
 	// Fetch data

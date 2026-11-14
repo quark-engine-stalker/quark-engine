@@ -1,5 +1,7 @@
 #include "stdafx.h"
 #include "../xrRender/resourcemanager.h"
+#include "upscaler.h"
+#include "../xrRenderDX10/3DFluid/dx103DFluidManager.h"
 #include "blender_light_occq.h"
 #include "blender_light_mask.h"
 #include "blender_light_direct.h"
@@ -55,6 +57,30 @@ bool CRenderTarget::need_motion_vectors() const
 	// Without the motion-vector shader module no current-frame consumer can receive valid data.
 	// Keep the runtime path conservative when the module is installed because the buffer also carries HUD masking.
 	return RImplementation.o.ssfx_motionvectors;
+}
+
+void CRenderTarget::resize_scene(u32 w, u32 h)
+{
+	// The targets the constructor creates at the render size (upscaler.h) and their divisor
+	struct sized { ref_rt* rt; u32 divisor; };
+	const sized scene[] = {{&rt_Position, 1}, {&rt_MSAADepth, 1}, {&rt_tempzb, 1}, {&rt_Color, 1}, {&rt_Accumulator, 1},
+		{&rt_Accumulator_temp, 1}, {&rt_Generic_0, 1}, {&rt_Generic_1, 1}, {&rt_Heat, 1}, {&rt_Generic_temp, 1},
+		{&rt_ssfx_motion_vectors, 1}, {&rt_ssfx, 1}, {&rt_ssfx_temp, 1}, {&rt_ssfx_temp2, 1}, {&rt_ssfx_temp3, 1},
+		{&rt_ssfx_accum, 1}, {&rt_ssfx_ssr, 1}, {&rt_ssfx_water, 1}, {&rt_ssfx_ao, 1}, {&rt_ssfx_il, 1}, {&rt_ssfx_sss, 1},
+		{&rt_ssfx_sss_ext, 1}, {&rt_ssfx_sss_ext2, 1}, {&rt_ssfx_sss_tmp, 1}, {&rt_ssfx_bloom_emissive, 1},
+		{&rt_ssfx_volumetric, 8}, {&rt_ssfx_volumetric_tmp, 8}, {&rt_ssfx_rain, 8}, {&rt_ssfx_prevPos, 1},
+		{&rt_Generic_0_r, 1}, {&rt_Generic_1_r, 1}, {&rt_Generic_2, 1},
+		{&rt_half_depth, RImplementation.o.ssao_half_data ? 2u : 1u}, {&rt_ssao_temp, 1}};
+	for (const sized& s : scene)
+		if (*s.rt)
+		{
+			CRT& rt = **s.rt;
+			rt.reset_begin(); // the named texture stays, shaders keep their binding
+			rt.dwWidth = w / s.divisor;
+			rt.dwHeight = h / s.divisor;
+			rt.reset_end();
+		}
+	FluidManager.SetScreenSize(w, h);
 }
 
 void CRenderTarget::pp_begin()
@@ -237,8 +263,8 @@ void CRenderTarget::u_stencil_optimize(eStencilOptimizeMode eSOM)
 	VERIFY(RImplementation.o.nvstencil);
 	//RCache.set_ColorWriteEnable	(FALSE);
 	u32 Offset;
-	float _w = float(Device.dwWidth);
-	float _h = float(Device.dwHeight);
+	float _w = float(upscaler::width());
+	float _h = float(upscaler::height());
 	u32 C = color_rgba(255, 255, 255, 255);
 	float eps = 0;
 	float _dw = 0.5f;
@@ -304,8 +330,8 @@ void CRenderTarget::u_compute_texgen_jitter(Fmatrix& m_Texgen_J)
 	m_Texgen_J.mul(m_TexelAdjust, RCache.xforms.m_wvp);
 
 	// rescale - tile it
-	float scale_X = float(Device.dwWidth) / float(TEX_jitter);
-	float scale_Y = float(Device.dwHeight) / float(TEX_jitter);
+	float scale_X = float(upscaler::width()) / float(TEX_jitter);
+	float scale_Y = float(upscaler::height()) / float(TEX_jitter);
 	//float	offset			= (.5f / float(TEX_jitter));
 	m_TexelAdjust.scale(scale_X, scale_Y, 1.f);
 	//m_TexelAdjust.translate_over(offset,	offset,	0	);
@@ -438,6 +464,7 @@ CRenderTarget::CRenderTarget()
 
 	dwAccumulatorClearMark = 0;
 	dxRenderDeviceRender::Instance().Resources->Evict();
+	upscaler::configure();
 
 	// Blenders
 	b_occq = xr_new<CBlender_light_occq>();
@@ -542,7 +569,9 @@ CRenderTarget::CRenderTarget()
 	}
 	//	NORMAL
 	{
-		u32 w = Device.dwWidth, h = Device.dwHeight;
+		// the scene at the render size (upscaler.h), the post-process at the display size
+		const u32 w = upscaler::render_width(), h = upscaler::render_height();
+		const u32 dw = Device.dwWidth, dh = Device.dwHeight;
 		rt_Position.create(r2_RT_P, w, h, D3DFMT_A16B16G16R16F, SampleCount);
 
 		if (RImplementation.o.dx10_msaa)
@@ -587,14 +616,14 @@ CRenderTarget::CRenderTarget()
 		if (RImplementation.o.dx11_hdr10) {
 			rt_Generic_0.create(r2_RT_generic0, w, h, D3DFMT_A16B16G16R16F, 1);
 			rt_Generic_1.create(r2_RT_generic1, w, h, D3DFMT_A16B16G16R16F, 1);
-			rt_Generic.create(r2_RT_generic, w, h, D3DFMT_A16B16G16R16F, 1);
+			rt_Generic.create(r2_RT_generic, dw, dh, D3DFMT_A16B16G16R16F, 1);
 		} else {
 			rt_Generic_0.create(r2_RT_generic0, w, h, D3DFMT_A8R8G8B8, 1);
 			rt_Generic_1.create(r2_RT_generic1, w, h, D3DFMT_A8R8G8B8, 1);
-			rt_Generic.create(r2_RT_generic, w, h, D3DFMT_A8R8G8B8, 1);
+			rt_Generic.create(r2_RT_generic, dw, dh, D3DFMT_A8R8G8B8, 1);
 		}
 
-		rt_fakescope.create(r2_RT_scopert, w, h, D3DFMT_A8R8G8B8, 1); //crookr fakescope
+		rt_fakescope.create(r2_RT_scopert, dw, dh, D3DFMT_A8R8G8B8, 1); //crookr fakescope
 
 		//--DSR-- HeatVision_start
 		rt_Heat.create(r2_RT_heat, w, h, D3DFMT_A8R8G8B8, SampleCount);
@@ -606,45 +635,45 @@ CRenderTarget::CRenderTarget()
 			rt_Generic_temp.create("$user$generic_temp", w, h, D3DFMT_A8R8G8B8, RImplementation.o.dx10_msaa ? SampleCount : 1);
 		}
 
-		rt_dof.create(r2_RT_dof, w, h, RImplementation.o.dx11_hdr10 ? D3DFMT_A16B16G16R16F : D3DFMT_A8R8G8B8);
+		rt_dof.create(r2_RT_dof, dw, dh, RImplementation.o.dx11_hdr10 ? D3DFMT_A16B16G16R16F : D3DFMT_A8R8G8B8);
 
 		if (RImplementation.o.dx11_hdr10) {
-			rt_secondVP.create(r2_RT_secondVP, w, h, D3DFMT_A2R10G10B10, 1); //--#SM+#-- +SecondVP+ // NOTE: this is a hack to use DXGI R10G10B10A2_UNORM
-			rt_ui_pda.create(r2_RT_ui, w, h, D3DFMT_A2R10G10B10); // NOTE: this is a hack to use DXGI R10G10B10A2_UNORM
+			rt_secondVP.create(r2_RT_secondVP, dw, dh, D3DFMT_A2R10G10B10, 1); //--#SM+#-- +SecondVP+ // NOTE: this is a hack to use DXGI R10G10B10A2_UNORM
+			rt_ui_pda.create(r2_RT_ui, dw, dh, D3DFMT_A2R10G10B10); // NOTE: this is a hack to use DXGI R10G10B10A2_UNORM
 		} else {
-			rt_secondVP.create(r2_RT_secondVP, w, h, D3DFMT_A8R8G8B8, 1); //--#SM+#-- +SecondVP+
-			rt_ui_pda.create(r2_RT_ui, w, h, D3DFMT_A8R8G8B8);
+			rt_secondVP.create(r2_RT_secondVP, dw, dh, D3DFMT_A8R8G8B8, 1); //--#SM+#-- +SecondVP+
+			rt_ui_pda.create(r2_RT_ui, dw, dh, D3DFMT_A8R8G8B8);
 		}
 
 		// TODO: R11G11B10F? needs another horrible hack + cast + update to converter function
 		if (RImplementation.o.dx11_hdr10) {
-			rt_HDR10_HalfRes[0].create(r4_RT_HDR10_halfres0, w/2,  h/2,  D3DFMT_A16B16G16R16F);
-			rt_HDR10_HalfRes[1].create(r4_RT_HDR10_halfres1, w/2,  h/2,  D3DFMT_A16B16G16R16F);
+			rt_HDR10_HalfRes[0].create(r4_RT_HDR10_halfres0, dw/2,  dh/2,  D3DFMT_A16B16G16R16F);
+			rt_HDR10_HalfRes[1].create(r4_RT_HDR10_halfres1, dw/2,  dh/2,  D3DFMT_A16B16G16R16F);
 		}
 		// PDA, probably not ideal though
 // RT - KD
-		rt_sunshafts_0.create(r2_RT_sunshafts0, w, h, D3DFMT_A8R8G8B8);
-		rt_sunshafts_1.create(r2_RT_sunshafts1, w, h, D3DFMT_A8R8G8B8);
+		rt_sunshafts_0.create(r2_RT_sunshafts0, dw, dh, D3DFMT_A8R8G8B8);
+		rt_sunshafts_1.create(r2_RT_sunshafts1, dw, dh, D3DFMT_A8R8G8B8);
 
 		// RT Blur
-		rt_blur_h_2.create(r2_RT_blur_h_2, u32(w/2), u32(h/2), D3DFMT_A8R8G8B8);
-		rt_blur_2.create(r2_RT_blur_2, u32(w/2), u32(h/2), D3DFMT_A8R8G8B8);
+		rt_blur_h_2.create(r2_RT_blur_h_2, u32(dw/2), u32(dh/2), D3DFMT_A8R8G8B8);
+		rt_blur_2.create(r2_RT_blur_2, u32(dw/2), u32(dh/2), D3DFMT_A8R8G8B8);
 
-		rt_blur_h_4.create(r2_RT_blur_h_4, u32(w/4), u32(h/4), D3DFMT_A8R8G8B8);
-		rt_blur_4.create(r2_RT_blur_4, u32(w/4), u32(h/4), D3DFMT_A8R8G8B8);
+		rt_blur_h_4.create(r2_RT_blur_h_4, u32(dw/4), u32(dh/4), D3DFMT_A8R8G8B8);
+		rt_blur_4.create(r2_RT_blur_4, u32(dw/4), u32(dh/4), D3DFMT_A8R8G8B8);
 
-		rt_blur_h_8.create(r2_RT_blur_h_8, u32(w/8), u32(h/8), D3DFMT_A8R8G8B8);
-		rt_blur_8.create(r2_RT_blur_8, u32(w/8), u32(h/8), D3DFMT_A8R8G8B8);
+		rt_blur_h_8.create(r2_RT_blur_h_8, u32(dw/8), u32(dh/8), D3DFMT_A8R8G8B8);
+		rt_blur_8.create(r2_RT_blur_8, u32(dw/8), u32(dh/8), D3DFMT_A8R8G8B8);
 
-		rt_pp_bloom.create(r2_RT_pp_bloom, w, h, D3DFMT_A8R8G8B8);
+		rt_pp_bloom.create(r2_RT_pp_bloom, dw, dh, D3DFMT_A8R8G8B8);
 
 		// Screen Space Shaders Stuff
-		rt_ssfx_taa.create(r2_RT_ssfx_taa, w, h, D3DFMT_A16B16G16R16F, SampleCount); // Temp RT
+		rt_ssfx_taa.create(r2_RT_ssfx_taa, dw, dh, D3DFMT_A16B16G16R16F, SampleCount); // Temp RT
 
 		if (RImplementation.o.dx11_hdr10)
-			rt_ssfx_prev_frame.create(r2_RT_ssfx_prev_frame, w, h, D3DFMT_A16B16G16R16F); // Temp RT
+			rt_ssfx_prev_frame.create(r2_RT_ssfx_prev_frame, dw, dh, D3DFMT_A16B16G16R16F); // Temp RT
 		else
-			rt_ssfx_prev_frame.create(r2_RT_ssfx_prev_frame, w, h, D3DFMT_A8R8G8B8); // Temp RT
+			rt_ssfx_prev_frame.create(r2_RT_ssfx_prev_frame, dw, dh, D3DFMT_A8R8G8B8); // Temp RT
 
 		rt_ssfx_motion_vectors.create(r2_RT_ssfx_motion_vectors, w, h, D3DFMT_A16B16G16R16F, SampleCount); // HUD mask & Velocity buffer
 		
@@ -669,21 +698,21 @@ CRenderTarget::CRenderTarget()
 
 		if (RImplementation.o.ssfx_bloom)
 		{
-			rt_ssfx_bloom1.create(r2_RT_ssfx_bloom1, w / 2.0f, h / 2.0f, D3DFMT_A16B16G16R16F); // Bloom
+			rt_ssfx_bloom1.create(r2_RT_ssfx_bloom1, dw / 2.0f, dh / 2.0f, D3DFMT_A16B16G16R16F); // Bloom
 			rt_ssfx_bloom_emissive.create(r2_RT_ssfx_bloom_emissive, w, h, D3DFMT_A8R8G8B8, SampleCount); // Emissive
-			rt_ssfx_bloom_lens.create(r2_RT_ssfx_bloom_lens, w / 4.0f, h / 4.0f, D3DFMT_A8R8G8B8); // Lens
+			rt_ssfx_bloom_lens.create(r2_RT_ssfx_bloom_lens, dw / 4.0f, dh / 4.0f, D3DFMT_A8R8G8B8); // Lens
 
-			rt_ssfx_bloom_tmp2.create(r2_RT_ssfx_bloom_tmp2, w / 2.0f, h / 2.0f, D3DFMT_A16B16G16R16F); // Bloom / 2
-			rt_ssfx_bloom_tmp4.create(r2_RT_ssfx_bloom_tmp4, w / 4.0f, h / 4.0f, D3DFMT_A16B16G16R16F); // Bloom / 4
-			rt_ssfx_bloom_tmp8.create(r2_RT_ssfx_bloom_tmp8, w / 8.0f, h / 8.0f, D3DFMT_A16B16G16R16F); // Bloom / 8
-			rt_ssfx_bloom_tmp16.create(r2_RT_ssfx_bloom_tmp16, w / 16.0f, h / 16.0f, D3DFMT_A16B16G16R16F); // Bloom / 16
-			rt_ssfx_bloom_tmp32.create(r2_RT_ssfx_bloom_tmp32, w / 32.0f, h / 32.0f, D3DFMT_A16B16G16R16F); // Bloom / 32
-			rt_ssfx_bloom_tmp64.create(r2_RT_ssfx_bloom_tmp64, w / 64.0f, h / 64.0f, D3DFMT_A16B16G16R16F); // Bloom / 64
+			rt_ssfx_bloom_tmp2.create(r2_RT_ssfx_bloom_tmp2, dw / 2.0f, dh / 2.0f, D3DFMT_A16B16G16R16F); // Bloom / 2
+			rt_ssfx_bloom_tmp4.create(r2_RT_ssfx_bloom_tmp4, dw / 4.0f, dh / 4.0f, D3DFMT_A16B16G16R16F); // Bloom / 4
+			rt_ssfx_bloom_tmp8.create(r2_RT_ssfx_bloom_tmp8, dw / 8.0f, dh / 8.0f, D3DFMT_A16B16G16R16F); // Bloom / 8
+			rt_ssfx_bloom_tmp16.create(r2_RT_ssfx_bloom_tmp16, dw / 16.0f, dh / 16.0f, D3DFMT_A16B16G16R16F); // Bloom / 16
+			rt_ssfx_bloom_tmp32.create(r2_RT_ssfx_bloom_tmp32, dw / 32.0f, dh / 32.0f, D3DFMT_A16B16G16R16F); // Bloom / 32
+			rt_ssfx_bloom_tmp64.create(r2_RT_ssfx_bloom_tmp64, dw / 64.0f, dh / 64.0f, D3DFMT_A16B16G16R16F); // Bloom / 64
 
-			rt_ssfx_bloom_tmp32_2.create(r2_RT_ssfx_bloom_tmp32_2, w / 32.0f, h / 32.0f, D3DFMT_A16B16G16R16F); // Bloom / 32
-			rt_ssfx_bloom_tmp16_2.create(r2_RT_ssfx_bloom_tmp16_2, w / 16.0f, h / 16.0f, D3DFMT_A16B16G16R16F); // Bloom / 16
-			rt_ssfx_bloom_tmp8_2.create(r2_RT_ssfx_bloom_tmp8_2, w / 8.0f, h / 8.0f, D3DFMT_A16B16G16R16F); // Bloom / 8
-			rt_ssfx_bloom_tmp4_2.create(r2_RT_ssfx_bloom_tmp4_2, w / 4.0f, h / 4.0f, D3DFMT_A16B16G16R16F); // Bloom / 4
+			rt_ssfx_bloom_tmp32_2.create(r2_RT_ssfx_bloom_tmp32_2, dw / 32.0f, dh / 32.0f, D3DFMT_A16B16G16R16F); // Bloom / 32
+			rt_ssfx_bloom_tmp16_2.create(r2_RT_ssfx_bloom_tmp16_2, dw / 16.0f, dh / 16.0f, D3DFMT_A16B16G16R16F); // Bloom / 16
+			rt_ssfx_bloom_tmp8_2.create(r2_RT_ssfx_bloom_tmp8_2, dw / 8.0f, dh / 8.0f, D3DFMT_A16B16G16R16F); // Bloom / 8
+			rt_ssfx_bloom_tmp4_2.create(r2_RT_ssfx_bloom_tmp4_2, dw / 4.0f, dh / 4.0f, D3DFMT_A16B16G16R16F); // Bloom / 4
 		}
 
 		rt_ssfx_volumetric.create(r2_RT_ssfx_volumetric, w / 8.0f, h / 8.0f, D3DFMT_A16B16G16R16F); // Volumetric
@@ -1105,13 +1134,13 @@ CRenderTarget::CRenderTarget()
 		u32 h = 0;
 		if (RImplementation.o.ssao_half_data)
 		{
-			w = Device.dwWidth / 2;
-			h = Device.dwHeight / 2;
+			w = upscaler::render_width() / 2;
+			h = upscaler::render_height() / 2;
 		}
 		else
 		{
-			w = Device.dwWidth;
-			h = Device.dwHeight;
+			w = upscaler::render_width();
+			h = upscaler::render_height();
 		}
 
 		D3DFORMAT fmt = HW.Caps.id_vendor == 0x10DE ? D3DFMT_R32F : D3DFMT_R16F;
@@ -1140,7 +1169,7 @@ CRenderTarget::CRenderTarget()
 	// HDAO
 	if (RImplementation.o.ssao_hdao && RImplementation.o.ssao_ultra)
 	{
-		u32 w = Device.dwWidth, h = Device.dwHeight;
+		u32 w = upscaler::render_width(), h = upscaler::render_height();
 		rt_ssao_temp.create(r2_RT_ssao_temp, w, h, D3DFMT_R16F, 1, true);
 		s_hdao_cs.create(b_hdao_cs, "r2\\ssao");
 		if (RImplementation.o.dx10_msaa)
@@ -1479,10 +1508,12 @@ CRenderTarget::CRenderTarget()
 	//
 	dwWidth = Device.dwWidth;
 	dwHeight = Device.dwHeight;
+	upscaler::create(*this);
 }
 
 CRenderTarget::~CRenderTarget()
 {
+	upscaler::release();
 	_RELEASE(t_ss_async);
 	_RELEASE(smap_cache_clear_vs);
 	_RELEASE(smap_cache_copy_ps);
@@ -1632,8 +1663,8 @@ void CRenderTarget::reset_light_marker(bool bResetStencil)
 	if (bResetStencil)
 	{
 		u32 Offset;
-		float _w = float(Device.dwWidth);
-		float _h = float(Device.dwHeight);
+		float _w = float(upscaler::width());
+		float _h = float(upscaler::height());
 		u32 C = color_rgba(255, 255, 255, 255);
 		float eps = 0;
 		float _dw = 0.5f;

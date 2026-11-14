@@ -165,6 +165,8 @@ public:
 	ICF shared_str cNameVisual() const { return NameVisual; }
 	void cNameVisual_set(shared_str N);
 	virtual shared_str shedule_Name() const { return cName(); };
+	// EngineErrorLogger::ObjectDescriber: "name [section] id N" from the fields, no shared_str copies (read across threads)
+	static void describe_for_log(const void* object, char* output, size_t capacity);
 
 	// Properties
 	void processing_activate(); // request to enable UpdateCL

@@ -35,6 +35,10 @@ namespace luabind { namespace detail
 
 	// Called before every protected call into Lua.
 	LUABIND_API void set_pcall_gate(void (*gate)(lua_State* L));
+	// Called inside every catch(...) of a C++ function bound to Lua: with /EHa it also catches access
+	// violations, which become a Lua error ("Busy Hands"). where names the bound function.
+	LUABIND_API void set_caught_exception_callback(void (*callback)(const char* where));
+	LUABIND_API void report_caught_exception(const char* where);
 
 	LUABIND_API void set_pcall_profile_callbacks(
 		pcall_profile_begin_callback begin_callback,
@@ -71,4 +75,6 @@ namespace luabind { namespace detail
 	};
 	LUABIND_API int pcall(lua_State *L, int nargs, int nresults);
 	LUABIND_API int resume_impl(lua_State *L, int nargs, int nresults);
+	// The calling thread runs Lua now (inside a pcall or resume): error records may walk the VM's stack.
+	LUABIND_API bool lua_running_on_this_thread();
 }}

@@ -86,6 +86,7 @@ public:
 
 private:
 	bool ResizeSwapChainAfterModeChange();
+	DXGI_MODE_DESC target_mode() const; // the display mode of the chain's size and refresh rate
 	void AcquireDefaultOutput();
 	void SelectAdapterAndOutput(HMONITOR hTargetMonitor);
 	bool m_move_window;

@@ -159,8 +159,11 @@ private:
 	u64 vis_mask;
 	ElementVec elements;
 
-	u32 dwFrame; // The model itself
-	u32 dwFrameTL; // Top level
+	// Stamped once the build is complete: rays may come from several threads at once (the frame tail lanes), one
+	// builds under build_lock and the others find the stamp or wait for it
+	volatile u32 dwFrame; // The model itself
+	volatile u32 dwFrameTL; // Top level
+	SRWLOCK build_lock = SRWLOCK_INIT;
 
 	void BuildState();
 	void BuildTopLevel();

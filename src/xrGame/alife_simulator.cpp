@@ -51,6 +51,7 @@ CALifeSimulator::CALifeSimulator(xrServer* server, shared_str* command_line) :
 		char event[160];
 		_snprintf_s(event, sizeof(event), _TRUNCATE, "game start: %s %s", game.m_new_or_load, game.m_game_or_spawn);
 		QUARK_DIAGNOSTIC_BREADCRUMB(event);
+		EngineErrorLogger::SetContext(EngineErrorLogger::Context::Save, !xr_strcmp(game.m_new_or_load, "load") ? game.m_game_or_spawn : "<new game>");
 	}
 	restart_all();
 

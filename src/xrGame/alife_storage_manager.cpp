@@ -377,6 +377,7 @@ bool CALifeStorageManager::save(LPCSTR save_name_no_check, bool update_name)
 		char event[160];
 		_snprintf_s(event, sizeof(event), _TRUNCATE, "saving game: %s", committed_save_name);
 		QUARK_DIAGNOSTIC_BREADCRUMB(event);
+		EngineErrorLogger::SetContext(EngineErrorLogger::Context::Save, committed_save_name);
 	}
 
 #ifdef ENGINE_LUA_ALIFE_STORAGE_MANAGER_CALLBACKS

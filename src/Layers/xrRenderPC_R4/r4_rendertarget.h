@@ -447,6 +447,7 @@ public:
 	bool u_need_CM();
 	bool need_heat_buffer() const;
 	bool need_motion_vectors() const;
+	void resize_scene(u32 w, u32 h); // the upscaler's render size changed: the scene's targets only, the shaders stay
 	void pp_begin();
 	bool pp_source_is_generic() const;
 	const ref_rt& pp_target() const;

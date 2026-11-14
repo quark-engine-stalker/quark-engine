@@ -5,6 +5,7 @@
 #include "particle_effect.h"
 
 #include "../xrCore/job_system.h"
+#include "../xrCore/mt_tasks.h"
 
 using namespace PAPI;
 
@@ -1727,6 +1728,7 @@ void PATurbulenceExecuteStream(void* lpvParams)
 	pVector vZ;
 
 	TES_PARAMS* pParams = static_cast<TES_PARAMS*>(lpvParams);
+	mt_tasks::lane_time time(mt_tasks::particle_turbulence);
 
 	ParticleEffect* effect = pParams->effect;
 	pVector offset = pParams->offset;
@@ -1814,7 +1816,9 @@ void PATurbulence::Execute(ParticleEffect* effect, const float dt, float& tm_max
 	constexpr u32 max_parallel_lanes = 8;
 	const u32 available_lanes = xr_jobs::available_thread_count();
 	const u32 useful_lanes = (p_cnt + min_particles_per_lane - 1u) / min_particles_per_lane;
-	const u32 lane_count = _min(max_parallel_lanes, _min(available_lanes, useful_lanes));
+	const u32 lane_count = mt_tasks::on(mt_tasks::particle_turbulence) ?
+		_min(max_parallel_lanes, _min(available_lanes, useful_lanes)) : 1;
+	mt_tasks::lanes(mt_tasks::particle_turbulence, lane_count);
 
 	const float scaled_magnitude = magnitude * ps_particle_update_coeff;
 	if (lane_count <= 1)

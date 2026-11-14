@@ -46,6 +46,10 @@ private:
 	              CObject* ignore_object);
 	BOOL _RayPick(const Fvector& start, const Fvector& dir, float range, collide::rq_target tgt, collide::rq_result& R,
 				  xr_vector<CObject*>& ignore_objects, CObject* ignore_object = nullptr);
+	// The body of _RayPick on the given scratch; spatial_mt: the spatial tree under its shared lock
+	BOOL _RayPickWith(xrXRC& xrc, collide::rq_results& r_temp, xr_vector<ISpatial*>& r_spatial, bool spatial_mt,
+		const Fvector& start, const Fvector& dir, float range, collide::rq_target tgt, collide::rq_result& R,
+		const xr_vector<CObject*>& ignore_objects, CObject* ignore_object);
 	BOOL _RayQuery(collide::rq_results& dest, const collide::ray_defs& rq, collide::rq_callback* cb, LPVOID user_data,
 	               collide::test_callback* tb, CObject* ignore_object);
 	BOOL _RayQuery2(collide::rq_results& dest, const collide::ray_defs& rq, collide::rq_callback* cb, LPVOID user_data,
@@ -72,6 +76,10 @@ public:
 	             CObject* ignore_object);
 	BOOL RayPick(const Fvector& start, const Fvector& dir, float range, collide::rq_target tgt, collide::rq_result& R,
 				 xr_vector<CObject*>& ignore_objects);
+	// The same pick for threads beside the render (the frame tail lanes): per-thread scratch, the spatial tree under its
+	// shared lock, no Lock; skeleton forms build under their own lock. Nothing may destroy objects meanwhile.
+	BOOL RayPickMT(const Fvector& start, const Fvector& dir, float range, collide::rq_target tgt, collide::rq_result& R,
+		CObject* ignore_object);
 
 	// General collision query
 	BOOL RayQuery(collide::rq_results& dest, const collide::ray_defs& rq, collide::rq_callback* cb, LPVOID user_data,

@@ -7,6 +7,7 @@
 #include "cl_intersect.h"
 #include "GameMtlLib.h"
 #include "../xrCore/job_system.h"
+#include "../xrCore/mt_tasks.h"
 #include "AIAsyncPrepare.h"
 
 namespace Feel
@@ -1841,6 +1842,7 @@ namespace Feel
 	void Vision::trace_prepass_worker(void* context)
 	{
 		trace_prepass_workload& workload = *static_cast<trace_prepass_workload*>(context);
+		mt_tasks::lane_time time(mt_tasks::ai_vision);
 		for (;;)
 		{
 			const LONG claimed = InterlockedExchangeAdd(&workload.next_job, static_cast<LONG>(workload.chunk_size));
@@ -1874,6 +1876,7 @@ namespace Feel
 	void Vision::async_trace_worker(void* context)
 	{
 		async_prepare_state& state = *static_cast<async_prepare_state*>(context);
+		mt_tasks::lane_time time(mt_tasks::ai_vision);
 
 		auto intersects = [](const Fsphere& sphere, const trace_prepass_result& result)
 		{
@@ -2600,6 +2603,7 @@ namespace Feel
 
 			const u32 requested_lanes = (job_count + workload.chunk_size - 1) / workload.chunk_size;
 			const u32 lane_count = _min(lane_capacity, requested_lanes);
+			mt_tasks::lanes(mt_tasks::ai_vision, lane_count);
 			xr_jobs::task_group group;
 			xr_jobs::submit_many(&Vision::trace_prepass_worker, &workload,
 				lane_count - 1, &group, xr_jobs::priority::high);

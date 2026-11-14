@@ -168,6 +168,9 @@
     <ClCompile Include="cpu_placement.cpp">
       <Filter>Threading</Filter>
     </ClCompile>
+    <ClCompile Include="mt_tasks.cpp">
+      <Filter>Threading</Filter>
+    </ClCompile>
     <ClCompile Include="memory_usage.cpp">
       <Filter>Memory manager</Filter>
     </ClCompile>
@@ -627,6 +630,9 @@
       <Filter>Threading</Filter>
     </ClInclude>
     <ClInclude Include="cpu_placement.h">
+      <Filter>Threading</Filter>
+    </ClInclude>
+    <ClInclude Include="mt_tasks.h">
       <Filter>Threading</Filter>
     </ClInclude>
     <ClInclude Include="..\3rd party\robin_hood\robin_hood.h" />

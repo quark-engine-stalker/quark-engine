@@ -71,7 +71,8 @@ public:
 	virtual void End();
 	virtual bool LatencyFrameBegin(int fps_limit);
 	virtual void LatencyRenderBegin();
-	virtual void LatencyStatus(char* text, u32 size);
+	virtual void LatencyReport(latency_report& report, bool measure);
+	virtual void UpscalerReport(upscaler_report& report);
 	virtual void ClearTarget();
 	virtual void SetCacheXform(Fmatrix& mView, Fmatrix& mProject);
 	virtual void SetCacheXform_prev(Fmatrix& mView, Fmatrix& mProject);

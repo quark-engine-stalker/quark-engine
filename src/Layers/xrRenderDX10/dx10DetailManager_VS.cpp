@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "../xrRender/DetailManager.h"
+#include "../../xrCore/mt_tasks.h"
 
 #include "../../xrEngine/igame_persistent.h"
 #include "../../xrEngine/environment.h"
@@ -354,6 +355,74 @@ __declspec(noinline) bool CDetailManager::cached_slot_upload(const VisibleSlotIt
 }
 
 
+// A lane started by MT_CALC once UpdateVisibleM advanced the fades: the rows of the render loop below for a pass
+// whose slot fade is 1 (every slot nearer than fade_distance), with the same operations and order, so they are
+// bit-for-bit the rows that loop would write. The lanes take the chunks from the pass's last one down to the one it
+// draws.
+void CDetailManager::pack_main_lane(void* manager)
+{
+	CDetailManager& self = *static_cast<CDetailManager*>(manager);
+	mt_tasks::lane_time time(mt_tasks::occlusion_grass);
+	const u32 lane = static_cast<u32>(InterlockedIncrement(&self.m_main_pack_lane) - 1);
+	R_ASSERT(lane < main_pack_lanes);
+	volatile LONG& current = self.m_main_pack_current[lane];
+	const LONG frame = static_cast<LONG>(self.m_main_pack_frame);
+	// Bit-for-bit only with the FP control the pass checks: another one leaves the chunks to the pass
+	while ((_mm_getcsr() & ~0x3fu) == self.m_main_pack_fp_control)
+	{
+		const LONG index = InterlockedDecrement(&self.m_main_pack_next);
+		if (index < 0)
+			break;
+		// Announced before the claim is read (both interlocked): either this lane sees the pass's claim or the pass
+		// sees this chunk and waits before it empties the model's list
+		InterlockedExchange(&current, index);
+		if (InterlockedCompareExchange(&self.m_main_pack_claim, 0, 0) >= index)
+			break; // the pass is here: it writes this chunk and the ones before it itself
+		MainPassPack& pack = self.m_main_pack[index];
+		const xr_vector<VisibleSlotItems>& vis = self.m_visibles[pack.variant][pack.object];
+		u32 count = 0;
+		float farthest = 0.f;
+		bool overtaken = false;
+		for (u32 position = pack.begin; position < pack.end; ++position)
+		{
+			if (self.m_main_pack_claim >= index)
+			{
+				overtaken = true; // the pass draws this chunk itself and waits for this lane to leave it
+				break;
+			}
+			const VisibleSlotItems& visible = vis[position];
+			const Slot& slot = *visible.slot;
+			farthest = _max(farthest, slot.distance);
+			const float slot_scale = slot.visibility_scale * 1.f;
+			if (slot_scale <= 0.f)
+				continue;
+			const SlotItemVec& items = *visible.items;
+			if (pack.extra.size() < count + items.size())
+			{
+				const u32 size = _max(pack.extra.size() * 2, count + items.size() + 256);
+				pack.extra.resize(size);
+				pack.rows.resize(size * 4);
+			}
+			for (const SlotItem* item : items)
+			{
+				if (item->alpha <= 0.f)
+					continue;
+				const float scale = item->scale * slot_scale;
+				if (scale <= 0.f)
+					continue;
+				pack_detail_instance(*item, scale, pack.rows.data() + count * 4, pack.extra.data() + count);
+				++count;
+			}
+		}
+		if (overtaken)
+			break;
+		pack.count = count;
+		pack.farthest = farthest;
+		InterlockedExchange(&pack.ready, frame); // after the rows: the pass may copy them now
+	}
+	InterlockedExchange(&current, -1);
+}
+
 void CDetailManager::hw_Load_Shaders()
 {
 	// Create shader to access constant storage
@@ -438,12 +507,18 @@ void CDetailManager::hw_Render_dump_impl(const Fvector4& consts, const Fvector4&
 	const u32 array_bytes = batch_size * sizeof(Fvector4) * 4;
 	const u32 extra_data_bytes = batch_size * sizeof(Fvector4);
 	const u32 object_count = objects.size();
+	// The rows MT_CALC packs for this frame fit a pass without per-slot fade: no lamp or cascade filter and every
+	// slot nearer than the fade distance (scale * 1.f). The FP control of the packing thread must be ours.
+	const bool use_main_pack = !use_light_fade && !use_sun_cascade_filter && m_main_pack_frame == RDEVICE.dwFrame &&
+		(_mm_getcsr() & ~0x3fu) == m_main_pack_fp_control;
+	u32 slow_instances = 0; // written from the scattered instances, neither packed nor in the upload cache
 
 	// Iterate
 	for (u32 O = 0; O < object_count; O++)
 	{
 		CDetail& Object = *objects[O];
 		xr_vector<VisibleSlotItems>& vis = list[O];
+		const u32 first_chunk = use_main_pack ? m_main_pack_first[var_id][O] : 0;
 		const bool model_in_sun_cascade = !use_sun_cascade_filter ||
 			(O < m_grass_sun_object_masks[var_id].size() &&
 			 (m_grass_sun_object_masks[var_id][O] & sun_cascade_bit));
@@ -545,22 +620,78 @@ void CDetailManager::hw_Render_dump_impl(const Fvector4& consts, const Fvector4&
 
 					u32 dwBatch = 0;
 					u32 upload_key_count = 0;
-					PackedDetailKey* upload_keys = use_packed_upload ? prepare_upload_keys(
-						var_id, O, static_cast<u32>(vis.size()), upload_key_count) : nullptr;
-					// Capture after all shader setup. Native x64 draws preserve MXCSR
-					// control bits; exception status flags (0..5) are not cache inputs.
-					const bool upload_fp_matches = upload_keys &&
-						((_mm_getcsr() & ~0x3fu) == m_detail_upload_fp_control);
+					PackedDetailKey* upload_keys = nullptr;
+					bool upload_fp_matches = false;
+					bool upload_keys_prepared = false; // by the first chunk this pass writes itself
 
-					xr_vector<VisibleSlotItems>::iterator _vI = vis.begin();
-					xr_vector<VisibleSlotItems>::iterator _vE = vis.end();
-					for (; _vI != _vE; _vI++)
+					// A sun cascade walks only its own slots, PrepareSunShadowCascades lists them in the order of vis
+					const xr_vector<u32>* const cascade_slots = use_sun_cascade_filter ?
+						&m_grass_sun_slots[m_grass_sun_cascade_index][var_id][O] : nullptr;
+					const u32 walk_count = static_cast<u32>(cascade_slots ? cascade_slots->size() : vis.size());
+					// The main pass goes chunk by chunk: a chunk a lane has packed is copied, the others are written here;
+					// the lanes stop at the claimed chunk
+					const u32 segment = use_main_pack ? main_pack_chunk : _max(walk_count, 1u);
+					for (u32 segment_begin = 0, chunk = first_chunk; segment_begin < walk_count;
+						segment_begin += segment, ++chunk)
 					{
-						SlotItemVec& items = *_vI->items;
-						Slot& slot = *_vI->slot;
+					const u32 segment_end = _min(segment_begin + segment, walk_count);
+					if (use_main_pack)
+					{
+						InterlockedExchange(&m_main_pack_claim, static_cast<LONG>(chunk));
+						MainPassPack& pack = m_main_pack[chunk];
+						if (InterlockedCompareExchange(&pack.ready, 0, 0) == static_cast<LONG>(RDEVICE.dwFrame) &&
+							pack.farthest <= render_fade_distance)
+						{
+						const Fvector4* const packed_rows = pack.rows.data();
+						const Fvector4* const packed_extra = pack.extra.data();
+						u32 copied = 0;
+						while (copied < pack.count)
+						{
+							if (batch_storage_needs_reacquire)
+							{
+								void* extra_data;
+								RCache.get_ConstantDirect(c_extra_data, extra_data_bytes, &extra_data, 0, 0);
+								c_ExData = static_cast<Fvector4*>(extra_data);
+								VERIFY(c_ExData);
+								void* array_data;
+								RCache.get_ConstantDirect(c_array, array_bytes, &array_data, 0, 0);
+								c_storage = static_cast<Fvector4*>(array_data);
+								VERIFY(c_storage);
+								batch_storage_needs_reacquire = false;
+							}
+							const u32 take = _min(pack.count - copied, batch_size - dwBatch);
+							copy_detail_rows(c_storage + dwBatch * 4, packed_rows + copied * 4, take * 4);
+							if (c_ExData)
+								copy_detail_rows(c_ExData + dwBatch, packed_extra + copied, take);
+							copied += take;
+							dwBatch += take;
+							if (dwBatch == batch_size)
+							{
+								render_detail_batch(Object, dwBatch, vOffset, iOffset);
+								dwBatch = 0;
+								batch_storage_needs_reacquire = true;
+							}
+						}
+						continue; // the chunk's instances were in its rows
+						}
+					}
+					if (!upload_keys_prepared)
+					{
+						upload_keys_prepared = true;
+						upload_keys = use_packed_upload ? prepare_upload_keys(
+							var_id, O, static_cast<u32>(vis.size()), upload_key_count) : nullptr;
+						// Capture after all shader setup. Native x64 draws preserve MXCSR
+						// control bits; exception status flags (0..5) are not cache inputs.
+						upload_fp_matches = upload_keys &&
+							((_mm_getcsr() & ~0x3fu) == m_detail_upload_fp_control);
+					}
+					for (u32 walk = segment_begin; walk < segment_end; ++walk)
+					{
+						const u32 position = cascade_slots ? (*cascade_slots)[walk] : walk;
+						VisibleSlotItems& visible = vis[position];
+						SlotItemVec& items = *visible.items;
+						Slot& slot = *visible.slot;
 						if (use_light_fade && slot.grass_spot_candidate_generation != spot_candidate_generation)
-							continue;
-						if (use_sun_cascade_filter && !(sun_shadow_mask_for_slot(slot) & sun_cascade_bit))
 							continue;
 
 						// Distance and light fading are slot-wide values. The same slot can
@@ -593,13 +724,12 @@ void CDetailManager::hw_Render_dump_impl(const Fvector4& consts, const Fvector4&
 
 					// Short lists are deliberately not cached. Keep their rejection
 					// here instead of entering the cache and searching the slot parts.
-					if (item_count >= 8 && upload_fp_matches &&
-						static_cast<u32>(_vI - vis.begin()) < upload_key_count)
+					if (item_count >= 8 && upload_fp_matches && position < upload_key_count)
 					{
 						const Fvector4* cached_transforms;
 						const Fvector4* cached_extra;
 						u32 cached_count;
-						if (cached_slot_upload(*_vI, upload_keys[_vI - vis.begin()], var_id, slot_scale,
+						if (cached_slot_upload(visible, upload_keys[position], var_id, slot_scale,
 							cached_transforms, cached_extra, cached_count))
 						{
 							u32 copied = 0;
@@ -706,6 +836,7 @@ void CDetailManager::hw_Render_dump_impl(const Fvector4& consts, const Fvector4&
 							_mm_store_ps(&c_ExData[dwBatch].x, _mm_load_ps(&Instance.normal.x));
 
 						//RCache.set_ca(&*constArray, base+3, s,				s,				s,				h		);
+						++slow_instances;
 						dwBatch ++;
 						if (dwBatch == batch_size)
 						{
@@ -717,6 +848,7 @@ void CDetailManager::hw_Render_dump_impl(const Fvector4& consts, const Fvector4&
 						}
 					}
 					}
+					} // chunks
 					// flush if nessecary
 					if (dwBatch)
 					{
@@ -734,10 +866,25 @@ void CDetailManager::hw_Render_dump_impl(const Fvector4& consts, const Fvector4&
 						&& (!RImplementation.is_sun())) // phase normal with shadows without sun
 					|| (!ps_r2_ls_flags.test(R2FLAG_SUN_DETAILS) && (RImplementation.PHASE_NORMAL == RImplementation.phase))
 					)) // phase normal without shadows
+				{
+					// A packing lane may still read a chunk of this list: it sees the claim at its next slot
+					const LONG chunks_end = static_cast<LONG>(first_chunk +
+						(vis.size() + main_pack_chunk - 1) / main_pack_chunk);
+					for (u32 lane = 0; use_main_pack && lane < main_pack_lanes; ++lane)
+						for (u32 spin = 0; ; ++spin)
+						{
+							const LONG reading = m_main_pack_current[lane];
+							if (reading < static_cast<LONG>(first_chunk) || reading >= chunks_end)
+								break;
+							spin < 256 ? YieldProcessor() : static_cast<void>(SwitchToThread());
+						}
 					vis.clear_not_free();
+				}
 			}
 		}
 		vOffset += batch_size * Object.number_vertices;
 		iOffset += batch_size * Object.number_indices;
 	}
+	if (use_main_pack)
+		m_main_slow_instances += slow_instances; // MT_CALC sizes the next frame's packing by it
 }

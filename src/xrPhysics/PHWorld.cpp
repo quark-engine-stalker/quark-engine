@@ -316,6 +316,7 @@ struct SPhysicsIslandBatch
 void solve_physics_islands(void* raw_context)
 {
 	SPhysicsIslandBatch& context = *static_cast<SPhysicsIslandBatch*>(raw_context);
+	mt_tasks::lane_time time(mt_tasks::physics);
 	for (;;)
 	{
 		const LONG index = InterlockedIncrement(&context.next_index) - 1;
@@ -480,6 +481,7 @@ void CPHWorld::Step()
 			xr_jobs::task_group group;
 			const u32 useful_lanes = _max(2u, (island_work + target_work_per_lane - 1) / target_work_per_lane);
 			const u32 lane_count = _min(u32(active_islands.size()), _min(xr_jobs::worker_count(), useful_lanes));
+			mt_tasks::lanes(mt_tasks::physics, lane_count);
 			// The current physics worker is already available: let it consume one
 			// lane instead of publishing an extra nested job and waiting idly.
 			xr_jobs::submit_many(&solve_physics_islands, &context,
@@ -489,6 +491,7 @@ void CPHWorld::Step()
 		}
 		else
 		{
+			mt_tasks::lane_time time(mt_tasks::physics);
 			for (u32 island_index = 0; island_index < active_islands.size(); ++island_index)
 			{
 				CPHIsland* island = active_islands[island_index];

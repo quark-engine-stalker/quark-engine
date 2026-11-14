@@ -155,8 +155,32 @@ BOOL CObjectSpace::_RayPick(const Fvector& start, const Fvector& dir, float rang
 	return _RayPick(start, dir, range, tgt, R, ignore_objects, ignore_object);
 }
 
+BOOL CObjectSpace::RayPickMT(const Fvector& start, const Fvector& dir, float range, rq_target tgt, rq_result& R,
+	CObject* ignore_object)
+{
+	struct scratch
+	{
+		xrXRC xrc;
+		rq_results r_temp;
+		xr_vector<ISpatial*> r_spatial;
+	};
+	thread_local scratch own;
+	static const xr_vector<CObject*> no_ignore;
+	const BOOL hit = _RayPickWith(own.xrc, own.r_temp, own.r_spatial, true, start, dir, range, tgt, R, no_ignore,
+		ignore_object);
+	own.r_spatial.clear();
+	return hit;
+}
+
 BOOL CObjectSpace::_RayPick(const Fvector& start, const Fvector& dir, float range, rq_target tgt, rq_result& R,
 	xr_vector<CObject*>& ignore_objects, CObject* ignore_object)
+{
+	return _RayPickWith(xrc, r_temp, r_spatial, false, start, dir, range, tgt, R, ignore_objects, ignore_object);
+}
+
+BOOL CObjectSpace::_RayPickWith(xrXRC& xrc, rq_results& r_temp, xr_vector<ISpatial*>& r_spatial, bool spatial_mt,
+	const Fvector& start, const Fvector& dir, float range, rq_target tgt, rq_result& R,
+	const xr_vector<CObject*>& ignore_objects, CObject* ignore_object)
 {
 	r_temp.r_clear();
 	R.O = 0;
@@ -176,7 +200,10 @@ BOOL CObjectSpace::_RayPick(const Fvector& start, const Fvector& dir, float rang
 		// traverse object database
 		u32 d_flags = STYPE_COLLIDEABLE | ((tgt & rqtObstacle) ? STYPE_OBSTACLE : 0) | (
 			(tgt & rqtShape) ? STYPE_SHAPE : 0);
-		g_SpatialSpace->q_ray(r_spatial, 0, d_flags, start, dir, range);
+		if (spatial_mt)
+			g_SpatialSpace->q_ray_mt(r_spatial, 0, d_flags, start, dir, range);
+		else
+			g_SpatialSpace->q_ray(r_spatial, 0, d_flags, start, dir, range);
 		// Determine visibility for dynamic part of scene
 		for (u32 o_it = 0; o_it < r_spatial.size(); o_it++)
 		{

@@ -189,7 +189,10 @@ bool Pick(ik_pick_result& r, const ik_pick_query& q, CObject* ignore_object)
 	bool collided = false;
 	Fvector pos = q.pos();
 
-	while (g_pGameLevel->ObjectSpace.RayPick(pos, q.dir(), range, collide::rqtBoth, R, ignore_object))
+	// A frame tail lane: the pick beside other lanes and the render, without the global ray lock
+	CObjectSpace& space = g_pGameLevel->ObjectSpace;
+	while (g_frame_tail_lane ? space.RayPickMT(pos, q.dir(), range, collide::rqtBoth, R, ignore_object) :
+		space.RayPick(pos, q.dir(), range, collide::rqtBoth, R, ignore_object))
 	{
 		Fvector next_pos = pos;
 		float next_range = range;

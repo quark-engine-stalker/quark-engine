@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "upscaler.h"
 #include "../../xrCore/profiler.h"
 #include "../../xrEngine/frame_stats.h"
 #include "../../xrEngine/irenderable.h"
@@ -194,7 +195,7 @@ void CRender::prepare_shadow_faces(xr_vector<light*>& faces, bool shadow_cache)
 		}
 	}
 
-	run_parallel(m_shadowFacesUsed, &CRender::gather_shadow_face);
+	run_parallel(m_shadowFacesUsed, &CRender::gather_shadow_face, mt_tasks::light_faces);
 }
 
 // Job worker: the part of r_dsgraph_render_subspace() that only reads level data.
@@ -704,8 +705,8 @@ void CRender::render_lights(light_Package& LP)
 				if (RImplementation.o.advancedpp && ps_r2_ls_flags.is(R2FLAG_VOLUMETRIC_LIGHTS))
 				{
 					// Current Resolution
-					float w = float(Device.dwWidth);
-					float h = float(Device.dwHeight);
+					float w = float(upscaler::width());
+					float h = float(upscaler::height());
 
 					// Adjust resolution
 					if (RImplementation.o.ssfx_volumetric)

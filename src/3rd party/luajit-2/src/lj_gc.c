@@ -1347,9 +1347,12 @@ int LJ_FASTCALL lj_gc_step(lua_State *L)
   ** When enabled, automatic allocation steps may perform bounded marking and
   ** sweeping on the calling thread, but atomic and finalizer callbacks are left
   ** to the serialized host point. Public lua_gc() entry points below retain
-  ** their original semantics. */
-  return gc_step(L, GCSTEPSIZE, g->gc.stepheadroom,
-		 g->gc.hostmanaged ? 2 : 0);
+  ** their original semantics. Past hostlimit the host may not reach its next
+  ** point in time (one long script call allocating gigabytes), so the steps are
+  ** stock: no headroom, atomic and finalizers inline. */
+  if (g->gc.hostmanaged && (!g->gc.hostlimit || g->gc.total < g->gc.hostlimit))
+    return gc_step(L, GCSTEPSIZE, g->gc.stepheadroom, 2);
+  return gc_step(L, GCSTEPSIZE, 0, 0);
 }
 
 /* Preserve the Lua 5.1 collectgarbage("step", n) contract even when the host

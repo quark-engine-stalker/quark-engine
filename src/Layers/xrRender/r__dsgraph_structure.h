@@ -337,7 +337,8 @@ public:
 	void r_dsgraph_render_hud_ui();
 	void r_dsgraph_render_cam_ui();
 	void r_dsgraph_render_lods(bool _setup_zb, bool _clear);
-	void r_dsgraph_render_sorted();
+	void r_dsgraph_render_sorted(bool hud = true);
+	void r_dsgraph_render_hud_sorted(); // the HUD's part of r_dsgraph_render_sorted(false)
 	void r_dsgraph_render_ScopeSorted(); // Redotix99: for 3D Shader Based Scopes
 	void r_dsgraph_render_emissive(bool clear = true, bool renderHUD = false);
 	void r_dsgraph_render_wmarks();

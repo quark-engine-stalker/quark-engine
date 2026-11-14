@@ -252,6 +252,8 @@
     <ClCompile Include="imgui_base.cpp" />
     <ClCompile Include="imgui_base_input.cpp" />
     <ClCompile Include="imgui_helper.cpp" />
+    <ClCompile Include="mt_panel.cpp" />
+    <ClCompile Include="mt_threads.cpp" />
     <ClCompile Include="interp.cpp" />
     <ClCompile Include="IRenderable.cpp" />
     <ClCompile Include="ISheduled.cpp" />
@@ -309,7 +311,7 @@
   </ItemGroup>
   <ItemGroup>
     <Image Include="splash_xrcs_en.png" />
-    <Image Include="quark_logo.ico" />
+    <Image Include="quark_exe_icon.ico" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="$(SolutionDir)3rd party\luabind\luabind.vcxproj">

@@ -573,7 +573,9 @@ bool LoadKernelScriptToGlobal(lua_State* L, const char* name)
 namespace
 {
 lua_State* g_logged_vm = nullptr; // read by fatal/crash records on the VM thread
+DWORD g_logged_vm_thread = 0;     // the thread that made the VM and loads the scripts
 void write_lua_stack(char* output, size_t capacity);
+bool sample_lua_for_hang(char* output, size_t capacity, unsigned timeout_ms, DWORD* thread_id);
 }
 
 BOOL lua_debug = FALSE;
@@ -606,7 +608,10 @@ void CScriptStorage::reinit()
 		return;
 	}
 	g_logged_vm = m_virtual_machine;
+	g_logged_vm_thread = GetCurrentThreadId();
 	EngineErrorLogger::SetLuaStackWriter(&write_lua_stack);
+	EngineErrorLogger::SetLuaHangSampler(&sample_lua_for_hang);
+	luabind::detail::set_caught_exception_callback(&EngineErrorLogger::ReportCaughtException);
 	lua_gc(m_virtual_machine, LUA_GCDEFER, 1); // until CGamePersistent::game_loaded
 
 	// Grow the main VM stack once during initialization instead of paying for a
@@ -1471,8 +1476,48 @@ void collect_lua_error_trace(lua_State* state, int status, char* output, size_t 
 void write_lua_stack(char* output, size_t capacity)
 {
     output[0] = 0;
-    if (g_logged_vm)
+    // Only a thread that runs the VM may walk it: the one that made it, or one inside a Lua call now
+    // (scripts also run on the frame job).
+    if (g_logged_vm && (GetCurrentThreadId() == g_logged_vm_thread || luabind::detail::lua_running_on_this_thread()))
         collect_lua_frames(g_logged_vm, output, capacity);
+}
+
+char g_hang_sample[8192];
+volatile LONG g_hang_sample_ready = 0;
+DWORD g_hang_sample_thread = 0;
+
+// Runs on whichever thread runs Lua, at its next instruction: there the frames are consistent.
+void hang_sample_hook(lua_State* L, lua_Debug*)
+{
+    lua_sethook(L, nullptr, 0, 0);
+    if (InterlockedCompareExchange(&g_hang_sample_ready, 0, 0))
+        return;
+    g_hang_sample[0] = 0;
+    collect_lua_frames(L, g_hang_sample, sizeof(g_hang_sample));
+    g_hang_sample_thread = GetCurrentThreadId();
+    InterlockedExchange(&g_hang_sample_ready, 1);
+}
+
+// From the freeze watchdog. lua_sethook may be called from another thread (luajit.c does it from its
+// Ctrl+C handler); compiled traces do not run hooks, so a loop that never leaves one is not sampled.
+bool sample_lua_for_hang(char* output, size_t capacity, unsigned timeout_ms, DWORD* thread_id)
+{
+    lua_State* L = g_logged_vm;
+    if (!L || lua_gethook(L)) // a profiler or a debugger hook: leave it alone
+        return false;
+    InterlockedExchange(&g_hang_sample_ready, 0);
+    lua_sethook(L, &hang_sample_hook, LUA_MASKCOUNT, 1);
+    for (unsigned waited = 0; waited < timeout_ms && !InterlockedCompareExchange(&g_hang_sample_ready, 0, 0); waited += 10)
+        Sleep(10);
+    if (!InterlockedCompareExchange(&g_hang_sample_ready, 0, 0))
+    {
+        if (lua_gethook(L) == &hang_sample_hook)
+            lua_sethook(L, nullptr, 0, 0);
+        return false;
+    }
+    strncpy_s(output, capacity, g_hang_sample, _TRUNCATE);
+    *thread_id = g_hang_sample_thread;
+    return true;
 }
 }
 

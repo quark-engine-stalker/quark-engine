@@ -86,6 +86,11 @@ BOOL CWeaponMagazinedWGrenade::net_Spawn(CSE_Abstract* DC)
 
 	iAmmoElapsed2 = weapon->a_elapsed_grenades.grenades_count;
 	m_ammoType2 = weapon->a_elapsed_grenades.grenades_type;
+	if (m_ammoType2 >= m_ammoTypes2.size())
+	{
+		Msg("![%s] ERROR: CWeaponMagazinedWGrenade::net_Spawn: grenade type %d past grenade_class (%d types), reset to 0", Name(), m_ammoType2, u32(m_ammoTypes2.size()));
+		m_ammoType2 = 0;
+	}
 
 	m_DefaultCartridge2.Load(m_ammoTypes2[m_ammoType2].c_str(), m_ammoType2);
 

@@ -43,6 +43,7 @@ void __stdcall CHOM::MT_RENDER()
 	const u32 rendered_frame = static_cast<u32>(InterlockedCompareExchange(&MT_frame_rendered, 0, 0));
 	if (rendered_frame != Device.dwFrame && !b_main_menu_is_active)
 	{
+		mt_tasks::lane_time time(mt_tasks::occlusion_grass);
 		CFrustum ViewBase;
 		ViewBase.CreateFromMatrix(Device.mFullTransform, FRUSTUM_P_LRTB + FRUSTUM_P_FAR);
 		Enable();

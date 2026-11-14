@@ -305,6 +305,23 @@ void CUIGameCustom::UnLoad()
 	xr_delete(m_pMessagesWnd);
 }
 
+// Mods keep the main window and the windows they attached to it in Lua and do not rebuild them on
+// on_screen_resolution_changed (in GAMMA Catspaw's Interaction Dot Marks, Timed Tutorial Prompts, Adjustable
+// Waypoint). Deleted with the HUD, they were written by the next tutorial prompt and broke the heap: a crash in the
+// HUD or in lua_close on the next save load. The main window is built anew at the same address and their windows
+// move over to it.
+void CUIGameCustom::UnLoadKeepingScriptWindows()
+{
+	if (UIMainIngameWnd && g_pGameLevel)
+	{
+		UIMainIngameWnd->DetachScriptChildren(m_script_windows);
+		UIMainIngameWnd->~CUIMainIngameWnd();
+		m_main_wnd_memory = UIMainIngameWnd;
+		UIMainIngameWnd = nullptr;
+	}
+	UnLoad();
+}
+
 void CUIGameCustom::Load()
 {
 	if (!g_pGameLevel)
@@ -319,8 +336,12 @@ void CUIGameCustom::Load()
 	R_ASSERT(!Window);
 	Window = xr_new<CUIWindow>();
 	R_ASSERT(!UIMainIngameWnd);
-	UIMainIngameWnd = xr_new<CUIMainIngameWnd>();
+	UIMainIngameWnd = m_main_wnd_memory ? new (m_main_wnd_memory) CUIMainIngameWnd() : xr_new<CUIMainIngameWnd>();
+	m_main_wnd_memory = nullptr;
 	UIMainIngameWnd->Init();
+	for (CUIWindow* window : m_script_windows)
+		UIMainIngameWnd->AttachChild(window);
+	m_script_windows.clear();
 	R_ASSERT(!m_pMessagesWnd);
 	m_pMessagesWnd = xr_new<CUIMessagesWindow>();
 	Init(0);

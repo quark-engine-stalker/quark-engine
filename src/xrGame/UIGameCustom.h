@@ -110,6 +110,12 @@ public:
 	CUIMainIngameWnd* UIMainIngameWnd;
 	CUIMessagesWindow* m_pMessagesWnd;
 
+private:
+	void* m_main_wnd_memory = nullptr; // UnLoadKeepingScriptWindows -> Load
+	xr_vector<CUIWindow*> m_script_windows;
+
+public:
+
 	CUIGameCustom();
 	virtual ~CUIGameCustom();
 	bool extract_lua_instance(lua_State* L) const;
@@ -163,6 +169,8 @@ public:
 
 	virtual void UnLoad();
 	void Load();
+	// UnLoad for a resolution change: the main window keeps its memory and the windows scripts attached to it
+	void UnLoadKeepingScriptWindows();
 	void OnConnected();
 	void UpdatePda();
 	void update_fake_indicators(u8 type, float power);

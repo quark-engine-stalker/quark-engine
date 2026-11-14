@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "upscaler.h"
 
 void CRenderTarget::phase_rain()
 {
@@ -17,8 +18,8 @@ void CRenderTarget::phase_ssfx_rain()
 	u32 Offset = 0;
 	u32 C = color_rgba(0, 0, 0, 255);
 
-	float w = float(Device.dwWidth);
-	float h = float(Device.dwHeight);
+	float w = float(upscaler::width());
+	float h = float(upscaler::height());
 
 	set_viewport_size(HW.pContext, w / 8.0f, h / 8.0f);
 

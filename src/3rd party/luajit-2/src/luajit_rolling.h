@@ -116,6 +116,10 @@ LUA_API void luaJIT_getgcpressureinfo(lua_State *L, luaJIT_GCPressureInfo *info)
 ** lua_gc() and collectgarbage() calls keep their Lua 5.1 behaviour. */
 LUA_API void luaJIT_setgchostmanaged(lua_State *L, int enabled);
 
+/* Heap size (bytes, 0: none) from which allocation-driven steps are stock even
+** while host-managed: the host may not get its next point in time. */
+LUA_API void luaJIT_setgchostlimit(lua_State *L, size_t bytes);
+
 /* Mark a full userdata as requiring (enabled != 0) or not requiring its
 ** metatable __gc callback. The opt-out is for embedding-owned borrowed
 ** wrappers whose destructor is proven to be empty; ordinary Lua userdata is

@@ -86,6 +86,7 @@ public:
 
 	void __stdcall process()
 	{
+		mt_tasks::lane_time time(mt_tasks::detail_path);
 		process_impl(true);
 	}
 

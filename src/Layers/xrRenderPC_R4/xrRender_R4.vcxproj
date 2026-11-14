@@ -278,6 +278,7 @@
     <ClInclude Include="r2_types.h" />
     <ClInclude Include="r4.h" />
     <ClInclude Include="r4_rendertarget.h" />
+    <ClInclude Include="upscaler.h" />
     <ClInclude Include="r4_rendertarget_wallmarks.h" />
     <ClInclude Include="r4_R_sun_support.h" />
     <ClInclude Include="r4_avx_math.h" />
@@ -501,6 +502,9 @@
     <ClCompile Include="r4_rendertarget_phase_accumulator.cpp" />
     <ClCompile Include="r4_rendertarget_phase_bloom.cpp" />
     <ClCompile Include="r4_rendertarget_phase_combine.cpp" />
+    <ClCompile Include="upscaler.cpp">
+      <AdditionalIncludeDirectories>$(xrSdkDir)FSR3\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
     <ClCompile Include="r4_rendertarget_phase_hdao.cpp" />
     <ClCompile Include="r4_rendertarget_phase_hdr10_bloom.cpp" />
     <ClCompile Include="r4_rendertarget_phase_hdr10_lens_flare.cpp" />
@@ -539,6 +543,8 @@
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
     </ProjectReference>
   </ItemGroup>
+  <!-- AMD FSR 3.1 upscaler with the DX11 backend of OGSR (sdk\FSR3, MIT): upscaler.cpp -->
+  <Import Project="$(xrSdkDir)FSR3\fsr3_dx11.props" />
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

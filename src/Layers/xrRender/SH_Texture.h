@@ -40,6 +40,7 @@ public:
 	//	void								Apply			(u32 dwStage);
 
 	void surface_set(ID3DBaseTexture* surf);
+	void swap_surface(CTexture& other); // the surfaces and views trade places, names stay
 	// Returns an owning COM reference; callers must Release it.
 	ID3DBaseTexture* surface_get();
 	u64 ResidentBytes() const;

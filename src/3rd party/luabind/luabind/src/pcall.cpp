@@ -29,6 +29,7 @@ namespace luabind { namespace detail
 	namespace
 	{
 		void (*g_pcall_gate)(lua_State* L) = nullptr;
+		void (*g_caught_exception)(const char* where) = nullptr;
 		pcall_profile_begin_callback g_profile_begin = nullptr;
 		pcall_profile_end_callback g_profile_end = nullptr;
 		lua_to_cpp_profile_begin_callback g_lua_to_cpp_profile_begin = nullptr;
@@ -64,6 +65,17 @@ namespace luabind { namespace detail
 	void set_pcall_gate(void (*gate)(lua_State* L))
 	{
 		g_pcall_gate = gate;
+	}
+
+	void set_caught_exception_callback(void (*callback)(const char* where))
+	{
+		g_caught_exception = callback;
+	}
+
+	void report_caught_exception(const char* where)
+	{
+		if (g_caught_exception)
+			g_caught_exception(where);
 	}
 
 	void set_pcall_profile_callbacks(
@@ -105,6 +117,18 @@ namespace luabind { namespace detail
 			g_lua_to_cpp_profile_end(context);
 	}
 
+	thread_local int t_lua_calls = 0;
+	struct lua_call_scope
+	{
+		lua_call_scope() { ++t_lua_calls; }
+		~lua_call_scope() { --t_lua_calls; }
+	};
+
+	bool lua_running_on_this_thread()
+	{
+		return t_lua_calls > 0;
+	}
+
 	int pcall(lua_State *L, int nargs, int nresults)
 	{
 		if (g_pcall_gate)
@@ -128,7 +152,11 @@ namespace luabind { namespace detail
 			lua_insert(L, base);  // push pcall_callback under chunk and args
 			en = base;
   		}
-		int result = lua_pcall(L, nargs, nresults, en);
+		int result;
+		{
+			const lua_call_scope scope;
+			result = lua_pcall(L, nargs, nresults, en);
+		}
 		if ( en )
 			lua_remove(L, en);  // remove pcall_callback
 		if (profile_end)
@@ -146,7 +174,11 @@ namespace luabind { namespace detail
 			profile_end = g_profile_end;
 		}
 
-		const int result = lua_resume(L, nargs);
+		int result;
+		{
+			const lua_call_scope scope;
+			result = lua_resume(L, nargs);
+		}
 		if (profile_end)
 			profile_end(profile_context, result);
 		return result;

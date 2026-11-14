@@ -10,6 +10,7 @@
 #include "xr_object.h"
 #include "../xrCore/net_utils.h"
 #include "../xrCore/profiler.h"
+#include "../xrCore/engine_error_logger.h"
 
 #include "CustomHUD.h"
 
@@ -151,6 +152,7 @@ void CObjectList::SingleUpdate(CObject* O)
 	O->UpdateCL_Debt = 0.f;
 	O->UpdateCL_DebtMs = 0;
 
+	const EngineErrorLogger::ObjectScope diagnostic_object("UpdateCL", O, &CObject::describe_for_log);
 	if (g_frame_stats.deep)
 	{
 		// frame_stats deep: UpdateCL time grouped by class id.
@@ -419,6 +421,7 @@ void CObjectList::ProcessDestroyQueue(bool everything)
 				if (debug_destroy)
 					Msg("Destroying object[%x][%x] [%d][%s] frame[%d]", fast_dynamic_cast<void*>(O), O, O->ID(), *O->cName(), Device.dwFrame);
 #endif // DEBUG
+				const EngineErrorLogger::ObjectScope diagnostic_object("net_Destroy", O, &CObject::describe_for_log);
 				O->net_Destroy();
 				Destroy(O);
 			}
@@ -557,6 +560,7 @@ void CObjectList::Unload()
         if (debug_destroy)
             Msg("Destroying object [%d][%s]", O->ID(), *O->cName());
 #endif
+		const EngineErrorLogger::ObjectScope diagnostic_object("net_Destroy", O, &CObject::describe_for_log);
 		O->net_Destroy();
 		Destroy(O);
 	}
@@ -570,6 +574,7 @@ void CObjectList::Unload()
         if (debug_destroy)
             Msg("Destroying object [%d][%s]", O->ID(), *O->cName());
 #endif
+		const EngineErrorLogger::ObjectScope diagnostic_object("net_Destroy", O, &CObject::describe_for_log);
 		O->net_Destroy();
 		Destroy(O);
 	}

@@ -150,6 +150,7 @@ void dxRender_Visual::SetShaderTexture(LPCSTR s_shader, LPCSTR s_texture)
     ::Render->hud_loading = hud;
     shader.create(*dbg_shader, *dbg_texture);
     ::Render->hud_loading = prev_hud;
+    forward_walk = 0xff;
 }
 
 void dxRender_Visual::ResetShaderTexture()

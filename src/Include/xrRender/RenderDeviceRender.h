@@ -60,7 +60,33 @@ public:
 	virtual void End() = 0;
 	virtual bool LatencyFrameBegin(int fps_limit) = 0;
 	virtual void LatencyRenderBegin() = 0;
-	virtual void LatencyStatus(char* text, u32 size) = 0;
+	// r__low_latency for QUARK-PANEL, per mode off, on, reflex, reflex_boost; 0 where a mode is not measured yet.
+	struct latency_report
+	{
+		u32 mode;
+		bool reflex_missing; // Reflex is chosen but the driver refused it: the mode works as off
+		bool cannot_measure;
+		float ms[4], fps[4];
+	};
+	// measure keeps the latency measured; only in a level, the menu's frame limit falsifies it
+	virtual void LatencyReport(latency_report& report, bool measure) = 0;
+	// r__upscaler for QUARK-PANEL
+	enum upscaler_state : u32
+	{
+		upscaler_off, upscaler_active, upscaler_no_nvidia, upscaler_old_driver, upscaler_no_dlss,
+		upscaler_no_motion_vectors, upscaler_msaa, upscaler_failed
+	};
+	struct upscaler_report
+	{
+		u32 method, mode, model; // the console values
+		u32 state; // of the targets in use, upscaler_state
+		bool nvidia, dlss_supported, old_driver, motion_vectors, msaa;
+		bool new_gpu, gpu_known; // RTX 40 or newer (FP8): AUTO takes the transformer models
+		u32 render_w, render_h, display_w, display_h;
+		char preset; // DLSS preset in use, 0 otherwise
+		float sharpness; // r__dlss_sharpness or r__fsr_sharpness, of the chosen method
+	};
+	virtual void UpscalerReport(upscaler_report& report) = 0;
 	virtual void ClearTarget() = 0;
 	virtual void SetCacheXform(Fmatrix& mView, Fmatrix& mProject) = 0;
 	virtual void SetCacheXform_prev(Fmatrix& mView, Fmatrix& mProject) = 0;

@@ -5,6 +5,24 @@
 #include "frame_stats.h"
 #include "Feel_Vision.h"
 #include "../xrCore/profiler.h"
+#include "../xrCore/engine_error_logger.h"
+
+// EngineErrorLogger::ObjectDescriber: a game object by name, anything else by its C++ type (RTTI, no allocation).
+static void describe_sheduled(const void* object, char* output, size_t capacity)
+{
+	const ISheduled* sheduled = static_cast<const ISheduled*>(object);
+	if (const CObject* game_object = dynamic_cast<const CObject*>(sheduled))
+	{
+		CObject::describe_for_log(game_object, output, capacity);
+		return;
+	}
+	LPCSTR name = typeid(*sheduled).raw_name(); // ".?AVCALifeSimulator@@"
+	const size_t length = strlen(name);
+	if (length > 6 && name[0] == '.' && name[1] == '?')
+		_snprintf_s(output, capacity, _TRUNCATE, "%.*s", int(length - 6), name + 4);
+	else
+		_snprintf_s(output, capacity, _TRUNCATE, "%s", name);
+}
 
 //#define DEBUG_SCHEDULER
 
@@ -730,6 +748,7 @@ void CSheduler::ProcessQueue(xr_vector<Item>& queue, LPCSTR queue_name)
 			const u64 callback_started = measure_cost ? CPU::QPC() : 0;
 			{
 				PROF_EVENT("shedule_Update");
+				const EngineErrorLogger::ObjectScope diagnostic_object("shedule_Update", object, &describe_sheduled);
 				PROF_TEXT(object->shedule_Name().c_str());
 				object->shedule_Update(clampr(elapsed, u32(1), u32(_max(u32(object->shedule.t_max), u32(1000)))));
 			}
@@ -916,6 +935,7 @@ void CSheduler::UpdateRT()
 			const u64 callback_started = measure_cost ? CPU::QPC() : 0;
 			{
 				PROF_EVENT("shedule_Update RT");
+				const EngineErrorLogger::ObjectScope diagnostic_object("shedule_Update", object, &describe_sheduled);
 				PROF_TEXT(object->shedule_Name().c_str());
 				object->shedule_Update(elapsed);
 			}

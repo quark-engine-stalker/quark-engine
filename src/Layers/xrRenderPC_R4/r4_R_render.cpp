@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "upscaler.h"
 #include "../../xrEngine/frame_stats.h"
 #include "../../xrEngine/igame_persistent.h"
 #include "../xrRender/FBasicVisual.h"
@@ -25,6 +26,9 @@ void CRender::render_main(Fmatrix& m_ViewProjection, bool _fportals)
 	PIX_EVENT(render_main);
 	//	Msg						("---begin");
 	marker ++;
+	// Main pass: the static subtrees go to the workers while the dynamic objects are tested here
+	const bool parallel_statics = mt_tasks::on(mt_tasks::main_static) && phase == PHASE_NORMAL && pmask[0] &&
+		pLastSector && xr_jobs::worker_count() > 0;
 	// Forward geometry uses the same camera and world visibility snapshot later in
 	// this frame. Reuse only the dynamic HOM/frustum result; keep the original
 	// portal/static submission path untouched for GAMMA render compatibility.
@@ -177,7 +181,13 @@ void CRender::render_main(Fmatrix& m_ViewProjection, bool _fportals)
 			}
 			else
 			{
-			// Compatibility fallback: original immediate static submission order.
+			// Original static submission order. The main pass records the subtrees of the sector roots on the
+			// workers while the dynamic objects are tested below, and replays them in this order after them.
+			if (parallel_statics)
+				start_main_statics();
+			else
+			{
+			mt_tasks::lane_time serial_time(mt_tasks::main_static);
 			for (u32 s_it = 0; s_it < PortalTraverser.r_sectors.size(); ++s_it)
 			{
 				CSector* sector = (CSector*)PortalTraverser.r_sectors[s_it];
@@ -189,6 +199,7 @@ void CRender::render_main(Fmatrix& m_ViewProjection, bool _fportals)
 					set_Frustum(&sector->r_frustums[v_it]);
 					add_Geometry(sector->root());
 				}
+			}
 			}
 			}
 			STOP_PROFILE;
@@ -288,6 +299,8 @@ void CRender::render_main(Fmatrix& m_ViewProjection, bool _fportals)
 				m_forwardDynamicVisibilityValid = true;
 			}
 			STOP_PROFILE;
+			if (parallel_statics)
+				finish_main_statics();
 
 		}
 
@@ -417,6 +430,7 @@ void CRender::Render()
 
 	VERIFY(0 == mapDistort.size() + mapHUDDistort.size());
 
+	upscaler::apply(*Target); // a choice of QUARK-PANEL, before anything is drawn
 	rmNormal();
 
 	bool _menu_pp = g_pGamePersistent ? g_pGamePersistent->OnRenderPPUI_query() : false;
@@ -442,6 +456,8 @@ void CRender::Render()
 		return;
 	}
 
+	upscaler::scene_begin(); // ends in phase_combine before the post-process
+
 	//.	VERIFY					(g_pGameLevel && g_pGameLevel->pHUD);
 
 	// Configure
@@ -457,11 +473,9 @@ void CRender::Render()
 		// HOM
 		ViewBase.CreateFromMatrix(Device.mFullTransform, FRUSTUM_P_LRTB + FRUSTUM_P_FAR);
 		View = 0;
+		// Under the lock: r2_mt switched off in this frame leaves the frame job building it already.
 		if (!ps_r2_ls_flags.test(R2FLAG_EXP_MT_CALC))
-		{
-			HOM.Enable();
-			HOM.Render(ViewBase);
-		}
+			HOM.MT_RENDER();
 	}
 
 	//******* Z-prefill calc - DEFERRER RENDERER
@@ -558,7 +572,7 @@ void CRender::Render()
 	if (RImplementation.o.ssfx_motionvectors)
 	{
 
-		Target->u_setrt(Device.dwWidth, Device.dwHeight, 0, 0, Target->rt_ssfx_motion_vectors->pRT, 0);
+		Target->u_setrt(upscaler::width(), upscaler::height(), 0, 0, Target->rt_ssfx_motion_vectors->pRT, 0);
 
 		FLOAT ColorRGBA[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 		HW.pContext->ClearRenderTargetView(Target->rt_ssfx_motion_vectors->pRT, ColorRGBA);
@@ -575,7 +589,7 @@ void CRender::Render()
 	if (ps_r2_ls_flags.test(R2FLAG_TERRAIN_PREPASS))
 	{
 
-		Target->u_setrt(Device.dwWidth, Device.dwHeight, NULL, NULL, NULL, !RImplementation.o.dx10_msaa ? HW.pBaseZB : Target->rt_MSAADepth->pZRT);
+		Target->u_setrt(upscaler::width(), upscaler::height(), NULL, NULL, NULL, !RImplementation.o.dx10_msaa ? HW.pBaseZB : Target->rt_MSAADepth->pZRT);
 		r_dsgraph_render_landscape(0, false);
 	}
 
@@ -938,7 +952,7 @@ void CRender::render_forward()
 		mapLOD.clear();
 		r_dsgraph_render_graph(1); // normal level, secondary priority
 		PortalTraverser.fade_render(); // faded-portals
-		r_dsgraph_render_sorted(); // strict-sorted geoms
+		r_dsgraph_render_sorted(!upscaler::enabled()); // strict-sorted geoms; the HUD's after the upscale (phase_combine)
 		//g_pGamePersistent->Environment().RenderLast(); // rain/thunder-bolts
 	}
 

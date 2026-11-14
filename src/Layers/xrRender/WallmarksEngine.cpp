@@ -369,6 +369,8 @@ void CWallmarksEngine::AddStaticWallmark(CDB::TRI* pTri, const Fvector* pVerts, 
 void CWallmarksEngine::AddSkeletonWallmark(const Fmatrix* xf, CKinematics* obj, ref_shader& sh, const Fvector& start,
                                            const Fvector& dir, float size, float ttl, bool ignore_opt)
 {
+	// Lua on the frame job: the render walks the model's wallmarks without the lock, and its phase is not ours to read
+	RDEVICE.WaitSceneRendered();
 	if (::RImplementation.phase != CRender::PHASE_NORMAL) return;
 	// optimization cheat: don't allow wallmarks more than 50 m from viewer/actor
 	if (!ignore_opt && xf->c.distance_to_sqr(Device.vCameraPosition) > _sqr(wallmark_range_skeleton)) return;
@@ -402,6 +404,7 @@ void CWallmarksEngine::skin_chunks(void* context)
 {
 	constexpr u32 chunk = 8;
 	CWallmarksEngine& self = *static_cast<CWallmarksEngine*>(context);
+	mt_tasks::lane_time time(mt_tasks::wallmark_skin);
 	const u32 count = u32(self.skin_jobs.size());
 	for (;;)
 	{
@@ -463,7 +466,10 @@ void CWallmarksEngine::PrepareSkeletonWallmarks()
 	}
 	lock.Leave();
 
-	const u32 lanes = _min(xr_jobs::available_thread_count(), total / verts_per_lane);
+	// Switched off, through the reset below: a mark left prepared would be drawn from the last frame's vertices.
+	const u32 lanes = mt_tasks::on(mt_tasks::wallmark_skin) ?
+		_min(xr_jobs::available_thread_count(), total / verts_per_lane) : 0;
+	mt_tasks::lanes(mt_tasks::wallmark_skin, lanes);
 	if (lanes == 0)
 	{
 		skin_jobs.clear_not_free();
@@ -630,6 +636,7 @@ void CWallmarksEngine::Render()
 				FVF::LIT* const w_save = w_verts;
 				try
 				{
+					mt_tasks::lane_time time(mt_tasks::wallmark_skin);
 					W->Parent()->RenderWallmark(W, w_verts);
 				}
 				catch (...)

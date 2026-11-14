@@ -4,6 +4,7 @@
 
 #include "ResourceManager.h"
 #include "../xrRenderDX10/dx10LowLatency.h"
+#include "../xrRenderPC_R4/upscaler.h"
 
 dxRenderDeviceRender::dxRenderDeviceRender()
 	: Resources(0), m_lastPresentResult(S_OK)
@@ -85,7 +86,7 @@ void dxRenderDeviceRender::SetupStates()
 	//	TODO: DX10: Implement Resetting of render states into default mode
 	//VERIFY(!"dxRenderDeviceRender::SetupStates not implemented.");
 	SSManager.SetMaxAnisotropy(ps_r__tf_Anisotropic);
-	SSManager.SetMipLODBias(ps_r__tf_Mipbias);
+	SSManager.SetMipLODBias(ps_r__tf_Mipbias + upscaler::mip_bias());
 }
 
 void dxRenderDeviceRender::OnDeviceCreate(LPCSTR shName)
@@ -355,9 +356,14 @@ void dxRenderDeviceRender::LatencyRenderBegin()
 	low_latency::render_begin();
 }
 
-void dxRenderDeviceRender::LatencyStatus(char* text, u32 size)
+void dxRenderDeviceRender::LatencyReport(latency_report& report, bool measure)
 {
-	low_latency::status_line(text, size);
+	low_latency::report(report, measure);
+}
+
+void dxRenderDeviceRender::UpscalerReport(upscaler_report& report)
+{
+	upscaler::report(report);
 }
 
 void dxRenderDeviceRender::End()

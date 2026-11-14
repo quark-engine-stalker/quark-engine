@@ -11,6 +11,7 @@
 #include "movement_manager.h"
 #include "level_path_manager.h"
 #include "detail_path_builder.h"
+#include <atomic>
 
 extern int psAI_LevelPathMaxPerFrame;
 
@@ -114,9 +115,18 @@ public:
 			fastdelegate::FastDelegate0<>(this, &CLevelPathBuilder::process));
 	}
 
+	// A search on a worker runs beside its NPC's own update on the frame job (vanilla ran them one after another): the
+	// NPC waits until the path is written, else its update sets the search up anew under it.
+	void search_written()
+	{
+		std::atomic_thread_fence(std::memory_order_release);
+		m_object->m_wait_for_distributed_computation = false;
+	}
+
 	void process_impl(bool separate_compute = false)
 	{
-		m_object->m_wait_for_distributed_computation = false;
+		if (!separate_compute)
+			m_object->m_wait_for_distributed_computation = false;
 		{
 
 			m_object->level_path().build_path(m_start_vertex_id, m_dest_vertex_id);
@@ -132,6 +142,8 @@ public:
 			}
 
 			m_object->m_path_state = CMovementManager::ePathStateBuildLevelPath;
+			if (separate_compute)
+				search_written();
 			return;
 		}
 
@@ -142,7 +154,10 @@ public:
 
 		m_object->m_path_state = CMovementManager::ePathStateBuildDetailPath;
 		if (separate_compute)
+		{
+			search_written();
 			return;
+		}
 
 		m_object->detail().set_state_patrol_path(m_extrapolate_path);
 		m_object->detail().set_start_position(m_object->object().Position());
@@ -157,13 +172,16 @@ public:
 
 	void __stdcall process()
 	{
+		mt_tasks::lane_time time(mt_tasks::level_path);
 		m_object->build_level_path(true);
 	}
 
 	IC void remove()
 	{
+		// A search a worker has started writes the path the caller resets next: it ends first
 		if (m_object->m_wait_for_distributed_computation)
-			m_object->m_wait_for_distributed_computation = false;
+			Device.FinishFrameIndependentWork();
+		m_object->m_wait_for_distributed_computation = false;
 
 		Device.remove_from_seq_parallel_independent(
 			fastdelegate::FastDelegate0<>(

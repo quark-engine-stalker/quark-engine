@@ -237,6 +237,7 @@ CDetailManager::~CDetailManager()
 	// CRender::OnFrame queues MT_CALC for this object at the start of the frame. A device reset later in the same
 	// frame (vid_restart with changed grass settings) deletes the manager before that queue runs.
 	RDEVICE.remove_from_seq_parallel_independent(fastdelegate::FastDelegate0<>(this, &CDetailManager::MT_CALC));
+	stop_main_pack();
 	if (dtFS)
 	{
 		FS.r_close(dtFS);
@@ -376,6 +377,7 @@ void CDetailManager::Load()
 #endif
 void CDetailManager::Unload()
 {
+	stop_main_pack();
 	ResetFrameState();
 	if (UseVS()) hw_Unload();
 	else soft_Unload();
@@ -389,6 +391,9 @@ void CDetailManager::Unload()
 	m_visibles[0].clear();
 	m_visibles[1].clear();
 	m_visibles[2].clear();
+	m_main_pack.clear_and_free();
+	m_main_pack_chunks = 0;
+	m_main_pack_frame = u32(-1);
 	FS.r_close(dtFS);
 	dtFS = 0;
 	xr_free(dtSlots); // heap-owned wide slot array (was a VFS alias pre-v4)
@@ -396,35 +401,19 @@ void CDetailManager::Unload()
 
 extern ECORE_API float r_ssaDISCARD;
 
-void CDetailManager::UpdateVisibleM()
+// One row of the level-1 cache, its slots in the order of the serial walk; every visible list entry goes to push.
+// A slot belongs to one row only: rows may run on several threads at once.
+template <typename Push>
+void CDetailManager::UpdateVisibleRow(const VisibilityPass& pass, u32 _mz, Push& push)
 {
-	Fvector EYE = RDEVICE.vCameraPosition_saved;
-
-	CFrustum View;
-	View.CreateFromMatrix(RDEVICE.mFullTransform_saved, FRUSTUM_P_LRTB + FRUSTUM_P_FAR);
-
-	float fade_limit = dm_fade;
-	fade_limit = fade_limit * fade_limit;
-	float fade_start = 1.f;
-	fade_start = fade_start * fade_start;
-	float fade_range = fade_limit - fade_start;
-	float r_ssaCHEAP = 16 * r_ssaDISCARD;
-	const bool no_scale = psDeviceFlags2.test(rsNoScale);
-	const float alpha_step = RDEVICE.fTimeDelta;
-	const u32 fp_control = _mm_getcsr() & ~0x3fu;
-	if (memcmp(&m_grass_visibility_ssa_discard, &r_ssaDISCARD, sizeof(float)) != 0 ||
-		m_grass_visibility_no_scale != no_scale || m_grass_visibility_fp_control != fp_control)
-	{
-		++m_grass_visibility_parameters_generation;
-		m_grass_visibility_ssa_discard = r_ssaDISCARD;
-		m_grass_visibility_no_scale = no_scale;
-		m_grass_visibility_fp_control = fp_control;
-	}
-
-	// Initialize 'vis' and 'cache'
-	// Collect objects for rendering
-	RDEVICE.Statistic->RenderDUMP_DT_VIS.Begin();
-	for (u32 _mz = 0; _mz < dm_cache1_line; _mz++)
+	Fvector EYE = pass.eye;
+	CFrustum View = pass.view;
+	const float fade_limit = pass.fade_limit;
+	const float fade_start = pass.fade_start;
+	const float fade_range = pass.fade_range;
+	const float r_ssaCHEAP = pass.ssa_cheap;
+	const bool no_scale = pass.no_scale;
+	const float alpha_step = pass.alpha_step;
 	{
 		for (u32 _mx = 0; _mx < dm_cache1_line; _mx++)
 		{
@@ -558,7 +547,7 @@ void CDetailManager::UpdateVisibleM()
 							if (!advance_detail_alpha(sp.r_items[0], alpha_step))
 								sp.alpha_fading_mask &= static_cast<u8>(~1u);
 						}
-						m_visibles[0][sp.id].push_back({&sp.r_items[0], &S});
+						push(0, sp.id, VisibleSlotItems{&sp.r_items[0], &S});
 					}
 					if (!sp.r_items[1].empty())
 					{
@@ -568,7 +557,7 @@ void CDetailManager::UpdateVisibleM()
 							if (!advance_detail_alpha(sp.r_items[1], alpha_step))
 								sp.alpha_fading_mask &= static_cast<u8>(~2u);
 						}
-						m_visibles[1][sp.id].push_back({&sp.r_items[1], &S});
+						push(1, sp.id, VisibleSlotItems{&sp.r_items[1], &S});
 					}
 					if (!sp.r_items[2].empty())
 					{
@@ -578,7 +567,7 @@ void CDetailManager::UpdateVisibleM()
 							if (!advance_detail_alpha(sp.r_items[2], alpha_step))
 								sp.alpha_fading_mask &= static_cast<u8>(~4u);
 						}
-						m_visibles[2][sp.id].push_back({&sp.r_items[2], &S});
+						push(2, sp.id, VisibleSlotItems{&sp.r_items[2], &S});
 					}
 				}
 				// Includes the final alpha step before the packed path becomes eligible.
@@ -586,6 +575,84 @@ void CDetailManager::UpdateVisibleM()
 					++S.grass_upload_source_generation;
 			}
 		}
+	}
+}
+
+void CDetailManager::VisibleRowsLane(void* data)
+{
+	VisibleRowsWork& work = *static_cast<VisibleRowsWork*>(data);
+	CDetailManager& self = *work.self;
+	for (;;)
+	{
+		const u32 row = static_cast<u32>(InterlockedIncrement(&work.next_row) - 1);
+		if (row >= self.m_visible_rows.size())
+			break;
+		xr_vector<VisibleEntry>& entries = self.m_visible_rows[row];
+		entries.clear_not_free();
+		auto push = [&entries](u32 variant, u32 object, const VisibleSlotItems& item)
+		{
+			entries.push_back({item, variant, object});
+		};
+		self.UpdateVisibleRow(*work.pass, row, push);
+	}
+}
+
+void CDetailManager::VisibleRowsHelper(void* data)
+{
+	mt_tasks::lane_time time(mt_tasks::occlusion_grass);
+	VisibleRowsLane(data);
+}
+
+void CDetailManager::UpdateVisibleM()
+{
+	VisibilityPass pass;
+	pass.eye = RDEVICE.vCameraPosition_saved;
+	pass.view.CreateFromMatrix(RDEVICE.mFullTransform_saved, FRUSTUM_P_LRTB + FRUSTUM_P_FAR);
+	pass.fade_limit = dm_fade * dm_fade;
+	pass.fade_start = 1.f;
+	pass.fade_range = pass.fade_limit - pass.fade_start;
+	pass.ssa_cheap = 16 * r_ssaDISCARD;
+	pass.no_scale = psDeviceFlags2.test(rsNoScale);
+	pass.alpha_step = RDEVICE.fTimeDelta;
+	const u32 fp_control = _mm_getcsr() & ~0x3fu;
+	if (memcmp(&m_grass_visibility_ssa_discard, &r_ssaDISCARD, sizeof(float)) != 0 ||
+		m_grass_visibility_no_scale != pass.no_scale || m_grass_visibility_fp_control != fp_control)
+	{
+		++m_grass_visibility_parameters_generation;
+		m_grass_visibility_ssa_discard = r_ssaDISCARD;
+		m_grass_visibility_no_scale = pass.no_scale;
+		m_grass_visibility_fp_control = fp_control;
+	}
+
+	RDEVICE.Statistic->RenderDUMP_DT_VIS.Begin();
+	const u32 rows = dm_cache1_line;
+	// A small grass radius has a few rows and little work: one thread; r2_mt off keeps it all on the main thread
+	const u32 lanes = rows >= 16 && ps_r2_ls_flags.test(R2FLAG_EXP_MT_CALC) ?
+		_min(4u, xr_jobs::worker_count()) : 1;
+	if (lanes < 2)
+	{
+		auto push = [this](u32 variant, u32 object, const VisibleSlotItems& item)
+		{
+			m_visibles[variant][object].push_back(item);
+		};
+		for (u32 row = 0; row < rows; ++row)
+			UpdateVisibleRow(pass, row, push);
+	}
+	else
+	{
+		// The rows go to whichever lane is free and keep what they add; the lists are then filled in row order, as the
+		// serial walk fills them (the render's batches and upload keys follow that order). The camera moving rebuilds
+		// the lists of every slot it re-evaluates: one thread made the render wait for it.
+		m_visible_rows.resize(rows);
+		VisibleRowsWork work = {this, &pass, 0};
+		xr_jobs::task_group group;
+		xr_jobs::submit_many(&VisibleRowsHelper, &work, lanes - 1, &group, xr_jobs::priority::high);
+		VisibleRowsLane(&work);
+		xr_jobs::wait_own(group);
+		mt_tasks::lanes(mt_tasks::occlusion_grass, lanes);
+		for (const xr_vector<VisibleEntry>& entries : m_visible_rows)
+			for (const VisibleEntry& entry : entries)
+				m_visibles[entry.variant][entry.object].push_back(entry.item);
 	}
 	RDEVICE.Statistic->RenderDUMP_DT_VIS.End();
 }
@@ -723,13 +790,19 @@ void CDetailManager::PrepareSunShadowCascades(const CFrustum* const* frustums, u
 		}
 	}
 
-	// Build a tiny model-level mask once. Slot masks remain the authoritative
-	// filter; this OR only avoids entering shader/pass setup when every slot of a
-	// detail model is outside the current cascade.
+	// The slots of every cascade, listed once: a cascade pass walked every visible slot of every model and variant to
+	// drop the ones outside it. The model-level OR still lets a pass skip the shader setup of a model with none.
 	for (u32 variant = 0; variant < 3; ++variant)
 	{
 		xr_vector<u8>& object_masks = m_grass_sun_object_masks[variant];
 		object_masks.assign(objects.size(), 0);
+		for (u32 cascade = 0; cascade < cascade_count; ++cascade)
+		{
+			xr_vector<xr_vector<u32>>& lists = m_grass_sun_slots[cascade][variant];
+			lists.resize(objects.size());
+			for (xr_vector<u32>& list : lists)
+				list.clear_not_free();
+		}
 		vis_list& visible = m_visibles[variant];
 		const u32 model_count = _min(static_cast<u32>(visible.size()), static_cast<u32>(object_masks.size()));
 		for (u32 object_index = 0; object_index < model_count; ++object_index)
@@ -738,9 +811,11 @@ void CDetailManager::PrepareSunShadowCascades(const CFrustum* const* frustums, u
 			xr_vector<VisibleSlotItems>& slots = visible[object_index];
 			for (u32 slot_index = 0; slot_index < slots.size(); ++slot_index)
 			{
-				object_mask |= sun_shadow_mask_for_slot(*slots[slot_index].slot);
-				if (object_mask == ((1u << cascade_count) - 1u))
-					break;
+				const u32 mask = sun_shadow_mask_for_slot(*slots[slot_index].slot);
+				object_mask |= mask;
+				for (u32 cascade = 0; cascade < cascade_count; ++cascade)
+					if (mask & (1u << cascade))
+						m_grass_sun_slots[cascade][variant][object_index].push_back(slot_index);
 			}
 			object_masks[object_index] = static_cast<u8>(object_mask);
 		}
@@ -817,6 +892,7 @@ void CDetailManager::Render()
 void CDetailManager::ResetFrameState()
 {
 	m_frame_state.frame = u32(-1);
+	m_main_pack_frame = u32(-1);
 	m_detail_upload_frame = u32(-1);
 	++m_detail_upload_generation;
 	m_detail_upload_count = 0;
@@ -859,6 +935,7 @@ void __stdcall CDetailManager::MT_CALC()
 #endif
 
 	PROF_EVENT("CDetailManager::MT_CALC");
+	bool pack = false;
 	MT.Enter();
 	const u32 current_frame = RDEVICE.dwFrame;
 	const u32 calculated_frame = static_cast<u32>(InterlockedCompareExchange(&m_frame_calc, 0, 0));
@@ -867,6 +944,8 @@ void __stdcall CDetailManager::MT_CALC()
 		const u32 rendered_frame = static_cast<u32>(InterlockedCompareExchange(&m_frame_rendered, 0, 0));
 		if ((rendered_frame + 1) == current_frame) //already rendered
 		{
+			mt_tasks::lane_time time(mt_tasks::occlusion_grass);
+			stop_main_pack(); // a frame whose render drew no grass left its lanes going
 			Fvector EYE = RDEVICE.vCameraPosition_saved;
 
 			int s_x = iFloor(EYE.x / dm_slot_size + .5f);
@@ -877,14 +956,70 @@ void __stdcall CDetailManager::MT_CALC()
 			RDEVICE.Statistic->RenderDUMP_DT_Cache.End();
 
 			UpdateVisibleM();
+			// Packed only from a worker (the main thread would pay the packing and the copy), by lanes started after
+			// the lock: the render goes on with the visible lists meanwhile
+			pack = UseVS() && xr_jobs::is_worker_thread();
+			if (pack)
+			{
+				// The chunks in the draw order of hw_Render: variants 1, 2, 0, model by model
+				u32 chunks = 0;
+				for (u32 order = 0; order < 3; ++order)
+				{
+					const u32 variant = (order + 1) % 3;
+					m_main_pack_first[variant].resize(objects.size());
+					for (u32 object = 0; object < objects.size(); ++object)
+					{
+						m_main_pack_first[variant][object] = chunks;
+						const u32 visible = static_cast<u32>(m_visibles[variant][object].size());
+						for (u32 begin = 0; begin < visible; begin += main_pack_chunk, ++chunks)
+						{
+							if (m_main_pack.size() <= chunks)
+								m_main_pack.resize(chunks + 1);
+							MainPassPack& chunk = m_main_pack[chunks];
+							chunk.variant = variant;
+							chunk.object = object;
+							chunk.begin = begin;
+							chunk.end = _min(begin + main_pack_chunk, visible);
+						}
+					}
+				}
+				m_main_pack_chunks = chunks;
+				m_main_pack_fp_control = _mm_getcsr() & ~0x3fu;
+				m_main_pack_frame = current_frame;
+				m_main_pack_next = static_cast<LONG>(chunks);
+				m_main_pack_lane = 0;
+				m_main_pack_claim = -1;
+				// One lane while the pass copies nearly everything (packed or from its upload cache); more while it
+				// still writes many instances itself (a moving camera): extra lanes take workers from the rest
+				if (m_main_slow_instances > 32768)
+					m_main_pack_lane_count = _min(m_main_pack_lane_count + 1, main_pack_lanes);
+				else if (m_main_slow_instances < 8192 && m_main_pack_lane_count > 1)
+					--m_main_pack_lane_count;
+				m_main_slow_instances = 0;
+			}
 			InterlockedExchange(&m_frame_calc, static_cast<LONG>(current_frame));
 		}
 	}
 	MT.Leave();
+	if (pack)
+	{
+		const u32 lanes = _min(m_main_pack_lane_count, xr_jobs::worker_count());
+		xr_jobs::submit_many(&pack_main_lane, this, lanes, &m_main_pack_group, xr_jobs::priority::high);
+		mt_tasks::lanes(mt_tasks::occlusion_grass, lanes);
+	}
+}
+
+// The lanes stop at their next model and are joined: they read the visible lists and slots that details_clear and
+// the next MT_CALC change
+void CDetailManager::stop_main_pack()
+{
+	InterlockedExchange(&m_main_pack_claim, MAXLONG);
+	xr_jobs::wait_own(m_main_pack_group);
 }
 
 void CDetailManager::details_clear()
 {
+	stop_main_pack();
 
 	// Disable fade, next render will be scene
 	fade_distance = 99999;

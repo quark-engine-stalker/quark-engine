@@ -779,6 +779,12 @@
     <ClCompile Include="imgui_base.cpp">
       <Filter>Interfaces\ImGui</Filter>
     </ClCompile>
+    <ClCompile Include="mt_panel.cpp">
+      <Filter>Interfaces\ImGui</Filter>
+    </ClCompile>
+    <ClCompile Include="mt_threads.cpp">
+      <Filter>Interfaces\ImGui</Filter>
+    </ClCompile>
     <ClCompile Include="imgui_base_input.cpp">
       <Filter>Interfaces\ImGui</Filter>
     </ClCompile>
@@ -793,7 +799,7 @@
     <Image Include="splash_xrcs_en.png">
       <Filter>General\Resources</Filter>
     </Image>
-    <Image Include="quark_logo.ico">
+    <Image Include="quark_exe_icon.ico">
       <Filter>General\Resources</Filter>
     </Image>
   </ItemGroup>

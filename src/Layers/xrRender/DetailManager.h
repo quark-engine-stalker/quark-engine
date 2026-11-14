@@ -7,6 +7,7 @@
 #pragma once
 
 #include "../../xrCore/xrpool.h"
+#include "../../xrCore/job_system.h"
 #include "detailformat.h"
 #include "detailmodel.h"
 
@@ -243,6 +244,64 @@ public:
 
 	void UpdateVisibleM();
 	void UpdateVisibleS();
+
+	// The frame's inputs of the visibility walk, shared by its lanes
+	struct VisibilityPass
+	{
+		Fvector eye;
+		CFrustum view;
+		float fade_limit, fade_start, fade_range, ssa_cheap, alpha_step;
+		bool no_scale;
+	};
+	// What one row of the level-1 cache adds to m_visibles, in the order the serial walk adds it
+	struct VisibleEntry
+	{
+		VisibleSlotItems item;
+		u32 variant;
+		u32 object;
+	};
+	struct VisibleRowsWork
+	{
+		CDetailManager* self;
+		const VisibilityPass* pass;
+		volatile LONG next_row;
+	};
+	xr_vector<xr_vector<VisibleEntry>> m_visible_rows;
+	template <typename Push> void UpdateVisibleRow(const VisibilityPass& pass, u32 row, Push& push);
+	static void VisibleRowsLane(void* work);
+	static void VisibleRowsHelper(void* work);
+
+	// The constant rows of the visible instances, packed by lanes on the workers once MT_CALC has the visible lists,
+	// in the order the render loop writes them, so the main pass copies contiguous rows instead of chasing scattered
+	// instances. A chunk is up to main_pack_chunk entries of one model's visible list; the chunks are numbered in the
+	// pass's draw order. The lanes take them from the last one backwards and the pass draws from the first one: it
+	// copies the chunks already packed and writes the others itself, it never waits for them. Chunks, not whole
+	// models: the first models of the order hold most of the grass.
+	struct MainPassPack
+	{
+		xr_vector<Fvector4> rows; // 4 per instance
+		xr_vector<Fvector4> extra; // 1 per instance
+		u32 count = 0;
+		u32 variant = 0, object = 0, begin = 0, end = 0; // the visible list entries it covers
+		float farthest = 0.f; // farthest packed slot, squared like Slot::distance
+		volatile LONG ready = -1; // the frame it was packed for, set after the rows
+	};
+	static constexpr u32 main_pack_lanes = 4;
+	static constexpr u32 main_pack_chunk = 64;
+	xr_vector<MainPassPack> m_main_pack; // grows only, the first m_main_pack_chunks are the frame's
+	u32 m_main_pack_chunks = 0;
+	xr_vector<u32> m_main_pack_first[3]; // [variant][object]: the model's first chunk
+	u32 m_main_pack_frame = u32(-1);
+	u32 m_main_pack_fp_control = 0;
+	volatile LONG m_main_pack_next = 0; // the next chunk a lane takes, counting down
+	volatile LONG m_main_pack_lane = 0; // lane numbers handed out for the frame
+	volatile LONG m_main_pack_claim = -1; // the pass's chunk being drawn: the lanes stop there
+	volatile LONG m_main_pack_current[main_pack_lanes] = {-1, -1, -1, -1}; // the chunk each lane reads
+	u32 m_main_pack_lane_count = 1;
+	u32 m_main_slow_instances = 0; // the last main pass wrote these itself from the scattered instances
+	xr_jobs::task_group m_main_pack_group;
+	static void pack_main_lane(void* manager);
+	void stop_main_pack();
 public:
 #ifdef _EDITOR
 	virtual ObjectList* 			GetSnapList		()=0;
@@ -311,13 +370,16 @@ public:
 	volatile LONG m_frame_rendered;
 
 	void __stdcall MT_CALC();
+	volatile LONG m_render_waits = 0; // the render waits for MT_CALC: a whole-cache unpack cuts its slice short
 	ICF void MT_SYNC()
 	{
 		const u32 calculated_frame = static_cast<u32>(InterlockedCompareExchange(&m_frame_calc, 0, 0));
 		if (calculated_frame == RDEVICE.dwFrame)
 			return;
 
+		InterlockedExchange(&m_render_waits, 1);
 		MT_CALC();
+		InterlockedExchange(&m_render_waits, 0);
 	}
 
 	CDetailManager();
@@ -405,6 +467,9 @@ private:
 	// shadow pass skip shader/material setup for a model that contributes nothing
 	// to the current cascade while retaining vector capacity across frames.
 	xr_vector<u8> m_grass_sun_object_masks[3];
+	// [cascade][variant][model]: positions in m_visibles of the slots the cascade sees, in their order there. A cascade
+	// pass walks these instead of every visible slot.
+	xr_vector<xr_vector<u32>> m_grass_sun_slots[grass_sun_cascade_capacity][3];
 	u64 m_grass_render_fade_generation = 1;
 
 	void prepare_frame_state();

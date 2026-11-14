@@ -3199,18 +3199,18 @@ void CCC_RegisterCommands()
 	CMD1(CCC_DemoRecordSetDir, "demo_set_cam_direction");
 	//#endif // #ifndef MASTER_GOLD
 
-#ifndef MASTER_GOLD
-	// ai
+	// ai; the ones read by the engine are switches of mt_panel
 	CMD3(CCC_Mask, "mt_ai_vision", &g_mt_config, mtAiVision);
 	CMD3(CCC_Mask, "mt_level_path", &g_mt_config, mtLevelPath);
 	CMD3(CCC_Mask, "mt_detail_path", &g_mt_config, mtDetailPath);
+	CMD3(CCC_Mask, "mt_bullets", &g_mt_config, mtBullets);
+	CMD3(CCC_Mask, "mt_level_sounds", &g_mt_config, mtLevelSounds);
+	CMD3(CCC_Mask, "mt_map", &g_mt_config, mtMap);
+#ifndef MASTER_GOLD
 	CMD3(CCC_Mask, "mt_object_handler", &g_mt_config, mtObjectHandler);
 	CMD3(CCC_Mask, "mt_sound_player", &g_mt_config, mtSoundPlayer);
-	CMD3(CCC_Mask, "mt_bullets", &g_mt_config, mtBullets);
 	CMD3(CCC_Mask, "mt_script_gc", &g_mt_config, mtLUA_GC);
-	CMD3(CCC_Mask, "mt_level_sounds", &g_mt_config, mtLevelSounds);
 	CMD3(CCC_Mask, "mt_alife", &g_mt_config, mtALife);
-	CMD3(CCC_Mask, "mt_map", &g_mt_config, mtMap);
 #endif // MASTER_GOLD
 
 	// Skeleton worker controls are available in shipping builds: they are the escape

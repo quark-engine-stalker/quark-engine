@@ -37,9 +37,10 @@
 1. Убедитесь, что STALKER: Anomaly 1.5.3 и STALKER: GAMMA 0.9.5 установлены корректно. Инструкции по их установке есть у соответствующих авторов.
 2. **Сделайте резервную копию** папки `Anomaly\bin` и папки `Anomaly\gamedata`.
 3. Скачайте последний архив `AnomalyDX11AVX.rar` со [страницы релизов](https://github.com/quark-engine-stalker/quark-engine/releases) и распакуйте его.
-4. Скопируйте `AnomalyDX11AVX.exe` и `AnomalyDX11AVX.pdb` в папку `Anomaly\bin` с заменой существующих файлов.
+4. Скопируйте `AnomalyDX11AVX.exe`, `AnomalyDX11AVX.pdb` и `nvngx_dlss.dll` в папку `Anomaly\bin` с заменой существующих файлов. `nvngx_dlss.dll` должен лежать рядом с `AnomalyDX11AVX.exe`, без него DLSS не работает.
 5. Скопируйте папку `gamedata` из архива в корень папки `Anomaly` (рядом с `bin`) с заменой существующих файлов.
 6. Запустите через MO2 (Mod Organizer) **Anomaly Launcher**, включите **Support for AVX CPU** и **Delete Shader Cache** и запустите игру. Шейдеры перекомпилируются при первом запуске.
+7. В движке есть собственная панель. Введите в консоль `quark_panel`, чтобы открыть её (в ней есть настройки REFLEX, DLSS, FSR и многое другое).
 
 Настройки графики рекомендуется оставить по умолчанию. При ошибках приложите к сообщению о проблеме логи из папки `AppData\Roaming\QUARK-ENGINE\ERROR` и отправьте все это нам в Discord.
 

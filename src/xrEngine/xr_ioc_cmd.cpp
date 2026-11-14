@@ -290,13 +290,14 @@ public:
 	virtual void Execute(LPCSTR args)
 	{
 		Log("- --- Console variables: start ---");
-		for (const auto& command : Console->Commands)
-		{
-			IConsole_Command::TStatus status;
-			command.second->Status(status);
-			if (status[0])
-				Msg("%s %s", command.second->Name(), status);
-		}
+		for (const CConsole::vecCMD* commands : {&Console->Commands, &Console->HiddenCommands})
+			for (const auto& command : *commands)
+			{
+				IConsole_Command::TStatus status;
+				command.second->Status(status);
+				if (status[0])
+					Msg("%s %s", command.second->Name(), status);
+			}
 		Log("- --- Console variables: end ---");
 	}
 };
@@ -342,9 +343,9 @@ public:
 		if (b_allow)
 		{
 			IWriter* F = FS.w_open(cfg_full_name);
-			CConsole::vecCMD_IT it;
-			for (it = Console->Commands.begin(); it != Console->Commands.end(); it++)
-				it->second->Save(F);
+			for (const CConsole::vecCMD* commands : {&Console->Commands, &Console->HiddenCommands})
+				for (const auto& command : *commands)
+					command.second->Save(F);
 			FS.w_close(F);
 			Msg("Config-file [%s] saved successfully", cfg_full_name);
 		}
@@ -1011,6 +1012,28 @@ public:
 	}
 };
 
+// An experimental parallel path of mt_panel: on until the game quits, never saved to user.ltx.
+class CCC_MaskSession : public CCC_Mask
+{
+public:
+	CCC_MaskSession(LPCSTR N, Flags32* V, u32 M) : CCC_Mask(N, V, M) {}
+	void Save(IWriter*) override {}
+};
+
+// QUARK-PANEL, the engine's settings window (mt_panel.cpp): everything else is set up in it
+class CCC_MTPanel : public IConsole_Command
+{
+public:
+	CCC_MTPanel(pcstr name) : IConsole_Command(name) { bEmptyArgsHandled = true; }
+	void Execute(pcstr) override
+	{
+		Console->Hide();
+		if (!Device.imgui().is_mt_panel_shown() || !Device.imgui().is_input()) // opens, never closes
+			Device.imgui().ShowMTPanel();
+	}
+	void Info(TInfo& I) override { xr_strcpy(I, "opens QUARK-PANEL, the engine's settings"); }
+};
+
 ENGINE_API float psHUD_FOV_def = 0.45f;
 ENGINE_API float psHUD_FOV = psHUD_FOV_def;
 
@@ -1244,7 +1267,6 @@ void CCC_Register()
     CMD1(CCC_DbgStrDump, "dbg_str_dump");
 
     CMD3(CCC_Mask, "mt_sound", &psDeviceFlags, mtSound);
-    CMD3(CCC_Mask, "mt_physics", &psDeviceFlags, mtPhysics);
     CMD3(CCC_Mask, "mt_network", &psDeviceFlags, mtNetwork);
 
     // Events
@@ -1417,6 +1439,22 @@ void CCC_Register()
 
 	CMD4(CCC_Integer, "r__framelimit", &ps_framelimiter, 0, 500);
 	CMD4(CCC_Integer, "mt_scheduler", &mt_Scheduler, 0, 1);
+	// Parallel tasks, see QUARK-PANEL. Off: the same work on the thread that would wait for it.
+	CMD3(CCC_Mask, "mt_frame_job", &mt_tasks::switches, 1u << mt_tasks::frame_job);
+	CMD3(CCC_Mask, "mt_frame_independent", &mt_tasks::switches, 1u << mt_tasks::frame_independent);
+	CMD3(CCC_Mask, "mt_frame_audio", &mt_tasks::switches, 1u << mt_tasks::frame_audio);
+	CMD3(CCC_Mask, "mt_frame_tail", &mt_tasks::switches, 1u << mt_tasks::frame_tail);
+	CMD3(CCC_Mask, "mt_frame_lua_gc", &mt_tasks::switches, 1u << mt_tasks::lua_gc);
+	CMD3(CCC_Mask, "mt_light_faces", &mt_tasks::switches, 1u << mt_tasks::light_faces);
+	CMD3(CCC_Mask, "mt_opaque_sort", &mt_tasks::switches, 1u << mt_tasks::opaque_sort);
+	CMD3(CCC_Mask, "mt_particle_render", &mt_tasks::switches, 1u << mt_tasks::particle_render);
+	CMD3(CCC_Mask, "mt_wallmark_skin", &mt_tasks::switches, 1u << mt_tasks::wallmark_skin);
+	CMD3(CCC_Mask, "mt_particle_turbulence", &mt_tasks::switches, 1u << mt_tasks::particle_turbulence);
+	CMD3(CCC_Mask, "mt_physics", &psDeviceFlags, mtPhysics);
+	CMD3(CCC_Mask, "mt_view_static", &mt_tasks::switches, 1u << mt_tasks::main_static);
+	CMD1(CCC_MTPanel, "quark_panel");
+	extern int ps_mt_panel_lang;
+	{ static CCC_Integer cmd("quark_panel_lang", &ps_mt_panel_lang, 0, 1); Console->AddHiddenCommand(&cmd); }
 	CMD1(CCC_FrameStats, "frame_stats");
 	CMD1(CCC_FrameAB, "frame_ab");
 #ifdef TRACY_ENABLE

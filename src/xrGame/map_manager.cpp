@@ -291,6 +291,7 @@ void CMapManager::GetMapLocations(u16 id, xr_vector<CMapLocation*>& res)
 
 void CMapManager::Update()
 {
+	mt_tasks::lane_time time(mt_tasks::map);
 	delete_data(m_deffered_destroy_queue); //from prev frame
 
 	Locations_it it = Locations().begin();

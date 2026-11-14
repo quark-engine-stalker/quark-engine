@@ -163,6 +163,7 @@ struct ENGINE_API SFrameStats
 };
 
 extern ENGINE_API SFrameStats g_frame_stats;
+ENGINE_API const SFrameStageInfo& frame_stage_info(u32 stage); // name, depth and parent of a stage
 
 // `frame_ab`: A/B of two console states within one session. Segments of 1.5 s alternate
 // A B B A A B B A..., so a steady drift of the scene cancels inside every block of four.

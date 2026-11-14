@@ -554,6 +554,7 @@ typedef struct GCState {
   MSize estimate;	/* Estimate of memory actually in use. */
   MSize pause;		/* Pause between successive GC cycles. */
   MSize stepheadroom;	/* Allocation headroom after automatic GC steps. */
+  MSize hostlimit;	/* Heap size from which automatic steps are stock again (0: none). */
   uint64_t atomic_total_cycles; /* Last atomic phase CPU cycles (telemetry). */
   uint64_t atomic_mark_cycles; /* Root/gray marking part of last atomic. */
   uint64_t atomic_finalize_cycles; /* Userdata separation/remark part. */

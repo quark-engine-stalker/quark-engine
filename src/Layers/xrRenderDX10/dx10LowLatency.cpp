@@ -31,11 +31,10 @@ NvU64 frame_id = 0;
 double wait_us = 0.0;
 u64 present_start = 0;
 
-// The console line: start of frame -> GPU finished the frame, by a GPU fence. Runs only while the console draws the line.
+// QUARK-PANEL: start of frame -> GPU finished the frame, by a GPU fence. Runs only while the panel shows the numbers.
 constexpr u32 meter_slots = 64;
 constexpr u32 meter_settle_frames = 30;
 constexpr u32 mode_count = 4;
-const char* const mode_names[mode_count] = {"off", "on", "reflex", "reflex_boost"};
 
 ID3D11Fence* meter_fence = nullptr;
 ID3D11DeviceContext4* meter_context = nullptr;
@@ -48,26 +47,43 @@ HANDLE meter_work = nullptr;
 HANDLE meter_events[meter_slots];
 u64 meter_start[meter_slots];
 u32 meter_mode[meter_slots];
+u32 meter_generation[meter_slots];
+// A new frame limit or VSync makes a new generation: the numbers of the old one do not compare with it
+u32 generation = 0;
+int generation_limit = -1;
+bool generation_vsync = false;
 std::atomic<long> meter_pending{0};
 std::atomic<float> mode_ms[mode_count];
 std::atomic<float> mode_fps[mode_count];
 
-// Publishes once a second, per mode. A mode's first frames, and frames after the console was closed, are not counted.
+// Publishes once a second, per mode. A mode's first frames, and frames after nobody looked, are not counted.
 void meter_thread(void*)
 {
 	const u64 second = CPU::qpc_freq;
 	u64 next = 0, window_start = 0, last_done = 0, sum = 0;
-	u32 window_mode = mode_count, settle = 0, count = 0;
+	u32 window_mode = mode_count, window_generation = 0, settle = 0, count = 0;
 	while (WaitForSingleObject(meter_work, INFINITE) == WAIT_OBJECT_0)
 	{
 		const u32 slot = u32(next++ % meter_slots);
 		const bool done = WaitForSingleObject(meter_events[slot], 1000) == WAIT_OBJECT_0;
 		const u64 now = CPU::QPC();
 		const u32 mode = meter_mode[slot];
+		const u32 slot_generation = meter_generation[slot];
 		const u64 start = meter_start[slot];
 		--meter_pending;
 		if (!done)
 			continue;
+		// The only writer of the numbers clears them, so no old window publishes after the clear
+		if (slot_generation != window_generation)
+		{
+			window_generation = slot_generation;
+			window_mode = mode_count;
+			for (u32 index = 0; index < mode_count; ++index)
+			{
+				mode_ms[index] = 0.f;
+				mode_fps[index] = 0.f;
+			}
+		}
 		if (mode != window_mode || now - last_done > second / 2)
 		{
 			window_mode = mode;
@@ -136,6 +152,7 @@ void meter_present_done()
 	const u32 slot = u32((value - 1) % meter_slots);
 	meter_start[slot] = start;
 	meter_mode[slot] = applied_mode;
+	meter_generation[slot] = generation;
 	meter_context->Signal(meter_fence, value);
 	meter_fence->SetEventOnCompletion(value, meter_events[slot]);
 	meter_context->Flush();
@@ -231,6 +248,13 @@ namespace low_latency
 bool frame_begin(int fps_limit)
 {
 	apply_settings(fps_limit);
+	const bool vsync = psDeviceFlags.test(rsVSync);
+	if (fps_limit != generation_limit || vsync != generation_vsync)
+	{
+		generation_limit = fps_limit;
+		generation_vsync = vsync;
+		++generation;
+	}
 
 	// A scope's second viewport pass presents nothing: it and the next pass are one frame.
 	if ((reflex_active || applied_mode == mode_on) && !frame_open)
@@ -302,23 +326,19 @@ void device_destroyed()
 	meter_frame_start = 0;
 }
 
-void status_line(char* text, u32 size)
+void report(IRenderDeviceRender::latency_report& out, bool measure)
 {
-	meter_requested = true;
-	const u32 mode = ps_r__low_latency;
-	const float ms = mode_ms[mode];
-	const float off_ms = mode_ms[mode_off];
-	if (meter_failed)
-		xr_sprintf(text, size, "r__low_latency %s: this system cannot measure the latency", mode_names[mode]);
-	else if (ms == 0.f)
-		xr_sprintf(text, size, "r__low_latency %s: measuring...", mode_names[mode]);
-	else if (mode == mode_off)
-		xr_sprintf(text, size, "r__low_latency off: latency %.1f ms, %.0f fps", ms, float(mode_fps[mode]));
-	else if (off_ms == 0.f)
-		xr_sprintf(text, size, "r__low_latency %s: latency %.1f ms, %.0f fps | enter r__low_latency off to compare",
-			mode_names[mode], ms, float(mode_fps[mode]));
-	else
-		xr_sprintf(text, size, "r__low_latency %s: latency %.1f ms, %.0f fps | off: %.1f ms, %.0f fps | %+.1f ms (%+.0f%%)",
-			mode_names[mode], ms, float(mode_fps[mode]), off_ms, float(mode_fps[mode_off]), ms - off_ms, (ms - off_ms) * 100.f / off_ms);
+	static_assert(mode_count == sizeof(out.ms) / sizeof(out.ms[0]), "one number per mode");
+	if (measure)
+		meter_requested = true;
+	out.mode = ps_r__low_latency;
+	out.reflex_missing = out.mode == applied_mode && (out.mode == mode_reflex || out.mode == mode_reflex_boost) &&
+		!reflex_active;
+	out.cannot_measure = meter_failed;
+	for (u32 mode = 0; mode < mode_count; ++mode)
+	{
+		out.ms[mode] = mode_ms[mode];
+		out.fps[mode] = mode_fps[mode];
+	}
 }
 }

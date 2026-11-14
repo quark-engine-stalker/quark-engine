@@ -143,8 +143,12 @@ public:
 	string64 ConfigFile;
 	bool bVisible;
 	vecCMD Commands;
+	// Settings of QUARK-PANEL: saved in user.ltx and run by the engine (Execute), never by the player: no tips, not in help,
+	// typed in the console they are unknown
+	vecCMD HiddenCommands;
 
 	void AddCommand(IConsole_Command* cc);
+	void AddHiddenCommand(IConsole_Command* cc);
 	void RemoveCommand(IConsole_Command* cc);
 
 	void Show();

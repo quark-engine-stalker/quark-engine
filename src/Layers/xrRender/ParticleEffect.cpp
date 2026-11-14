@@ -567,6 +567,7 @@ struct particle_render_context
 void particle_render_worker(void* raw_context)
 {
 	particle_render_context& context = *static_cast<particle_render_context*>(raw_context);
+	mt_tasks::lane_time time(mt_tasks::particle_render);
 	for (;;)
 	{
 		const LONG claimed = InterlockedExchangeAdd(
@@ -610,7 +611,8 @@ void CParticleEffect::Render(float)
 			const u32 physical_cores = _max(1u, CPU::ID.n_cores);
 			const u32 lane_capacity = _min(physical_cores, xr_jobs::available_thread_count());
 			const u32 useful_lanes = (p_cnt + min_particles_per_lane - 1) / min_particles_per_lane;
-			const u32 lane_count = _min(lane_capacity, useful_lanes);
+			const u32 lane_count = mt_tasks::on(mt_tasks::particle_render) ? _min(lane_capacity, useful_lanes) : 1;
+			mt_tasks::lanes(mt_tasks::particle_render, lane_count);
 			if (lane_count > 1)
 			{
 				const u32 target_chunks = lane_count * 2;
@@ -628,6 +630,7 @@ void CParticleEffect::Render(float)
 			}
 			else
 			{
+				mt_tasks::lane_time time(mt_tasks::particle_render);
 				ParticleRenderStream(pv_start, p_cnt, particles, this);
 			}
 

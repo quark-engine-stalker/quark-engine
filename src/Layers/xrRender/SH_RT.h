@@ -12,6 +12,7 @@ public:
 	void destroy();
 	void reset_begin();
 	void reset_end();
+	void swap(CRT& other); // the D3D objects and sizes trade places, names and holders stay (upscaler twins)
 	IC BOOL valid() { return !!pTexture; }
 
 public:

@@ -371,7 +371,19 @@ void CLevel::Send(NET_Packet& P, u32 dwFlags, u32 dwTimeout)
 void CLevel::net_Update()
 {
 
-	if (game_configured)
+	// The server copies of the online objects take their states at most 100 times a second in a single player game,
+	// as at 100 FPS: above that the export of every object each frame only costs time, nothing reads the states in
+	// between. A save and a level change call ClientSend themselves, always; multiplayer exports every frame.
+	bool export_due = true;
+	if (game_configured && IsGameTypeSingle())
+	{
+		static u64 last_export = 0;
+		const u64 now = CPU::QPC();
+		export_due = now - last_export >= CPU::qpc_freq / 100;
+		if (export_due)
+			last_export = now;
+	}
+	if (game_configured && export_due)
 	{
 		// If we have enought bandwidth - replicate client data on to server
 		if (Device.IsFrameJobThread())

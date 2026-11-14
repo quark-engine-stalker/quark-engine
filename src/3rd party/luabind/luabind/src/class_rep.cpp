@@ -592,6 +592,7 @@ int luabind::detail::class_rep::constructor_dispatcher(lua_State* L)
 		{
 			string_class msg = crep->name();
 			msg += "() threw an exception";
+			report_caught_exception(msg.c_str());
 			lua_pushstring(L, msg.c_str());
 		}
 	}
@@ -761,6 +762,7 @@ int luabind::detail::class_rep::function_dispatcher(lua_State* L)
         }
         catch (...)
         {
+            report_caught_exception("luabind object call");
             auto cb = get_error_callback_not_crash();
             if (cb)
             {
@@ -805,6 +807,7 @@ int luabind::detail::class_rep::function_dispatcher(lua_State* L)
 		msg += ":";
 		msg += rep->name;
 		msg += "() threw an exception";
+		report_caught_exception(msg.c_str());
 		lua_pushstring(L, msg.c_str());
 	}
 
@@ -1090,6 +1093,7 @@ int luabind::detail::class_rep::super_callback(lua_State* L)
 		{
 			string_class msg = base->m_name;
 			msg += "() threw an exception";
+			report_caught_exception(msg.c_str());
 			lua_pushstring(L, msg.c_str());
 		}
 		// can only be reached if an exception was thrown

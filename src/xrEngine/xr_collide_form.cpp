@@ -160,11 +160,12 @@ CCF_Skeleton::CCF_Skeleton(CObject* O) : ICollisionForm(O, cftObject)
 	bv_box.set(pVisual->getVisData().box);
 	bv_box.getsphere(bv_sphere.P, bv_sphere.R);
 	vis_mask = 0;
+	dwFrame = dwFrameTL = u32(-1);
 }
 
 void CCF_Skeleton::BuildState()
 {
-	dwFrame = Device.dwFrame;
+	const u32 frame = Device.dwFrame;
 	IRenderVisual* pVisual = owner->Visual();
 	IKinematics* K = PKinematics(pVisual);
 	K->CalculateBones();
@@ -252,11 +253,12 @@ void CCF_Skeleton::BuildState()
 			break;
 		}
 	}
+	dwFrame = frame;
 }
 
 void CCF_Skeleton::BuildTopLevel()
 {
-	dwFrameTL = Device.dwFrame;
+	const u32 frame = Device.dwFrame;
 	IRenderVisual* K = owner->Visual();
 	vis_data& vis = K->getVisData();
 	Fbox& B = vis.box;
@@ -267,11 +269,19 @@ void CCF_Skeleton::BuildTopLevel()
 	bv_sphere.R += vis.sphere.R;
 	bv_sphere.R *= 0.5f;
 	VERIFY(_valid(bv_sphere));
+	dwFrameTL = frame;
 }
 
 BOOL CCF_Skeleton::_RayQuery(const collide::ray_defs& Q, collide::rq_results& R)
 {
-	if (dwFrameTL != Device.dwFrame) BuildTopLevel();
+	const u32 frame = Device.dwFrame;
+	if (dwFrameTL != frame)
+	{
+		AcquireSRWLockExclusive(&build_lock);
+		if (dwFrameTL != frame)
+			BuildTopLevel();
+		ReleaseSRWLockExclusive(&build_lock);
+	}
 
 
 	Fsphere w_bv_sphere;
@@ -285,16 +295,14 @@ BOOL CCF_Skeleton::_RayQuery(const collide::ray_defs& Q, collide::rq_results& R)
 	Fsphere::ERP_Result res = w_bv_sphere.intersect(Q.start, Q.dir, tgt_dist, quant, aft);
 	if ((Fsphere::rpNone == res) || ((Fsphere::rpOriginOutside == res) && (aft[0] > tgt_dist))) return FALSE;
 
-	if (dwFrame != Device.dwFrame) BuildState();
-	else
+	// a model changed between ray-picks rebuilds its elements too
+	IKinematics* K = PKinematics(owner->Visual());
+	if (dwFrame != frame || K->LL_GetBonesVisible() != vis_mask)
 	{
-		IKinematics* K = PKinematics(owner->Visual());
-		if (K->LL_GetBonesVisible() != vis_mask)
-		{
-			// Model changed between ray-picks
-			dwFrame = Device.dwFrame - 1;
+		AcquireSRWLockExclusive(&build_lock);
+		if (dwFrame != frame || K->LL_GetBonesVisible() != vis_mask)
 			BuildState();
-		}
+		ReleaseSRWLockExclusive(&build_lock);
 	}
 
 	// A ray through the body sphere usually crosses few of its bones; skip the exact

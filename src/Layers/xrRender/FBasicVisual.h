@@ -68,6 +68,7 @@ public:
 	ref_shader shader; // pipe state, shared
 	s32 skinning;
     bool hud;
+	u8 forward_walk = 0xff; // CRender::forward_content of this static subtree: 0, 1, 0xff not known yet
 
 	virtual void Render(float LOD)
 	{

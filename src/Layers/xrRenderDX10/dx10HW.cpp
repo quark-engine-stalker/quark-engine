@@ -11,6 +11,7 @@
 #pragma warning(default:4995)
 #include "../xrRender/HW.h"
 #include "dx10LowLatency.h"
+#include "../xrRenderPC_R4/upscaler.h"
 #include "../../xrEngine/XR_IOConsole.h"
 #include "../../Include/xrAPI/xrAPI.h"
 #include "../xrRender/xrRender_console.h"
@@ -435,7 +436,8 @@ void CHW::CreateDevice(HWND hwnd, bool move_window)
         sd.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
     }
 
-    const D3D_FEATURE_LEVEL feature_levels[] = {D3D_FEATURE_LEVEL_11_0};
+    // 11_1 where the video card has it: AMD FSR 3.1 needs its 64 UAV slots (upscaler.cpp); the rest uses 11_0 only
+    const D3D_FEATURE_LEVEL feature_levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
 
     UINT create_device_flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
     if (strstr(Core.Params, "--dxgi-dbg")) {
@@ -458,7 +460,7 @@ void CHW::CreateDevice(HWND hwnd, bool move_window)
         &device,
         &FeatureLevel,
         &context));
-    R_ASSERT(FeatureLevel == D3D_FEATURE_LEVEL_11_0);
+    R_ASSERT(FeatureLevel >= D3D_FEATURE_LEVEL_11_0);
 
     R_CHK(device->QueryInterface(&pDevice));
     R_CHK(context->QueryInterface(&pContext));
@@ -568,6 +570,7 @@ void CHW::DestroyDevice()
     }
 #endif
     low_latency::device_destroyed();
+    upscaler::shutdown();
 
     // Release context-held references before destroying swap-chain resources.
     if (pContext) pContext->ClearState();
@@ -627,14 +630,8 @@ void CHW::Reset(HWND hwnd)
     BOOL bWindowed = (g_screenmode != 2);
 
     cd_fs.Windowed = bWindowed;
-
-    if (!bWindowed)
-    {
-        ShowWindow(hwnd, SW_SHOWNORMAL);
-        SetForegroundWindow(hwnd);
-    }
-
-    m_pSwapChain->SetFullscreenState(!bWindowed, bWindowed ? NULL : m_pOutput);
+    m_fullscreen_restore_pending = false;
+    m_fullscreen_transition_result = S_OK;
 
     selectResolution(cd.Width, cd.Height, bWindowed);
 
@@ -648,14 +645,40 @@ void CHW::Reset(HWND hwnd)
         cd_fs.RefreshRate = selectRefresh(cd.Width, cd.Height, cd.Format);
     }
 
-    DXGI_MODE_DESC mode;
-    ZeroMemory(&mode, sizeof(mode));
-
-    mode.Width       = cd.Width;
-    mode.Height      = cd.Height;
-    mode.Format      = cd.Format;
-    mode.RefreshRate = cd_fs.RefreshRate;
-    CHK_DX(m_pSwapChain->ResizeTarget(&mode));
+    if (bWindowed)
+    {
+        // The window gets its style, place and size from the mode and the buffers are made for it. ResizeTarget is
+        // not used here: it sized the window to the mode (borderless: a small window in the corner until moved back),
+        // and the windowed mode took its size from the window as it was (160x28 after a minimized exclusive one).
+        m_pSwapChain->SetFullscreenState(FALSE, NULL);
+        updateWindowProps(hwnd);
+    }
+    else
+    {
+        ShowWindow(hwnd, SW_SHOWNORMAL);
+        SetForegroundWindow(hwnd);
+        // Microsoft's order: the target takes the mode, the switch keeps it, and the mode is set once more after a
+        // real switch as DXGI may pick another one for the window (a 640x480 step, a window 20 px larger than the mode)
+        BOOL was_fullscreen = FALSE;
+        m_pSwapChain->GetFullscreenState(&was_fullscreen, nullptr);
+        const DXGI_MODE_DESC mode = target_mode();
+        CHK_DX(m_pSwapChain->ResizeTarget(&mode));
+        const HRESULT hr = m_pSwapChain->SetFullscreenState(TRUE, m_pOutput);
+        if (hr == S_OK)
+        {
+            if (!was_fullscreen)
+                CHK_DX(m_pSwapChain->ResizeTarget(&mode));
+        }
+        else
+        {
+            // Not the foreground window (started behind another one) or a switch in progress: the window covers the
+            // monitor meanwhile and the switch is tried again every frame (TryRestoreFullscreen)
+            Msg("! DXGI: fullscreen switch deferred (0x%08x)", hr);
+            m_fullscreen_restore_pending = true;
+            m_fullscreen_transition_result = hr;
+        }
+        updateWindowProps(hwnd);
+    }
 
 
 #ifdef DEBUG
@@ -707,9 +730,6 @@ void CHW::Reset(HWND hwnd)
     //	R_CHK				(pDevice->CreateStateBlock			(D3DSBT_ALL,&dwDebugSB));
 	//#endif
 
-    updateWindowProps(hwnd);
-	m_fullscreen_restore_pending = false;
-	m_fullscreen_transition_result = S_OK;
 
 
     /*
@@ -767,14 +787,7 @@ void CHW::selectResolution(u32& dwWidth, u32& dwHeight, BOOL bWindowed)
     if (psCurrentVidMode[0] == 0 || psCurrentVidMode[1] == 0)
         GetMonitorResolution(psCurrentVidMode[0], psCurrentVidMode[1]);
 
-	if (g_screenmode == 0)
-	{
-		RECT clientRect;
-		GetClientRect(Device.m_hWnd, &clientRect);
-		dwWidth = clientRect.right;
-		dwHeight = clientRect.bottom;
-	}
-	else if (g_screenmode == 1)
+	if (g_screenmode != 2)
 	{
 		dwWidth = psCurrentVidMode[0];
 		dwHeight = psCurrentVidMode[1];
@@ -888,6 +901,16 @@ extern bool use_reshade;
 extern bool init_reshade();
 extern void unregister_reshade();
 
+DXGI_MODE_DESC CHW::target_mode() const
+{
+    DXGI_MODE_DESC mode{};
+    mode.Width = m_ChainDesc.Width;
+    mode.Height = m_ChainDesc.Height;
+    mode.Format = m_ChainDesc.Format;
+    mode.RefreshRate = m_ChainDescFullscreen.RefreshRate;
+    return mode;
+}
+
 bool CHW::ResizeSwapChainAfterModeChange()
 {
     // Both flip and legacy mode changes resize the buffers. Discard context
@@ -944,6 +967,11 @@ bool CHW::TryRestoreFullscreen(bool& restored)
         m_fullscreen_transition_result = fullscreen_result;
         return false;
     }
+
+    // the mode of the chain again: back from Alt+Tab DXGI may keep the window of the desktop (20 px larger than
+    // the mode at 1280x720), and a deferred first switch has not set the mode at all
+    const DXGI_MODE_DESC mode = target_mode();
+    m_pSwapChain->ResizeTarget(&mode);
 
     const HRESULT previous_result = m_fullscreen_transition_result;
     if (!ResizeSwapChainAfterModeChange())
@@ -1020,15 +1048,17 @@ BOOL CHW::support(D3DFORMAT fmt, DWORD type, DWORD usage)
 void CHW::updateWindowProps(HWND m_hWnd)
 {
 	//	BOOL	bWindowed				= strstr(Core.Params,"-dedicated") ? TRUE : !psDeviceFlags.is	(rsFullscreen);
-    BOOL bWindowed = (g_screenmode != 2);
+    // the state of the chain, not the mode: an exclusive switch that has not happened yet keeps the window borderless
+    BOOL fullscreen = FALSE;
+    m_pSwapChain->GetFullscreenState(&fullscreen, nullptr);
 
     // Set window properties depending on what mode were in.
-	if (bWindowed)
+	if (!fullscreen)
 	{
 		if (m_move_window)
 		{
             u32 dwWindowStyle = 0;
-		    if (g_screenmode == 1)
+		    if (g_screenmode != 0)
 		    {
 		        dwWindowStyle |= WS_POPUP;
 		    }
@@ -1056,8 +1086,12 @@ void CHW::updateWindowProps(HWND m_hWnd)
 
 		    if (psCurrentVidMode[0] == 0 || psCurrentVidMode[1] == 0)
 		        GetMonitorResolution(psCurrentVidMode[0], psCurrentVidMode[1]);
-		    LONG res_width = g_screenmode == 0 ? psCurrentVidMode[0] : monW;
-		    LONG res_height = g_screenmode == 0 ? psCurrentVidMode[1] : monH;
+		    // the windowed mode's client area is the video mode, the frame goes around it
+		    RECT client_rect = {0, 0, LONG(psCurrentVidMode[0]), LONG(psCurrentVidMode[1])};
+		    if (g_screenmode == 0)
+		        AdjustWindowRect(&client_rect, dwWindowStyle, FALSE);
+		    LONG res_width = g_screenmode == 0 ? client_rect.right - client_rect.left : monW;
+		    LONG res_height = g_screenmode == 0 ? client_rect.bottom - client_rect.top : monH;
 
 		    RECT m_rcWindowBounds;
 			RECT DesktopRect;

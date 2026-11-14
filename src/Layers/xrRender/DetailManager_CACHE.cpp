@@ -182,7 +182,10 @@ void CDetailManager::cache_Update(int v_x, int v_z, Fvector& view, int limit)
 	{
 		const u64 started = CPU::QPC();
 		const u64 slice = RDEVICE.dwPrecacheFrame ? u64(-1) : CPU::qpc_freq * 3 / 1000;
-		while (cache_task.size() && CPU::QPC() - started < slice)
+		// The slice holds the lock the render waits on for the visible lists: once the render waits, only the usual
+		// per-frame count more, then the visibility (the grass still grows from the camera, slower)
+		for (int unpacked = 0; cache_task.size() && CPU::QPC() - started < slice &&
+			(unpacked < limit || RDEVICE.dwPrecacheFrame || !m_render_waits); ++unpacked)
 		{
 			cache_Decompress(cache_task.back());
 			cache_task.pop_back();

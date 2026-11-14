@@ -304,6 +304,21 @@ void CUIWindow::DetachChild(CUIWindow* pChild)
 		xr_delete(pChild);
 }
 
+void CUIWindow::DetachScriptChildren(xr_vector<CUIWindow*>& out)
+{
+	const xr_vector<CUIWindow*> children(m_ChildWndList.begin(), m_ChildWndList.end());
+	for (CUIWindow* child : children)
+	{
+		if (!child->m_attached_by_script)
+			continue;
+		const bool auto_delete = child->IsAutoDelete();
+		child->SetAutoDelete(false);
+		DetachChild(child);
+		child->SetAutoDelete(auto_delete);
+		out.push_back(child);
+	}
+}
+
 void CUIWindow::DetachAll()
 {
 	while (!m_ChildWndList.empty())

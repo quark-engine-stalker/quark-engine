@@ -3,6 +3,7 @@
 
 #include	"xrRender_console.h"
 #include	"dxRenderDeviceRender.h"
+#include	"../xrRenderPC_R4/upscaler.h"
 
 #include "../../build_config_defines.h"
 
@@ -103,6 +104,34 @@ xr_token qlow_latency_token [ ] = {
 	{"on", 1},
 	{"reflex", 2},
 	{"reflex_boost", 3},
+	{0, 0}
+};
+
+// QUARK-PANEL upscaler (upscaler.h): a change rebuilds the render targets
+u32 ps_r__upscaler = 0;
+xr_token qupscaler_token [ ] = {
+	{"off", 0},
+	{"dlss", 1},
+	{"fsr", 2},
+	{0, 0}
+};
+float ps_r__fsr_sharpness = 0.5f; // FSR 3.1 RCAS, 0 off
+float ps_r__dlss_sharpness = 0.f; // AMD's RCAS after DLSS (NVIDIA dropped its own in 2.5.1), 0 off
+u32 ps_r__upscaler_mode = 0;
+xr_token qupscaler_mode_token [ ] = {
+	{"dlaa", 0},
+	{"quality", 1},
+	{"balanced", 2},
+	{"performance", 3},
+	{"ultra_performance", 4},
+	{0, 0}
+};
+u32 ps_r__dlss_model = 0;
+xr_token qdlss_model_token [ ] = {
+	{"auto", 0},
+	{"dlss45", 1},
+	{"dlss4", 2},
+	{"dlss3", 3},
 	{0, 0}
 };
 
@@ -564,6 +593,34 @@ public:
 	}
 };
 
+class CCC_TokenTargets : public CCC_TokenSaved
+{
+public:
+	CCC_TokenTargets(LPCSTR N, u32* V, xr_token* T) : CCC_TokenSaved(N, V, T) {}
+
+	virtual void Execute(LPCSTR args)
+	{
+		const u32 previous = *value;
+		CCC_TokenSaved::Execute(args);
+		if (*value != previous)
+			upscaler::request(); // the scene's targets and the upscaler only, at the next frame
+	}
+};
+
+class CCC_FloatSaved : public CCC_Float
+{
+public:
+	CCC_FloatSaved(LPCSTR N, float* V, float _min, float _max) : CCC_Float(N, V, _min, _max) {}
+
+	virtual void Execute(LPCSTR args)
+	{
+		const float previous = *value;
+		CCC_Float::Execute(args);
+		if (*value != previous && Device.dwFrame)
+			Console->Execute("cfg_save");
+	}
+};
+
 // Shader night vision is an active gameplay effect controlled by scripts, not
 // a persistent graphics preference. Saving a configuration must not turn the
 // effect on for an actor in the next process that has no NVG equipped.
@@ -681,7 +738,7 @@ public:
 		//	TODO: DX10: Implement mip bias control
 		//VERIFY(!"apply not implmemented.");
 		//Done. Thanks for reminding me.
-		SSManager.SetMipLODBias(*value);
+		SSManager.SetMipLODBias(*value + upscaler::mip_bias());
 	}
 
 	CCC_tf_MipBias(LPCSTR N, float* v) : CCC_Float(N, v, -3.0f, +3.0f)
@@ -1235,8 +1292,8 @@ void xrRender_initconsole()
 
 #ifdef DEBUG
 	CMD3(CCC_Mask,		"r2_use_nvdbt",			&ps_r2_ls_flags,			R2FLAG_USE_NVDBT);
-	CMD3(CCC_Mask,		"r2_mt",				&ps_r2_ls_flags,			R2FLAG_EXP_MT_CALC);
 #endif // DEBUG
+	CMD3(CCC_Mask,		"r2_mt",				&ps_r2_ls_flags,			R2FLAG_EXP_MT_CALC); // mt_panel
 
 	CMD3(CCC_Mask, "r2_sun", &ps_r2_ls_flags, R2FLAG_SUN);
 	CMD3(CCC_Mask, "r2_sun_details", &ps_r2_ls_flags, R2FLAG_SUN_DETAILS);
@@ -1588,7 +1645,12 @@ void xrRender_initconsole()
 	//CMD3(CCC_Mask,		"r3_msaa_alphatest",			&ps_r2_ls_flags,			(u32)R3FLAG_MSAA_ALPHATEST);
 	CMD3(CCC_Token, "r3_msaa_alphatest", &ps_r3_msaa_atest, qmsaa__atest_token);
 	CMD3(CCC_Token, "r3_minmax_sm", &ps_r3_minmax_sm, qminmax_sm_token);
-	CMD3(CCC_TokenSaved, "r__low_latency", &ps_r__low_latency, qlow_latency_token);
+	{ static CCC_TokenSaved cmd("r__low_latency", &ps_r__low_latency, qlow_latency_token); Console->AddHiddenCommand(&cmd); }
+	{ static CCC_TokenTargets cmd("r__upscaler", &ps_r__upscaler, qupscaler_token); Console->AddHiddenCommand(&cmd); }
+	{ static CCC_TokenTargets cmd("r__upscaler_mode", &ps_r__upscaler_mode, qupscaler_mode_token); Console->AddHiddenCommand(&cmd); }
+	{ static CCC_TokenTargets cmd("r__dlss_model", &ps_r__dlss_model, qdlss_model_token); Console->AddHiddenCommand(&cmd); }
+	{ static CCC_FloatSaved cmd("r__fsr_sharpness", &ps_r__fsr_sharpness, 0.f, 1.f); Console->AddHiddenCommand(&cmd); }
+	{ static CCC_FloatSaved cmd("r__dlss_sharpness", &ps_r__dlss_sharpness, 0.f, 1.f); Console->AddHiddenCommand(&cmd); }
 
 #ifdef DETAIL_RADIUS
 	CMD4(CCC_detail_radius, "r__detail_radius", &ps_r__detail_radius, 0, 250);

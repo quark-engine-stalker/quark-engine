@@ -296,6 +296,11 @@ void luaJIT_setgchostmanaged(lua_State *L, int enabled)
     g->gc.stepheadroom = 0;
 }
 
+void luaJIT_setgchostlimit(lua_State *L, size_t bytes)
+{
+  G(L)->gc.hostlimit = bytes < (size_t)LJ_MAX_MEM ? (MSize)bytes : 0;
+}
+
 void luaJIT_setudatafinalizer(lua_State *L, int idx, int enabled)
 {
   if (lua_type(L, idx) == LUA_TUSERDATA) {

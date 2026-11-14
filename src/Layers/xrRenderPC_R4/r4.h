@@ -21,6 +21,7 @@
 
 #include "../../xrEngine/irenderable.h"
 #include "../../xrEngine/fmesh.h"
+#include "../../xrCore/mt_tasks.h"
 
 class dxRender_Visual;
 struct IDXGIAdapter3;
@@ -400,8 +401,24 @@ private:
 	void record_leafs_Static(dxRender_Visual* pVisual, const CFrustum& view, xr_vector<StaticOp>& out);
 	void record_lod(dxRender_Visual* pVisual, const CFrustum& view, xr_vector<StaticOp>& out);
 	void replay_Static(const xr_vector<StaticOp>& ops);
-	// Calls (this->*work)(i) for every i < count on the job workers and this thread.
-	void run_parallel(u32 count, void (CRender::*work)(u32));
+
+	// Main view statics on the workers: the subtrees under the top of every sector root are recorded in parallel
+	// while this thread finds the visible dynamic objects, then replayed in their order.
+	struct MainStaticItem
+	{
+		dxRender_Visual* visual;
+		const CFrustum* view; // the first of views frustums in a row
+		u32 views;
+		u32 planes;
+		bool leafs; // under a fully visible hierarchy: add_leafs_Static
+	};
+	xr_vector<MainStaticItem> m_mainStaticItems;
+	xr_vector<xr_vector<StaticOp>> m_mainStaticOps;
+	void expand_main_static(dxRender_Visual* pVisual, const CFrustum& view, u32 planes, bool leafs, u32 depth);
+	void start_main_statics(); // after the portal traversal of the main view
+	void finish_main_statics();
+	// Calls (this->*work)(i) for every i < count on the job workers and this thread, only here when task is off.
+	void run_parallel(u32 count, void (CRender::*work)(u32), mt_tasks::task task);
 	void prepare_sun_cascade(u32 cascade_ind, const Fmatrix& viewport, const Fmatrix& viewport_inverse);
 	void gather_sun_casters(CSector* cull_sector);
 	void submit_sun_cascade_casters(u32 cascade_ind);
@@ -409,6 +426,7 @@ private:
 	void add_leafs_Static(dxRender_Visual* pVisual); // if detected node's full visibility
 
 public:
+	void record_main_static(u32 index); // a worker lane of start_main_statics
 	IRender_Sector* rimp_detectSector(Fvector& P, Fvector& D);
 	void render_main(Fmatrix& mCombined, bool _fportals);
 	void add_Static_MultiFrustum(dxRender_Visual* pVisual, const xr_vector<CFrustum>& frustums);

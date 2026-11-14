@@ -32,7 +32,7 @@ LANGUAGE LANG_RUSSIAN, SUBLANG_DEFAULT
 
 // Icon with lowest ID value placed first to ensure application icon
 // remains consistent on all systems.
-IDI_ICON1               ICON                    "quark_logo.ico"
+IDI_ICON1               ICON                    "quark_exe_icon.ico"
 
 /////////////////////////////////////////////////////////////////////////////
 //
@@ -40,6 +40,7 @@ IDI_ICON1               ICON                    "quark_logo.ico"
 //
 
 IDR_SPLASH_PNG          RCDATA                  "splash_xrcs_en.png"
+IDR_PANEL_LOGO_PNG      RCDATA                  "quark_panel_logo.png"
 
 /////////////////////////////////////////////////////////////////////////////
 //

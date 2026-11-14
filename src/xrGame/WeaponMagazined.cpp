@@ -693,6 +693,7 @@ BOOL mt_UpdateWeaponSounds = TRUE;
 void CWeaponMagazined::UpdateSoundsPositionsImpl()
 {
 	PROF_EVENT();
+	mt_tasks::lane_time time(mt_tasks::weapon_sounds);
 	auto& P = get_LastFP();
 	m_sounds.UpdateAllSoundsPositions(P);
 }

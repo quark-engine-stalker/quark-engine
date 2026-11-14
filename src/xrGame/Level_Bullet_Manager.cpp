@@ -459,6 +459,7 @@ void CBulletManager::speculative_worker(void* context)
 void CBulletManager::UpdateWorkload()
 {
 	//	VERIFY						( m_thread_id == GetCurrentThreadId() );
+	mt_tasks::lane_time time(mt_tasks::bullets);
 
 	rq_storage.r_clear();
 
@@ -514,6 +515,7 @@ void CBulletManager::UpdateWorkload()
 	// UpdateWorkload itself already occupies one worker-pool lane. Count that lane
 	// instead of enqueueing one more task than the pool can execute concurrently.
 	const u32 lane_count = _min(xr_jobs::available_thread_count(), requested_lanes);
+	mt_tasks::lanes(mt_tasks::bullets, lane_count);
 	xr_jobs::submit_many(&CBulletManager::speculative_worker, &workload,
 		lane_count - 1, &group, xr_jobs::priority::high);
 

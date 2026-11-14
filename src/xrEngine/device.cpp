@@ -331,6 +331,7 @@ struct SParallelDelegateBatch
 {
 	xr_vector<fastdelegate::FastDelegate0<>>* delegates;
 	xrCriticalSection* lock;
+	mt_tasks::task task;
 	// Workers update the cursor for every claimed callback. Keep it away from
 	// read-only batch metadata to avoid invalidating that cache line on every claim.
 	__declspec(align(64)) volatile LONG next_index;
@@ -339,6 +340,7 @@ struct SParallelDelegateBatch
 void process_parallel_delegate_batch(void* raw_context)
 {
 	SParallelDelegateBatch& context = *static_cast<SParallelDelegateBatch*>(raw_context);
+	mt_tasks::lane_time time(context.task);
 	for (;;)
 	{
 		const LONG index = InterlockedIncrement(&context.next_index) - 1;
@@ -357,6 +359,12 @@ void process_parallel_delegate_batch(void* raw_context)
 		}
 	}
 }
+
+// The frame's independent batch: the main thread starts it before the poses, so the render's first occlusion test
+// finds the HOM drawn instead of sleeping on its lock while a worker draws it; the end of the frame job joins it.
+SParallelDelegateBatch independent_batch = {nullptr, nullptr, mt_tasks::frame_independent, 0};
+xr_jobs::task_group independent_group;
+bool independent_started = false;
 
 struct __declspec(align(64)) SNamedParallelLane
 {
@@ -410,7 +418,33 @@ void CRenderDevice::JoinFrameJobForLua()
 
 static void process_frame_audio(void* context)
 {
+	mt_tasks::lane_time time(mt_tasks::frame_audio);
 	static_cast<CRenderDevice*>(context)->seqFrameOverGC.Process(rp_Frame);
+}
+
+thread_local bool g_frame_tail_lane = false;
+
+namespace
+{
+struct frame_tail_batch
+{
+	xr_vector<fastdelegate::FastDelegate0<>>* work;
+	__declspec(align(64)) volatile LONG next;
+};
+
+void frame_tail_lane(void* context)
+{
+	frame_tail_batch& batch = *static_cast<frame_tail_batch*>(context);
+	g_frame_tail_lane = true;
+	for (;;)
+	{
+		const LONG index = InterlockedIncrement(&batch.next) - 1;
+		if (static_cast<u32>(index) >= batch.work->size())
+			break;
+		(*batch.work)[index]();
+	}
+	g_frame_tail_lane = false;
+}
 }
 
 static void process_frame_tail(void* context)
@@ -421,11 +455,27 @@ static void process_frame_tail(void* context)
 void CRenderDevice::ProcessFrameTail()
 {
 	PROF_EVENT("Frame tail");
+	mt_tasks::lane_time time(mt_tasks::frame_tail);
 	InterlockedExchange(&mt_overlap_tail_thread, static_cast<LONG>(GetCurrentThreadId())); // poses are read as they are
 	{
+		// Held until every lane is done: a callback leaves the queue only between tails
 		xrCriticalSectionGuard guard(seqFrameTailLock);
-		for (u32 index = 0; index < seqFrameTail.size(); ++index)
-			seqFrameTail[index]();
+		const u32 count = static_cast<u32>(seqFrameTail.size());
+		if (count >= 16 && xr_jobs::worker_count() > 2 && mt_tasks::on(mt_tasks::frame_tail))
+		{
+			// NPC foot rays and can_kill rays are independent per NPC, the client export uses none
+			frame_tail_batch batch = {&seqFrameTail, 0};
+			const u32 lanes = _min(4u, _min(count / 8u, xr_jobs::worker_count() - 1u));
+			xr_jobs::task_group group;
+			xr_jobs::submit_many(&frame_tail_lane, &batch, lanes - 1, &group, xr_jobs::priority::high);
+			frame_tail_lane(&batch);
+			xr_jobs::wait_own(group);
+		}
+		else
+		{
+			for (u32 index = 0; index < seqFrameTail.size(); ++index)
+				seqFrameTail[index]();
+		}
 		seqFrameTail.clear_not_free();
 	}
 	InterlockedExchange(&mt_overlap_tail_thread, 0);
@@ -435,45 +485,27 @@ void CRenderDevice::ProcessFrameParallelWork()
 {
 	const u64 job_started = CPU::QPC();
 	const u64 scheduler_budget = u64(FrameJobSchedulerWindowUS) * CPU::qpc_freq / 1000000u;
+	mt_tasks::lane_time job_time(mt_tasks::frame_job);
 	InterlockedExchange(&mt_overlap_thread, static_cast<LONG>(GetCurrentThreadId()));
 
 
-	{
-		xrCriticalSectionGuard guard(seqParallelIndependentLock);
-		R_ASSERT(seqParallelIndependentWork.empty());
-		if (!seqParallelIndependent.empty())
-			seqParallelIndependentWork.swap(seqParallelIndependent);
-	}
-
-	SParallelDelegateBatch independent_context = {
-		&seqParallelIndependentWork, &seqParallelIndependentLock,
-		0};
-	xr_jobs::task_group independent_group;
-	if (!seqParallelIndependentWork.empty())
-	{
-		// Not on this lane: the NPCs below must start at once. The join is at the end of the job.
-		const u32 lane_count = _max(1u, _min(
-			static_cast<u32>(seqParallelIndependentWork.size()), xr_jobs::available_thread_count()));
-		xr_jobs::submit_many(
-			&process_parallel_delegate_batch,
-			&independent_context,
-			lane_count,
-			&independent_group,
-			xr_jobs::priority::high);
-	}
+	if (!independent_started) // not started by the render preparation of this frame
+		StartFrameIndependentWork();
 
 	if (FrameJobLuaPrelude)
+	{
+		mt_tasks::lane_time prelude_time(mt_tasks::job_lua_prelude);
 		FrameJobLuaPrelude();
+	}
 
 	// RT callbacks were completed on the main thread during FrameMove. The normal
 	// scheduler retains its deterministic serial order, but overlaps rendering. It goes after the
 	// independent batch: the render waits for grass, not for the NPCs.
 	if (InterlockedExchange(&mt_scheduler_deferred_pending, FALSE) != FALSE)
 	{
-
+		mt_tasks::lane_time scheduler_time(mt_tasks::job_scheduler);
 		Engine.Sheduler.UpdateDeferred();
 		Engine.Sheduler.UpdateFinalize();
-
 	}
 
 	START_PROFILE("Process seqParallel lanes");
@@ -560,31 +592,24 @@ void CRenderDevice::ProcessFrameParallelWork()
 
 	START_PROFILE("Process seqFrameMT");
 
-	seqFrameMT.Process(rp_Frame);
+	{
+		mt_tasks::lane_time frame_mt_time(mt_tasks::job_frame_mt);
+		seqFrameMT.Process(rp_Frame);
+	}
 
 	STOP_PROFILE;
 
-	if (!seqParallelIndependentWork.empty())
-	{
-		process_parallel_delegate_batch(&independent_context); // what the pool has not started yet
-		xr_jobs::wait(independent_group);
-
-		xrCriticalSectionGuard guard(seqParallelIndependentLock);
-		seqParallelIndependentWork.clear_not_free();
-		// Keep the largest allocation as the next-frame queued container unless
-		// callbacks were registered while this batch was executing.
-		if (seqParallelIndependent.empty())
-			seqParallelIndependentWork.swap(seqParallelIndependent);
-	}
+	FinishFrameIndependentWork();
 
 	// Audio shares nothing with the collector: no Lua, no game state written. Physics and the net above may enter Lua.
 	xr_jobs::task_group audio_group;
-	if (!mt_frame_lua_gc || xr_jobs::worker_count() <= 1 ||
+	if (!mt_frame_lua_gc || !mt_tasks::on(mt_tasks::frame_audio) || xr_jobs::worker_count() <= 1 ||
 		!xr_jobs::submit(&process_frame_audio, this, &audio_group, xr_jobs::priority::high))
-		seqFrameOverGC.Process(rp_Frame);
+		process_frame_audio(this);
 
 	xr_jobs::task_group tail_group;
-	if (xr_jobs::worker_count() <= 1 || !xr_jobs::submit(&process_frame_tail, this, &tail_group, xr_jobs::priority::high))
+	if (!mt_tasks::on(mt_tasks::frame_tail) || xr_jobs::worker_count() <= 1 ||
+		!xr_jobs::submit(&process_frame_tail, this, &tail_group, xr_jobs::priority::high))
 		ProcessFrameTail();
 
 	// Last in the job: the render waits for grass and particles queued above, not for the collector. The VM is
@@ -607,6 +632,49 @@ void CRenderDevice::ProcessFrameParallelWork()
 	}
 
 	InterlockedExchange(&mt_overlap_thread, 0);
+}
+
+void CRenderDevice::StartFrameIndependentWork()
+{
+	R_ASSERT(!independent_started);
+	{
+		xrCriticalSectionGuard guard(seqParallelIndependentLock);
+		R_ASSERT(seqParallelIndependentWork.empty());
+		if (!seqParallelIndependent.empty())
+			seqParallelIndependentWork.swap(seqParallelIndependent);
+	}
+	independent_batch.delegates = &seqParallelIndependentWork;
+	independent_batch.lock = &seqParallelIndependentLock;
+	independent_batch.next_index = 0;
+	independent_started = true;
+	// Switched off, the frame job runs the batch itself after the NPCs: the render computes the HOM and the grass it
+	// needs.
+	if (!seqParallelIndependentWork.empty() && mt_tasks::on(mt_tasks::frame_independent) && xr_jobs::worker_count())
+	{
+		const u32 lane_count = _max(1u, _min(
+			static_cast<u32>(seqParallelIndependentWork.size()), xr_jobs::worker_count()));
+		xr_jobs::submit_many(&process_parallel_delegate_batch, &independent_batch, lane_count, &independent_group,
+			xr_jobs::priority::high);
+		mt_tasks::lanes(mt_tasks::frame_independent, lane_count);
+	}
+}
+
+void CRenderDevice::FinishFrameIndependentWork()
+{
+	if (!independent_started)
+		return;
+	independent_started = false;
+	if (seqParallelIndependentWork.empty())
+		return;
+	process_parallel_delegate_batch(&independent_batch); // what the pool has not started yet
+	xr_jobs::wait(independent_group);
+
+	xrCriticalSectionGuard guard(seqParallelIndependentLock);
+	seqParallelIndependentWork.clear_not_free();
+	// Keep the largest allocation as the next-frame queued container unless
+	// callbacks were registered while this batch was executing.
+	if (seqParallelIndependent.empty())
+		seqParallelIndependentWork.swap(seqParallelIndependent);
 }
 
 void CRenderDevice::ProcessRenderPrepParallelWork()
@@ -767,7 +835,7 @@ void CRenderDevice::ProcessRenderPrepParallelWork()
 	}
 
 	SParallelDelegateBatch context = {
-		&seqRenderPrepParallelWork, &seqRenderPrepParallelLock,
+		&seqRenderPrepParallelWork, &seqRenderPrepParallelLock, mt_tasks::skeletons,
 		0};
 	xr_jobs::task_group group;
 
@@ -776,6 +844,7 @@ void CRenderDevice::ProcessRenderPrepParallelWork()
 	constexpr u32 min_units_per_lane = 96;
 	const u32 lane_cap = _min(active_count, xr_jobs::available_thread_count());
 	const u32 lane_count = _max(1u, _min(lane_cap, work_units / min_units_per_lane));
+	mt_tasks::lanes(mt_tasks::skeletons, lane_count);
 	if (lane_count > 1)
 	{
 		xr_jobs::submit_many(
@@ -848,6 +917,7 @@ void CRenderDevice::ProcessLuaGCWork(bool allow_deferred_phase)
 {
 	if (!psLua_ParallelGC || !LuaGC)
 		return;
+	mt_tasks::lane_time time(mt_tasks::lua_gc);
 
 	SLuaGCStatus native_gc_status = {};
 	if (LuaGCStatus)
@@ -1511,8 +1581,8 @@ void CRenderDevice::SubmitFrameParallelWork()
 	mt_frame_render_end_ticks = 0;
 
 	// Without workers the pool runs the job inside submit, on this thread: it must not look like a job beside the
-	// render, or its first Lua call joins itself.
-	if (xr_jobs::worker_count() == 0 ||
+	// render, or its first Lua call joins itself. Switched off, the job takes the same path.
+	if (!mt_tasks::on(mt_tasks::frame_job) || xr_jobs::worker_count() == 0 ||
 		!xr_jobs::submit(&process_frame_parallel_job, this, &mt_frame_group, xr_jobs::priority::high))
 	{
 		// The pool may reject work only while shutting down. Preserve frame
@@ -1531,6 +1601,7 @@ void CRenderDevice::WaitFrameParallelWork()
 	{
 		// Shutdown or a non-rendering frame may skip SubmitFrameParallelWork after
 		// FrameMove. Never leave the scheduler frame open across lifecycle changes.
+		FinishFrameIndependentWork();
 		if (InterlockedExchange(&mt_scheduler_deferred_pending, FALSE) != FALSE)
 		{
 
@@ -1720,25 +1791,43 @@ extern u32 g_screenmode;
 
 CTimer FreezeTimer;
 void mt_FreezeThread(void *ptr) {
+	const DWORD main_thread = DWORD(uintptr_t(ptr));
 	float freezetime = 0.f;
 	float repeatcheck = 500.f;
+	float hang_longest = 0.f; // a HANG record was written for the freeze going on, this long so far
 
 	while (!Device.mt_bMustExit)
 	{
 		PROF_EVENT();
 
-		if (g_loading_events.size())
+		// Before the first frame the engine loads its configs and XML (GAMMA: many seconds): a loading too.
+		const bool loading = g_loading_events.size() != 0 || Device.dwFrame == 0;
+		if (loading)
 			freezetime = 25000.0f;
 		else
 			freezetime = 5000.0f;
+		// A level load is one long frame (GAMMA: up to a minute): a HANG there only after two minutes.
+		const float hangtime = loading ? 120000.0f : freezetime;
 
 		repeatcheck = 500.f;
 
 		START_PROFILE("Check timer");
-		if (FreezeTimer.GetElapsed_sec()*1000.f > freezetime)
+		const float frozen = FreezeTimer.GetElapsed_sec()*1000.f;
+		if (frozen > freezetime)
 		{
 			FlushLog();
-			repeatcheck = 5000.f;
+			repeatcheck = 1000.f;
+		}
+		if (frozen > hangtime)
+		{
+			if (hang_longest == 0.f)
+				EngineErrorLogger::ReportHang(main_thread, u32(frozen), loading);
+			hang_longest = _max(hang_longest, frozen);
+		}
+		else if (hang_longest > 0.f)
+		{
+			EngineErrorLogger::ReportHangEnd(u32(hang_longest));
+			hang_longest = 0.f;
 		}
 		STOP_PROFILE;
 
@@ -1881,6 +1970,7 @@ void CRenderDevice::on_idle()
 	START_PROFILE("Process render preparation");
 	{
 		SFrameScope stats_scope(fsRenderPrep);
+		StartFrameIndependentWork();
 		ProcessRenderPrepParallelWork();
 		for (u32 index = 0; index < seqAfterPoses.size(); ++index)
 			seqAfterPoses[index]();
@@ -1921,7 +2011,7 @@ void CRenderDevice::on_idle()
 		// Without host management (memory pressure) a step may run atomic and finalizers: main thread only.
 		SLuaGCStatus gc_status = {};
 		Device.LuaGCStatus(&gc_status);
-		mt_frame_lua_gc = gc_status.host_managed;
+		mt_frame_lua_gc = gc_status.host_managed && mt_tasks::on(mt_tasks::lua_gc);
 	}
 
 	if (psLua_ParallelGC && Device.LuaGC && !mt_frame_lua_gc)
@@ -2201,7 +2291,8 @@ void CRenderDevice::Run()
 	// Start auxiliary threads. Per-frame parallel work is dispatched through
 	// the shared worker pool instead of a dedicated secondary thread.
 	InterlockedExchange(&mt_bMustExit, FALSE);
-	thread_spawn(mt_FreezeThread, "Freeze detecting thread", 0, 0);
+	FreezeTimer.Start(); // on_idle restarts it every frame, the app start callbacks come first
+	thread_spawn(mt_FreezeThread, "Freeze detecting thread", 0, reinterpret_cast<void*>(uintptr_t(GetCurrentThreadId())));
 	thread_spawn(mt_DiscordThread, "X-RAY Discord thread", 0, 0);
 	// Message cycle
 	QUARK_DIAGNOSTIC_STAGE("main/run/app-start-callbacks");

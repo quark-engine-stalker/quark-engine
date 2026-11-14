@@ -1489,6 +1489,13 @@ bool CLevel::Load(u32 dwNum)
 	Device.LuaProfileFrameBegin = fastdelegate::FastDelegate0<void>(&CLevel::LuaProfileFrameBegin);
 	Device.LuaProfileFrameEnd = fastdelegate::FastDelegate0<void>(&CLevel::LuaProfileFrameEnd);
 	luaJIT_setgchostmanaged(ai().script_engine().lua(), psLua_ParallelGC ? 1 : 0);
+#ifdef _WIN64
+	// The frame policy turns host management off at 60 % of the pool, but only between frames: one script call can
+	// allocate gigabytes (Western Goods parses every texture description per readable on actor spawn) and run out first.
+	xr_luajit_pool_stats pool_stats = {};
+	XR_GET_POOL_STATS(&pool_stats);
+	luaJIT_setgchostlimit(ai().script_engine().lua(), pool_stats.reserved_bytes / 5 * 3);
+#endif
 	Device.ResetLuaGCAdaptiveState();
     return true;
 }

@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "../../xrRenderPC_R4/upscaler.h"
 #include "dx103DFluidRenderer.h"
 
 #include "dx103DFluidBlenders.h"
@@ -490,7 +491,7 @@ void dx103DFluidRenderer::Draw(const dx103DFluidData& FluidData)
 	RImplementation.rmNormal();
 
 
-    PrepareCBuffer(FluidData, Device.dwWidth, Device.dwHeight);
+    PrepareCBuffer(FluidData, upscaler::width(), upscaler::height());
 
 	RCache.set_c(strDiffuseLight, LightData.m_vLightIntencity.x, LightData.m_vLightIntencity.y,
 	             LightData.m_vLightIntencity.z, 1.0f);
@@ -509,7 +510,7 @@ void dx103DFluidRenderer::ComputeRayData(const dx103DFluidData &FluidData)
 	pTarget->u_setrt(RT[RRT_RayDataTex], nullptr, nullptr, nullptr); // LDR RT
 	RCache.set_Element(m_RendererTechnique[RS_CompRayData_Back]);
 
-    PrepareCBuffer(FluidData, Device.dwWidth, Device.dwHeight);
+    PrepareCBuffer(FluidData, upscaler::width(), upscaler::height());
 
 	// Render volume back faces
 	// We output xyz=(0,-1,0) and w=min(sceneDepth, boxDepth)
@@ -524,7 +525,7 @@ void dx103DFluidRenderer::ComputeRayData(const dx103DFluidData &FluidData)
 	
 	RCache.set_Element(m_RendererTechnique[RS_CompRayData_Front]);
 
-    PrepareCBuffer(FluidData, Device.dwWidth, Device.dwHeight);
+    PrepareCBuffer(FluidData, upscaler::width(), upscaler::height());
 
 	DrawBox();
 }

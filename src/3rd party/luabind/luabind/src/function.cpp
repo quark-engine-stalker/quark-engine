@@ -173,6 +173,7 @@ namespace luabind { namespace detail { namespace free_functions {
         {
             string_class msg = rep->name();
             msg += "() threw an exception";
+            report_caught_exception(msg.c_str());
             lua_pushstring(L, msg.c_str());
         }
         // we can only reach this line if an exception was thrown

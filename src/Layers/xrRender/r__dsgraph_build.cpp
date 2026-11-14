@@ -891,8 +891,13 @@ void CRender::add_leafs_Dynamic(dxRender_Visual* pVisual)
 	}
 }
 
+static bool forward_content(dxRender_Visual* pVisual);
+
 void CRender::add_leafs_Static(dxRender_Visual* pVisual)
 {
+	if (phase == PHASE_NORMAL && !pmask[0] && !forward_content(pVisual))
+		return;
+
 	if (!HOM.visible(pVisual->vis))
 		return;
 
@@ -1110,8 +1115,43 @@ BOOL CRender::add_Dynamic(dxRender_Visual* pVisual, u32 planes)
 	return TRUE;
 }
 
+// Can a static subtree put anything into dsgraph when only priority 1 is enabled (the forward pass)? Leaves pass
+// r_dsgraph_insert_static only through an element of priority 1 (the chosen one, or E[4] for distortion); particle
+// groups and skeletons add dynamic children and are always walked. Level visuals keep their shaders; a changed one
+// forgets its answer (SetShaderTexture).
+static bool forward_content(dxRender_Visual* pVisual)
+{
+	if (pVisual->forward_walk != 0xff)
+		return pVisual->forward_walk != 0;
+	bool content = false;
+	switch (pVisual->Type)
+	{
+	case MT_PARTICLE_GROUP:
+	case MT_SKELETON_ANIM:
+	case MT_SKELETON_RIGID:
+		content = true;
+		break;
+	case MT_HIERRARHY:
+	case MT_LOD:
+		for (IRenderVisual* child : ((FHierrarhyVisual*)pVisual)->children)
+			content = forward_content((dxRender_Visual*)child) || content; // every child gets its answer cached
+		break;
+	default:
+		if (Shader* shader = pVisual->shader._get())
+			for (const ref_selement& element : shader->E)
+				content = content || (element && element->flags.iPriority / 2 != 0);
+		break;
+	}
+	pVisual->forward_walk = content ? 1 : 0;
+	return content;
+}
+
 void CRender::add_Static(dxRender_Visual* pVisual, u32 planes)
 {
+	// The forward pass walks the whole static scene again for its few transparent visuals
+	if (phase == PHASE_NORMAL && !pmask[0] && !forward_content(pVisual))
+		return;
+
 	Flags16& flags = pVisual->dcast_RenderVisual()->flags;
 
 	if (phase != PHASE_NORMAL && !!flags.test(IRenderVisualFlags::eNoShadow))
@@ -1390,6 +1430,133 @@ void CRender::replay_Static(const xr_vector<StaticOp>& ops)
 			add_leafs_Static(op.visual);
 			break;
 		}
+	}
+}
+
+// The checks of add_Static()/add_leafs_Static() for the hierarchies above the work items, in their order, on this
+// thread; under them record_Static() runs on the workers. Every visual is tested by one thread only, so the HOM
+// results (a hidden visual tested twice in a frame passes the second time) and the replayed order are those of
+// add_Static. Static visuals: the transform does not enter IsValuableToRender.
+void CRender::expand_main_static(dxRender_Visual* pVisual, const CFrustum& view, u32 planes, bool leafs, u32 depth)
+{
+	if (!depth || pVisual->Type != MT_HIERRARHY)
+	{
+		m_mainStaticItems.push_back({pVisual, &view, 1, planes, leafs});
+		return;
+	}
+
+	Flags16& flags = pVisual->dcast_RenderVisual()->flags;
+	const bool valuable = !!flags.test(IRenderVisualFlags::eIgnoreOptimization) ||
+		IsValuableToRender(pVisual, true, phase == 1, Fidentity);
+	const bool no_shadow = phase != PHASE_NORMAL && !!flags.test(IRenderVisualFlags::eNoShadow);
+	FHierrarhyVisual* hierarchy = (FHierrarhyVisual*)pVisual;
+	if (leafs)
+	{
+		if (!HOM.visible(pVisual->vis) || no_shadow || !valuable)
+			return;
+		for (IRenderVisual* child : hierarchy->children)
+			expand_main_static((dxRender_Visual*)child, view, 0, true, depth - 1);
+		return;
+	}
+
+	if (no_shadow || !valuable)
+		return;
+	vis_data& vis = pVisual->vis;
+	const EFC_Visible VIS = view.testSAABB(vis.sphere.P, vis.sphere.R, vis.box.data(), planes);
+	if (VIS == fcvNone || !HOM.visible(vis))
+		return;
+	for (IRenderVisual* child : hierarchy->children)
+		expand_main_static((dxRender_Visual*)child, view, planes, VIS != fcvPartial, depth - 1);
+}
+
+void CRender::record_main_static(u32 index)
+{
+	const MainStaticItem& item = m_mainStaticItems[index];
+	xr_vector<StaticOp>& out = m_mainStaticOps[index];
+	out.clear();
+	if (item.leafs)
+		record_leafs_Static(item.visual, *item.view, out);
+	else if (item.views == 1)
+		record_Static(item.visual, *item.view, item.planes, out);
+	else
+		for (u32 v = 0; v < item.views; ++v) // a whole sector root, frustum after frustum like add_Geometry
+			record_Static(item.visual, item.view[v], item.view[v].getMask(), out);
+}
+
+namespace
+{
+struct main_static_batch
+{
+	CRender* render;
+	u32 count;
+	// Claimed by every lane; keep it off the line of the read-only fields.
+	__declspec(align(64)) volatile LONG next;
+};
+main_static_batch g_main_static_batch;
+xr_jobs::task_group g_main_static_group;
+
+void main_static_lane(void* raw)
+{
+	main_static_batch& batch = *static_cast<main_static_batch*>(raw);
+	mt_tasks::lane_time time(mt_tasks::main_static);
+	for (;;)
+	{
+		const LONG index = InterlockedIncrement(&batch.next) - 1;
+		if (index < 0 || static_cast<u32>(index) >= batch.count)
+			return;
+		batch.render->record_main_static(static_cast<u32>(index));
+	}
+}
+} // namespace
+
+// add_Geometry() of every sector root and portal frustum of the main view, started on the workers. The workers only
+// read the level's static hierarchy, the portal frustums and the HOM, and write the vis_data of static visuals; this
+// thread meanwhile tests dynamic objects (their own vis_data) and inserts them into dsgraph, where they share only
+// the distance-sorted maps with static geometry (equal distances alone would change their order). A sector seen
+// through one frustum is split into the subtrees under its top, each visual is tested by one thread once. A sector
+// seen through several frustums tests the same visuals once per frustum, and the HOM answers the second test from the
+// first: such a sector is one item, walked frustum after frustum.
+void CRender::start_main_statics()
+{
+	// The HOM of this frame, enabled. With r2_mt the frame job builds it; until then the shadow passes of the last
+	// frame left it disabled and every test passes, and it may be enabled in the middle of the walk.
+	HOM.MT_SYNC();
+	m_mainStaticItems.clear();
+	for (IRender_Sector* render_sector : PortalTraverser.r_sectors)
+	{
+		CSector* sector = (CSector*)render_sector;
+		if (!sector || sector->r_frustums.empty() || !sector->root())
+			continue;
+		if (sector->r_frustums.size() == 1)
+			expand_main_static((dxRender_Visual*)sector->root(), sector->r_frustums[0], sector->r_frustums[0].getMask(),
+				false, 3);
+		else
+			m_mainStaticItems.push_back({(dxRender_Visual*)sector->root(), sector->r_frustums.data(),
+				u32(sector->r_frustums.size()), 0, false});
+	}
+	const u32 count = u32(m_mainStaticItems.size());
+	if (m_mainStaticOps.size() < count)
+		m_mainStaticOps.resize(count);
+	g_main_static_batch.render = this;
+	g_main_static_batch.count = count;
+	g_main_static_batch.next = 0;
+	const u32 lanes = _min(count, _min(_max(1u, u32(CPU::ID.n_cores)), xr_jobs::available_thread_count()));
+	mt_tasks::lanes(mt_tasks::main_static, lanes);
+	if (lanes)
+		xr_jobs::submit_many(&main_static_lane, &g_main_static_batch, lanes, &g_main_static_group,
+			xr_jobs::priority::high);
+}
+
+void CRender::finish_main_statics()
+{
+	main_static_lane(&g_main_static_batch); // what the workers have not taken yet
+	// The frame job may hold the workers and wait for this render: the lanes nobody started run here.
+	xr_jobs::wait_own(g_main_static_group);
+	const u32 count = u32(m_mainStaticItems.size());
+	for (u32 index = 0; index < count; ++index)
+	{
+		set_Frustum(const_cast<CFrustum*>(m_mainStaticItems[index].view));
+		replay_Static(m_mainStaticOps[index]);
 	}
 }
 

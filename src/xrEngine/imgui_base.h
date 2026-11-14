@@ -30,6 +30,9 @@ namespace xr_imgui
         void Show(bool bShow = true);
         bool is_input() const { return m_input; }
         void EnableInput(bool bInput = true);
+        // quark_panel: opens the window with the mouse, gives the mouse back to it, closes it when it has the mouse
+        void ShowMTPanel();
+        bool is_mt_panel_shown() const { return m_shown && m_mt_panel; }
 
     public:
         void OnDeviceCreate();
@@ -68,6 +71,9 @@ namespace xr_imgui
         void InputChar(WPARAM param);
         void UpdateInputLang();
 
+        // QUARK-PANEL's background logo (an ImTextureID), decoded at the first use and made anew with the device
+        void* PanelLogo(u32& width, u32& height);
+
         ImFont* GetFont(LPCSTR name);
         ImFontConfig LoadImGuiFontConfig(string_path path, LPCSTR name);
         void LoadImGuiFont(string_path path, LPCSTR name);
@@ -86,9 +92,16 @@ namespace xr_imgui
         ide_backend* m_backend_data;
         bool m_shown;
         bool m_input;
+        bool m_mt_panel; // shown is the mt_panel window, not the editor
         bool firstframe;
         UINT32 keyboard_code_page;
         xr_vector<IReader*> ImGuiFontsPtr;
         xr_map<shared_str, ImFont*> ImFonts;
+        void* m_logo = nullptr;
+        u32 m_logo_width = 0, m_logo_height = 0;
+        bool m_logo_tried = false;
     };
+
+    // Every frame, open or not: the window counts the parallel tasks only while it is open (mt_panel.cpp).
+    void mt_panel_frame(ide& owner, bool open);
 } // namespace xr_imgui

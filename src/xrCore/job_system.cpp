@@ -2,6 +2,7 @@
 #pragma hdrstop
 
 #include "job_system.h"
+#include "mt_tasks.h"
 #include "cpu_placement.h"
 #include "engine_error_logger.h"
 
@@ -92,6 +93,7 @@ struct job_record
     task_scope* scope = nullptr;
     u32 scope_generation = 0;
     priority job_priority = priority::normal;
+    u64 queued = 0; // QPC of the submit while the Quark-MT window counts, else 0
 };
 
 struct __declspec(align(64)) priority_queue
@@ -106,6 +108,39 @@ struct __declspec(align(64)) priority_queue
 class job_system_impl;
 thread_local bool worker_thread_ = false;
 thread_local u32 worker_dispatch_sequence_ = 0;
+thread_local u32 worker_slot_ = 0;
+DWORD main_thread_id_ = 0;
+
+u32 thread_slot()
+{
+    if (worker_thread_)
+        return worker_slot_;
+    return GetCurrentThreadId() == main_thread_id_ ? 0u : mt_tasks::other_slot;
+}
+
+void stamp(job_record& job)
+{
+    if (!mt_tasks::counting)
+        return;
+    job.queued = CPU::QPC();
+}
+
+// A job stamped while the window counts starts on this thread.
+void count_start(const job_record& job)
+{
+    const u64 start = CPU::QPC();
+    const u32 slot = thread_slot();
+    mt_tasks::thread_counter& counter = mt_tasks::thread_counters[slot];
+    InterlockedIncrement(&counter.jobs);
+    InterlockedExchangeAdd64(&counter.start_delay, LONG64(start - job.queued));
+    const DWORD core = GetCurrentProcessorNumber();
+    InterlockedExchange(&counter.core, LONG(core));
+    if (core < 64)
+    {
+        InterlockedOr64(&counter.cores, LONG64(1ull << core));
+        InterlockedIncrement(&mt_tasks::core_jobs[core]);
+    }
+}
 
 struct worker_startup
 {
@@ -136,6 +171,9 @@ public:
 
         total_threads_ = resolve_total_threads(total_threads);
         worker_count_ = total_threads_ > 1 ? total_threads_ - 1 : 0;
+        if (!main_thread_id_)
+            main_thread_id_ = GetCurrentThreadId();
+        mt_tasks::thread_counters[0].tid = LONG(main_thread_id_);
 
         accepting_ = TRUE;
         stopping_ = FALSE;
@@ -258,7 +296,8 @@ public:
             InterlockedIncrement(&group->pending_);
         InterlockedIncrement(&outstanding_);
 
-        const job_record job{function, context, group, scope, scope_generation, job_priority};
+        job_record job{function, context, group, scope, scope_generation, job_priority};
+        stamp(job);
         while (!try_push(job, job_priority))
         {
 
@@ -311,7 +350,8 @@ public:
             InterlockedExchangeAdd(&group->pending_, signed_count);
         InterlockedExchangeAdd(&outstanding_, signed_count);
 
-        const job_record job{function, context, group, nullptr, 0, job_priority};
+        job_record job{function, context, group, nullptr, 0, job_priority};
+        stamp(job);
         while (!try_push_many(job, count, job_priority))
         {
 
@@ -349,7 +389,8 @@ public:
         if (group)
             InterlockedExchangeAdd(&group->pending_, signed_count);
 
-        const job_record job{function, context, group, nullptr, 0, job_priority};
+        job_record job{function, context, group, nullptr, 0, job_priority};
+        stamp(job);
         if (!try_push_many(job, count, job_priority, true))
         {
             if (group && InterlockedExchangeAdd(&group->pending_, -signed_count) == signed_count)
@@ -419,6 +460,8 @@ public:
             job_record job;
             if (try_claim_queued(group, job))
             {
+                if (job.queued)
+                    count_start(job);
                 job.function(job.context);
                 if (InterlockedDecrement(&group.pending_) == 0)
                     wake_address_waiters(&group.pending_);
@@ -462,6 +505,9 @@ private:
         thread_name(thread_name_buffer);
         _initialize_cpu_thread();
         worker_thread_ = true;
+        worker_slot_ = _min(startup->index + 1, mt_tasks::other_slot);
+        if (worker_slot_ != mt_tasks::other_slot)
+            mt_tasks::thread_counters[worker_slot_].tid = LONG(GetCurrentThreadId());
         worker_dispatch_sequence_ = startup->index * 17u;
         QUARK_DIAGNOSTIC_STAGE("worker/idle");
 
@@ -692,9 +738,23 @@ private:
 
         if (execute_callback)
         {
+            // A worker runs nested jobs inside its waits: the outer job is its stage again after one.
+            static thread_local const void* current_job = nullptr;
+            const void* outer_job = current_job;
             if (worker_thread_)
                 QUARK_DIAGNOSTIC_STAGE_ADDRESS("worker/job-callback", job.function);
+            current_job = reinterpret_cast<const void*>(job.function);
+            if (job.queued)
+                count_start(job);
             job.function(job.context);
+            current_job = outer_job;
+            if (worker_thread_)
+            {
+                if (outer_job)
+                    QUARK_DIAGNOSTIC_STAGE_ADDRESS("worker/job-callback", outer_job);
+                else
+                    QUARK_DIAGNOSTIC_STAGE("worker/idle");
+            }
         }
 
         complete(job);
@@ -1105,3 +1165,5 @@ void wait_idle()
         system->wait_idle();
 }
 } // namespace xr_jobs
+
+u32 mt_tasks::current_thread_slot() { return xr_jobs::thread_slot(); }

@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "../xrRenderPC_R4/upscaler.h"
 #pragma hdrstop
 
 #pragma warning(push)
@@ -579,8 +580,8 @@ static class cl_screen_res : public R_constant_setup
 {
 	virtual void setup(R_constant* C)
 	{
-		RCache.set_c(C, (float)RDEVICE.dwWidth, (float)RDEVICE.dwHeight, 1.0f / (float)RDEVICE.dwWidth,
-		             1.0f / (float)RDEVICE.dwHeight);
+		RCache.set_c(C, (float)upscaler::width(), (float)upscaler::height(), 1.0f / (float)upscaler::width(),
+		             1.0f / (float)upscaler::height());
 	}
 } binder_screen_res;
 
@@ -1128,6 +1129,14 @@ static class ssfx_jitter : public R_constant_setup
 	{
 		float JitterX = 0;
 		float JitterY = 0;
+
+		// The upscaler's own sequence replaces SSS TAA, the SSS weight sees a temporal filter (z = 1)
+		if (upscaler::enabled())
+		{
+			upscaler::jitter(JitterX, JitterY);
+			RCache.set_c(C, JitterX, JitterY, 1.f, ps_ssfx_taa.w);
+			return;
+		}
 
 		if (ps_ssfx_taa.x > 0 && RImplementation.o.ssfx_taa)
 		{

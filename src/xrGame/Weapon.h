@@ -778,6 +778,7 @@ protected:
 	void StartFlameParticles2();
 	void StopFlameParticles2();
 	void UpdateFlameParticles2();
+	void __stdcall UpdateFlameParticlesAfterPoses();
 protected:
 	shared_str m_sFlameParticles2;
 	//îáúåêò ïàðòèêëîâ äëÿ ñòðåëüáû èç 2-ãî ñòâîëà
@@ -1097,7 +1098,13 @@ public:
 	int GetAmmoCount_forType(shared_str const& ammo_type) const;
 	virtual void set_ef_main_weapon_type(u32 type) { m_ef_main_weapon_type = type; };
 	virtual void set_ef_weapon_type(u32 type) { m_ef_weapon_type = type; };
-	virtual void SetAmmoType(u8 type) { m_ammoType = type; };
+	virtual void SetAmmoType(u8 type)
+	{
+		if (type < m_ammoTypes.size())
+			m_ammoType = type;
+		else
+			Msg("![%s] ERROR: script SetAmmoType(%d) past ammo_class (%d types), ignored", Name(), type, u32(m_ammoTypes.size()));
+	};
 	u8 GetAmmoType() { return m_ammoType; };
 	//-Alundaio
 

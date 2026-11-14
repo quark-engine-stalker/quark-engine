@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "upscaler.h"
 #include "../../xrEngine/igame_persistent.h"
 #include "../../xrEngine/environment.h"
 
@@ -43,6 +44,7 @@ void CRenderTarget::phase_combine()
 	PIX_EVENT(phase_combine);
 
 	bool ssfx_PrevPos_Requiered = false;
+	const bool history_reset = !m_temporal_history_valid; // a level transition: the upscaler starts its history anew
 
 	//	TODO: DX10: Remove half poxel offset
 	bool _menu_pp = g_pGamePersistent ? g_pGamePersistent->OnRenderPPUI_query() : false;
@@ -276,8 +278,8 @@ void CRenderTarget::phase_combine()
 		*/
 
 		// Fill VB
-		float scale_X = float(Device.dwWidth) / float(TEX_jitter);
-		float scale_Y = float(Device.dwHeight) / float(TEX_jitter);
+		float scale_X = float(upscaler::width()) / float(TEX_jitter);
+		float scale_Y = float(upscaler::height()) / float(TEX_jitter);
 
 		// Fill vertex buffer
 		FVF::TL* pv = (FVF::TL*)RCache.Vertex.Lock(4, g_combine->vb_stride, Offset);
@@ -363,8 +365,8 @@ void CRenderTarget::phase_combine()
 		else
 			u_setrt(rt_ssfx_temp, 0, 0, 0);
 
-		float w = float(Device.dwWidth);
-		float h = float(Device.dwHeight);
+		float w = float(upscaler::width());
+		float h = float(upscaler::height());
 
 		// Render Scale
 		set_viewport_size(HW.pContext, w / ps_ssfx_water.x, h / ps_ssfx_water.x);
@@ -378,8 +380,8 @@ void CRenderTarget::phase_combine()
 
 		// Save only the part of the water SSR texture that was rendered at the configured scale.
 		D3D11_BOX waterHistoryBox = {};
-		waterHistoryBox.right = (UINT)clampr(iCeil(w / ps_ssfx_water.x), 1, (int)Device.dwWidth);
-		waterHistoryBox.bottom = (UINT)clampr(iCeil(h / ps_ssfx_water.x), 1, (int)Device.dwHeight);
+		waterHistoryBox.right = (UINT)clampr(iCeil(w / ps_ssfx_water.x), 1, (int)upscaler::width());
+		waterHistoryBox.bottom = (UINT)clampr(iCeil(h / ps_ssfx_water.x), 1, (int)upscaler::height());
 		waterHistoryBox.back = 1;
 		HW.pContext->CopySubresourceRegion(rt_ssfx_water->pSurface, 0, 0, 0, 0,
 			rt_ssfx_temp->pSurface, 0, &waterHistoryBox);
@@ -529,6 +531,25 @@ void CRenderTarget::phase_combine()
 
 
 
+	// The scene is done: the upscaler brings it to the display size, the post-process runs there
+	if (upscaler::enabled())
+	{
+		if (ssfx_PrevPos_Requiered) // rt_Position becomes the display copy
+			HW.pContext->CopyResource(rt_ssfx_prevPos->pSurface, rt_Position->pSurface);
+		ssfx_PrevPos_Requiered = false;
+		upscaler::scene_end(*this, history_reset);
+		m_temporal_history_valid = true; // phase_ssfx_taa, which sets it, does not run with the upscaler
+
+		// The HUD's sorted geometry (PDA screen, sight glass and reticles) at the display size, as without the upscaler:
+		// at the render size the PDA's text was soft, and DLSS 3 and FSR smeared it (SSS gives it zero motion vectors)
+		u_setrt(rt_Generic_0, need_heat_buffer() ? rt_Heat : ref_rt(), need_motion_vectors() ? rt_ssfx_motion_vectors : ref_rt(),
+			HW.pBaseZB);
+		RCache.set_CullMode(CULL_CCW);
+		RCache.set_Stencil(FALSE);
+		RCache.set_ColorWriteEnable();
+		RImplementation.r_dsgraph_render_hud_sorted();
+	}
+
 	// Pre-bloom postprocess chain: sunshafts/fog/motion blur can alternate between Generic_0 and Generic.
 	pp_begin();
 
@@ -607,14 +628,14 @@ void CRenderTarget::phase_combine()
 	}
 
     //SMAA
-	if (ps_smaa_quality)
+	if (ps_smaa_quality && !upscaler::enabled()) // DLSS is the anti-aliasing
 	{
         //PIX_EVENT(SMAA);
         phase_smaa();
         RCache.set_Stencil(FALSE);
     }
 
-	if (RImplementation.o.ssfx_taa && ps_ssfx_taa.x > 0)
+	if (RImplementation.o.ssfx_taa && ps_ssfx_taa.x > 0 && !upscaler::enabled())
 	{
 		phase_ssfx_taa();
 	}

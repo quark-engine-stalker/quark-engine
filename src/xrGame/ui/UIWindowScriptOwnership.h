@@ -30,6 +30,8 @@ struct attach_child_converter : luabind::detail::pointer_converter<luabind::deta
 		T* window = pointer_converter::apply(L, type, index);
 		if (window && window->IsAutoDelete())
 			release_lua_ownership(L, index);
+		if (window)
+			window->m_attached_by_script = true;
 		return window;
 	}
 };

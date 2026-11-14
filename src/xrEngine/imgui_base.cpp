@@ -4,6 +4,9 @@
 #include <imgui/IconsFontAwesome6.h>
 #include "device.h"
 #include "IGame_Persistent.h"
+#include "resource.h"
+
+bool LoadPngResourceRGBA(int resource_id, xr_vector<u32>& pixels, u32& width, u32& height); // x_ray.cpp
 
 static const char* GetCustomCompressedFontDataTTF(int* out_size);
 static const char* GetIconCompressedFontDataTTF(int* out_size);
@@ -20,7 +23,8 @@ namespace xr_imgui
     static bool imgui_metrics = false;
 
     ide::ide()
-        : keyboard_code_page(CP_ACP), m_backend_data(nullptr), m_input(false), m_render(nullptr), m_shown(false), firstframe(true)
+        : keyboard_code_page(CP_ACP), m_backend_data(nullptr), m_input(false), m_render(nullptr), m_shown(false),
+          m_mt_panel(false), firstframe(true)
     {
         ImGui::SetAllocatorFunctions(
             [](size_t size, void* /*user_data*/)
@@ -57,6 +61,8 @@ namespace xr_imgui
 
     void ide::OnDeviceDestroy()
     {
+        m_logo = nullptr; // the render releases its textures
+        m_logo_tried = false;
         m_render->OnDeviceDestroy();
         RenderFactory->DestroyImGuiRender(m_render);
         m_render = nullptr;
@@ -103,6 +109,14 @@ namespace xr_imgui
         IconConfig.GlyphMinAdvanceX = xrImGuiFontSize * 2.0f / 3.0f;
         IconConfig.OversampleH = 2;
         io.Fonts->AddFontFromMemoryCompressedTTF(ttf_compressed_icons, ttf_compressed_size, xrImGuiFontSize, &IconConfig, icons_ranges);
+
+        // Quark-MT: the title and the numbers. After the icons, they merge into the font added before them.
+        ImFontConfig BigConfig;
+        xr_strcpy(BigConfig.Name, sizeof(BigConfig.Name), "$big");
+        BigConfig.OversampleH = 2;
+        ttf_compressed = GetCustomCompressedFontDataTTF(&ttf_compressed_size);
+        if (ImFont* bigFont = io.Fonts->AddFontFromMemoryCompressedTTF(ttf_compressed, ttf_compressed_size, 26.f, &BigConfig))
+            ImFonts.emplace(mk_pair("$big", bigFont));
 
         // load fonts from gamedata/textures/fonts/
         string_path fontPath;
@@ -159,12 +173,13 @@ namespace xr_imgui
             ImGui::NewFrame();
         }
         
-        if (is_shown())
+        if (is_shown() && !m_mt_panel)
         {
             ShowMain();
             if (imgui_demo)     ImGui::ShowDemoWindow(&imgui_demo);
             if (imgui_metrics)  ImGui::ShowMetricsWindow(&imgui_metrics);
         }
+        mt_panel_frame(*this, is_shown() && m_mt_panel);
 
         if (io.WantSetMousePos)
         {
@@ -259,7 +274,34 @@ namespace xr_imgui
         if (m_shown == bShow) return;
 
         m_shown = bShow;
+        if (!m_shown)
+            m_mt_panel = false;
         m_shown ? IR_Capture() : IR_Release();
+    }
+
+    void ide::ShowMTPanel()
+    {
+        if (m_shown && m_mt_panel && m_input)
+        {
+            Show(false);
+            return;
+        }
+        m_mt_panel = true;
+        m_shown ? EnableInput(true) : Show(true);
+    }
+
+    void* ide::PanelLogo(u32& width, u32& height)
+    {
+        if (!m_logo_tried && m_render)
+        {
+            m_logo_tried = true;
+            xr_vector<u32> pixels;
+            if (LoadPngResourceRGBA(IDR_PANEL_LOGO_PNG, pixels, m_logo_width, m_logo_height))
+                m_logo = m_render->CreateTexture(pixels.data(), m_logo_width, m_logo_height);
+        }
+        width = m_logo_width;
+        height = m_logo_height;
+        return m_logo;
     }
 
     ImFont* ide::GetFont(LPCSTR name)

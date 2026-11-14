@@ -2,6 +2,29 @@
 
 **English** & [Русский](CHANGELOG.ru.md)
 
+VER 1.5.1 [BUG FIXES & PERFORMANCE]
+
+NEW:
+
+- Added QUARK-PANEL, opened with the `quark_panel` console command (no impact on performance or latency). It lets you configure engine features and track many important metrics
+- Added NVIDIA DLSS (DLSS 4.5, DLSS 4 and DLSS 3) and AMD FSR 3.1 (found in QUARK-PANEL). AUTO mode picks the appropriate model based on your GPU generation
+- If you have an RTX 2000-3000 series GPU, I recommend DLSS 4 with the Quality preset (I have an RTX 3060 Ti, and in my testing it gives the best FPS-to-quality ratio). DLSS 4.5 has a heavy performance cost, so use it only on RTX 4000-5000 series
+- Updated the error logger to version 2.2 (more detailed and accurate crash logging)
+
+FIXES:
+
+- Fixed crashes related to butchering mutant corpses.
+- Other bug fixes that I noticed myself.
+
+OPTIMIZATION:
+
+- Grass is now processed across multiple workers (up to 4). Grass visibility and render data are calculated in parallel
+- End-of-frame work (rays under NPCs' feet, shooting checks) now runs across multiple workers (up to 4)
+- After teleporting or loading a save, grass around the player now appears without frame drops
+- Buildings, rocks and trees are now culled for rendering on workers
+- The transparent render pass no longer re-walks all static geometry that has no transparent objects
+- Highlighting of pickable items now checks only a few meters around the player instead of the entire field of view every frame
+
 VER 1.5.0 [BUG FIXES AND PERFORMANCE]
 
 NEW:

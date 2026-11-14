@@ -189,6 +189,13 @@ CWeapon::~CWeapon()
 
 	xr_delete(m_UIScope);
 	delete_data(m_scopes);
+	Device.remove_after_poses(fastdelegate::FastDelegate0<>(this, &CWeapon::UpdateFlameParticlesAfterPoses));
+}
+
+void CWeapon::UpdateFlameParticlesAfterPoses()
+{
+	UpdateFlameParticles();
+	UpdateFlameParticles2();
 }
 
 void CWeapon::Hit(SHit* pHDS)
@@ -1033,7 +1040,8 @@ BOOL CWeapon::net_Spawn(CSE_Abstract* DC)
 	SetState(E->wpn_state);
 	SetNextState(E->wpn_state);
 
-    if (!m_ammoTypes[m_ammoType].c_str())
+    // the saved index may be past ammo_class: a mod shortened the list or a script set a wrong type
+    if (m_ammoType >= m_ammoTypes.size() || !m_ammoTypes[m_ammoType].c_str())
     {
         Msg("![%s] ERROR: CWeapon::net_Spawn: m_ammoTypes[m_ammoType] is invalid, m_ammoTypes.size %d, m_ammoType %d", Name(), m_ammoTypes.size(), m_ammoType);
         m_ammoType = 0;
@@ -1063,6 +1071,7 @@ void CWeapon::net_Destroy()
 	inherited::net_Destroy();
 
 	//óäàëèòü îáúåêòû ïàðòèêëîâ
+	Device.remove_after_poses(fastdelegate::FastDelegate0<>(this, &CWeapon::UpdateFlameParticlesAfterPoses));
 	StopFlameParticles();
 	StopFlameParticles2();
 	StopLight();
@@ -1363,8 +1372,15 @@ void CWeapon::UpdateCL()
 	UpdateLight();
 
 	//íàðèñîâàòü ïàðòèêëû
-	UpdateFlameParticles();
-	UpdateFlameParticles2();
+	// An NPC's weapon: its fire point here would build the owner's whole pose on the main thread; the particles take it
+	// once the frame's poses are built. The HUD weapon needs it now.
+	if (!GetHUDmode() && (m_pFlameParticles || m_pFlameParticles2))
+		Device.add_after_poses(fastdelegate::FastDelegate0<>(this, &CWeapon::UpdateFlameParticlesAfterPoses));
+	else
+	{
+		UpdateFlameParticles();
+		UpdateFlameParticles2();
+	}
 
 	if (!IsGameTypeSingle())
 		make_Interpolation();

@@ -9,6 +9,16 @@
 #include "client_spawn_manager.h"
 #include "../xrEngine/xr_object.h"
 #include "../xrEngine/IGame_Persistent.h"
+#include "../xrCore/engine_error_logger.h"
+
+// EngineErrorLogger::ObjectDescriber: the object being spawned, as the server entity names it.
+static void describe_spawn(const void* entity, char* output, size_t capacity)
+{
+	const CSE_Abstract* E = static_cast<const CSE_Abstract*>(entity);
+	LPCSTR section = E->s_name.c_str();
+	_snprintf_s(output, capacity, _TRUNCATE, "%s [%s] id %u", E->name_replace() ? E->name_replace() : "<no name>",
+		section ? section : "<no section>", u32(E->ID));
+}
 
 void CLevel::cl_Process_Spawn(NET_Packet& P)
 {
@@ -130,6 +140,7 @@ void CLevel::g_sv_Spawn(CSE_Abstract* E)
 
 	// Client spawn
 	//	T.Start		();
+	const EngineErrorLogger::ObjectScope diagnostic_object("net_Spawn", E, &describe_spawn);
 	CObject* O = nullptr;
 	{
 

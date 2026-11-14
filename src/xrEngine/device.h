@@ -14,6 +14,7 @@
 //#include "hw.h"
 #include "../xrcore/ftimer.h"
 #include "../xrCore/job_system.h"
+#include "../xrCore/mt_tasks.h"
 #include "stats.h"
 //#include "shader.h"
 //#include "R_Backend.h"
@@ -162,6 +163,9 @@ public:
 
 #pragma pack(pop)
 // refs
+// This thread runs a lane of the frame tail: poses are read as they are, rays go through RayPickMT
+extern thread_local bool g_frame_tail_lane;
+
 class ENGINE_API CRenderDevice : public CRenderDeviceBase
 {
 public:
@@ -543,7 +547,7 @@ public:
 	IC bool IsFrameJobThread() const
 	{
 		const LONG thread = static_cast<LONG>(GetCurrentThreadId());
-		return mt_overlap_thread == thread || mt_overlap_tail_thread == thread;
+		return mt_overlap_thread == thread || mt_overlap_tail_thread == thread || g_frame_tail_lane;
 	}
 	ENGINE_API void WaitSceneRendered();
 	// The VM belongs to that worker until the join: the main thread entering Lua during the scene joins it first.
@@ -553,6 +557,9 @@ public:
 	void ProcessFrameParallelWork();
 	void ProcessFrameTail();
 	void ProcessRenderPrepParallelWork();
+	// The independent batch (HOM, grass): started once the camera of the frame is final, joined at the end of the job.
+	void StartFrameIndependentWork();
+	void FinishFrameIndependentWork();
 	void ProcessLuaGCWork(bool allow_deferred_phase);
 	void UpdateLuaGCCycleFeedback(u32 memory_after_kb);
 	void ResetLuaGCAdaptiveState();

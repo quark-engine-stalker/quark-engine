@@ -382,6 +382,7 @@ struct OpaqueSortContext
 void opaque_sort_worker(void* parameter)
 {
 	auto& context = *static_cast<OpaqueSortContext*>(parameter);
+	mt_tasks::lane_time time(mt_tasks::opaque_sort);
 	for (;;)
 	{
 		const u32 index = context.next.fetch_add(1, std::memory_order_relaxed);
@@ -398,8 +399,9 @@ void opaque_sort_worker(void* parameter)
 
 bool R_dsgraph_structure::r_dsgraph_prepare_opaque_sort(u32 priority)
 {
+	// false: every leaf is sorted on this thread right before it is drawn
 	if (m_opaque_sort_items[priority] < opaque_sort_min_items || m_opaque_sort_leaves[priority] < 4 ||
-		!xr_jobs::worker_count())
+		!xr_jobs::worker_count() || !mt_tasks::on(mt_tasks::opaque_sort))
 		return false;
 
 	m_opaque_sort_ranges.clear();
@@ -429,6 +431,7 @@ bool R_dsgraph_structure::r_dsgraph_prepare_opaque_sort(u32 priority)
 	// Not only on an idle pool: the frame job runs beside every render, so that never happened in play.
 	const u32 lanes = _min(large_leaves, _min(xr_jobs::available_thread_count(),
 		_max(2u, u32(CPU::ID.n_cores))));
+	mt_tasks::lanes(mt_tasks::opaque_sort, lanes);
 	xr_jobs::submit_many(&opaque_sort_worker, &context, lanes - 1, &group, xr_jobs::priority::high);
 	opaque_sort_worker(&context);
 	// Join every borrowed range before rendering callbacks, SSA resets, graph
@@ -777,8 +780,8 @@ void R_dsgraph_structure::r_dsgraph_render_cam_ui()
 }
 
 //////////////////////////////////////////////////////////////////////////
-// strict-sorted render
-void R_dsgraph_structure::r_dsgraph_render_sorted()
+// strict-sorted render; without hud the HUD's part waits for r_dsgraph_render_hud_sorted
+void R_dsgraph_structure::r_dsgraph_render_sorted(bool hud)
 {
 	PROF_EVENT();
 	// Sorted (back to front)
@@ -793,8 +796,11 @@ void R_dsgraph_structure::r_dsgraph_render_sorted()
 
 	// Rendering
 	rmNear();
-	mapHUDSorted.traverseRL(sorted_L1);
-	mapHUDSorted.clear();
+	if (hud)
+	{
+		mapHUDSorted.traverseRL(sorted_L1);
+		mapHUDSorted.clear();
+	}
 
 	// Camera Script Attachments
 	if (mapCamAttachedSorted.size())
@@ -821,9 +827,24 @@ void R_dsgraph_structure::r_dsgraph_render_sorted()
 	RCache.set_xform_project(Device.mProject);
 }
 
+void R_dsgraph_structure::r_dsgraph_render_hud_sorted()
+{
+	Fmatrix FTold = Device.mFullTransform;
+	Device.mFullTransform = Device.mFullTransformHud;
+	RCache.set_xform_project(Device.mProjectHud);
+
+	rmNear();
+	mapHUDSorted.traverseRL(sorted_L1);
+	mapHUDSorted.clear();
+	rmNormal();
+
+	Device.mFullTransform = FTold;
+	RCache.set_xform_project(Device.mProject);
+}
+
 //////////////////////////////////////////////////////////////////////////
 // strict-sorted render
-void R_dsgraph_structure::r_dsgraph_render_ScopeSorted()  //  Redotix99: for 3D Shader Based Scopes 	
+void R_dsgraph_structure::r_dsgraph_render_ScopeSorted()  //  Redotix99: for 3D Shader Based Scopes
 {
 	// Change projection
 	Fmatrix FTold = Device.mFullTransform;

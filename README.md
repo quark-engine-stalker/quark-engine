@@ -37,9 +37,10 @@ Your processor must support **AVX**. Also install & update the [Microsoft Visual
 1. Make sure STALKER: Anomaly 1.5.3 and STALKER: GAMMA 0.9.5 are installed correctly. Installation instructions are available from their respective authors.
 2. **Make a backup** of the `Anomaly\bin` and `Anomaly\gamedata` folders.
 3. Download the latest `AnomalyDX11AVX.rar` archive from the [releases page](https://github.com/quark-engine-stalker/quark-engine/releases) and extract it.
-4. Copy `AnomalyDX11AVX.exe` and `AnomalyDX11AVX.pdb` to the `Anomaly\bin` folder, replacing the existing files.
+4. Copy `AnomalyDX11AVX.exe`, `AnomalyDX11AVX.pdb` and `nvngx_dlss.dll` to the `Anomaly\bin` folder, replacing the existing files. `nvngx_dlss.dll` must be next to `AnomalyDX11AVX.exe`, DLSS does not work without it.
 5. Copy the `gamedata` folder from the archive to the root of the `Anomaly` folder (next to `bin`), replacing the existing files.
 6. Launch **Anomaly Launcher** through MO2 (Mod Organizer), enable **Support for AVX CPU** and **Delete Shader Cache**, and start the game. Shaders will be recompiled on the first launch.
+7. The engine has its own built-in panel. Enter `quark_panel` in the console to open it (it contains REFLEX, DLSS, FSR settings and much more).
 
 It is recommended to leave the graphics settings at their defaults. If you encounter errors, attach the logs from the `AppData\Roaming\QUARK-ENGINE\ERROR` folder to your problem report and send everything to us on Discord.
 

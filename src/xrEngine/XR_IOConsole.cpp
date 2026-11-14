@@ -195,6 +195,7 @@ void CConsole::Destroy()
 	xr_delete(pFont);
 	xr_delete(pFont2);
 	Commands.clear();
+	HiddenCommands.clear();
 }
 
 void CConsole::AddCommand(IConsole_Command* cc)
@@ -202,13 +203,15 @@ void CConsole::AddCommand(IConsole_Command* cc)
 	Commands[cc->Name()] = cc;
 }
 
+void CConsole::AddHiddenCommand(IConsole_Command* cc)
+{
+	HiddenCommands[cc->Name()] = cc;
+}
+
 void CConsole::RemoveCommand(IConsole_Command* cc)
 {
-	vecCMD_IT it = Commands.find(cc->Name());
-	if (Commands.end() != it)
-	{
-		Commands.erase(it);
-	}
+	Commands.erase(cc->Name());
+	HiddenCommands.erase(cc->Name());
 }
 
 void CConsole::OnFrame()
@@ -396,24 +399,12 @@ void CConsole::OnRender()
 		pFont->OutI(-1.0f + str_length * scr_x, ypos, "%s", ch_cursor);
 	}
 
-	// ---------------------
-	// The latency line sits on the top row, the log stops under it. In a level only: the menu's frame limit would falsify it.
-	const bool latency_line = g_pGameLevel && g_pGameLevel->bReady &&
-		!(g_pGamePersistent && g_pGamePersistent->m_pMainMenu && g_pGamePersistent->m_pMainMenu->IsActive());
-	if (latency_line)
-	{
-		string256 line;
-		Device.m_pRender->LatencyStatus(line, sizeof(line));
-		pFont->SetColor(cmd_font_color);
-		pFont->OutI(-1.0f, -1.0f, "%s", line);
-	}
-
 	u32 log_line = LogFile.size() - 1;
 	ypos -= LDIST;
 	for (int i = log_line - scroll_delta; i >= 0; --i)
 	{
 		ypos -= LDIST;
-		if (ypos < (latency_line ? -1.0f + LDIST : -1.0f))
+		if (ypos < -1.0f)
 		{
 			break;
 		}
@@ -630,9 +621,10 @@ void CConsole::ExecuteCommand(LPCSTR cmd_str, bool record_cmd)
 	}
 	text_editor::split_cmd(first, last, edt);
 
-	// search
+	// search; a hidden command only when the engine runs it, not when the player typed it
 	vecCMD_IT it = Commands.find(first);
-	if (it != Commands.end())
+	const bool found = it != Commands.end() || (!record_cmd && (it = HiddenCommands.find(first)) != HiddenCommands.end());
+	if (found)
 	{
 		IConsole_Command* cc = it->second;
 		if (!cc || !cc->RenderIndependent())

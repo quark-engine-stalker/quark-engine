@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup><Fsr3Root>$(MSBuildThisFileDirectory)</Fsr3Root></PropertyGroup>
+  <ItemGroup>
+    <ClCompile Include="$(Fsr3Root)src\backends\dx11\ffx_dx11.cpp;$(Fsr3Root)src\backends\dx11\DXBCChecksum.c;$(Fsr3Root)src\backends\dx11\md5.c;$(Fsr3Root)src\shared\ffx_assert.cpp;$(Fsr3Root)src\shared\ffx_object_management.cpp;$(Fsr3Root)src\components\fsr3upscaler\ffx_fsr3upscaler.cpp;$(Fsr3Root)src\backends\shared\blob_accessors\ffx_fsr3upscaler_shaderblobs.cpp;$(Fsr3Root)upscaler_blobs.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <AdditionalIncludeDirectories>$(Fsr3Root)include;$(Fsr3Root)src\components;$(Fsr3Root)src\shared;$(Fsr3Root)src\backends\shared;$(Fsr3Root)shaders;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>FFX_GCC;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)fsr3\</ObjectFileName>
+    </ClCompile>
+  </ItemGroup>
+</Project>
