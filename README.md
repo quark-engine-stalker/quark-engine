@@ -46,8 +46,9 @@ It is recommended to leave the graphics settings at their defaults. If you encou
 
 <p align="center">
   <img src="docs/assets/install-replace.png" alt="Replacing files" width="655">
-  <img src="docs/assets/Launcher.png" alt="Launching through the launcher" width="655">
   <img src="docs/assets/gamedata.png" alt="Replacing gamedata" width="655">
+  <img src="docs/assets/install-mo2.png" alt="Launching Anomaly Launcher through MO2" width="655">
+  <img src="docs/assets/Launcher.png" alt="Launching through the launcher" width="655">
 </p>
 
 ## Source Code and Building

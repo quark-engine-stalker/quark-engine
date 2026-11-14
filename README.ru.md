@@ -47,8 +47,9 @@
 
 <p align="center">
   <img src="docs/assets/install-replace.png" alt="замена файлов" width="655">
-  <img src="docs/assets/Launcher.png" alt="запуск через лаунчер" width="655">
   <img src="docs/assets/gamedata.png" alt="замена gamedata" width="655">
+  <img src="docs/assets/install-mo2.png" alt="запуск Anomaly Launcher через MO2" width="655">
+  <img src="docs/assets/Launcher.png" alt="запуск через лаунчер" width="655">
 </p>
 
 ## Исходники и сборка
