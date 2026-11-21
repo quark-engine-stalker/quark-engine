@@ -2,6 +2,34 @@
 
 **English** & [Русский](CHANGELOG.ru.md)
 
+VER 1.5.2 [BUG FIXES & PERFORMANCE]
+
+NEW:
+
+- Updated the UI and made various minor improvements to QUARK-PANEL (VER 0.2)
+- Added a new MODS-INFO section to QUARK-PANEL. Shows how much CPU time (%) each MO2 mod's scripts consume and how much Lua garbage they generate, with detailed breakdowns down to individual scripts and functions. Includes a mod name search feature and has no impact on FPS (**yes, you no longer need Tracy to identify which mods are putting the most load on Lua and how much CPU time they consume**)
+- Improved the 'THREADS' section in QUARK-PANEL. Enabling 'Detailed Information' now shows exactly what is putting load on each individual thread, with detailed statistics
+- Improved the engine-level ON low-latency mode. With an FPS cap enabled, it reduces latency with G-SYNC and VSync to nearly NVIDIA Reflex levels, without sacrificing FPS. (Test results: G-SYNC, 60 FPS cap == **18.61 → 5.53 ms**, VSync, 60 FPS cap == **21.41 → 8.74 ms**, GPU-BOUND without an FPS cap == **no change**)
+- Made minor improvements to DLSS and FSR upscalers
+- Added the ability to manually resize QUARK-PANEL and maximize it to fullscreen
+
+FIXES:
+
+- Fixed crashes when rendering weapons in hand and sun shadows
+- Fixed crashes caused by loading models while shaders were being unloaded
+- Fixed severe FPS degradation after extended gameplay sessions
+- Fixed 'Beer from the creator' crashes and NPC inventory (best_weapon) crashes after removing items
+- Fixed the game freezing for several seconds when exiting after extended gameplay sessions
+- Weapons with missing mod upgrades no longer cause crashes. The missing upgrade is now reported in the log
+- Ported several fixes from [xray-monolith 2026.11.21](https://github.com/themrdemonized/xray-monolith/releases/tag/2026.11.21)
+- Various other bug fixes I discovered
+
+OPTIMIZATION:
+
+- Distant sun shadows are now updated every other frame
+- Moved static object searches for sun shadows to a worker thread (added a new MT option, 'Sun Shadow Statics', in QUARK-PANEL)
+- Added precise culling of invisible distant grass
+
 VER 1.5.1 [BUG FIXES & PERFORMANCE]
 
 NEW:
