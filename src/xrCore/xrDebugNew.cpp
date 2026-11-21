@@ -649,9 +649,6 @@ extern "C" BOOL __stdcall SetCrashHandlerFilter(PFNCHFILTFN pFn);
 
 static UnhandledExceptionFilterType* previous_filter = 0;
 
-// QUARK text crash diagnostics are handled by EngineErrorLogger.
-// Legacy standalone minidump generation is intentionally disabled.
-
 
 void format_message(LPSTR buffer, const u32& buffer_size)
 {
@@ -696,11 +693,13 @@ LONG WINAPI UnhandledFilter(_EXCEPTION_POINTERS* pExceptionInfo)
     if (!error_after_dialog)
         EngineErrorLogger::ReportUnhandledException(pExceptionInfo);
 
-    if (IsDebuggerPresent())
-        return EXCEPTION_CONTINUE_SEARCH; // pass the original exception to debugger
+    if (IsDebuggerPresent() || !EngineErrorLogger::IsEnabled())
+        return EXCEPTION_CONTINUE_SEARCH; // pass the original exception to debugger / Windows
 
     EngineErrorLogger::OpenLogFolder();
-    return EXCEPTION_CONTINUE_SEARCH; // preserve process termination policy
+    // End the process after logging the fault, without invoking Windows Error Reporting.
+    TerminateProcess(GetCurrentProcess(), pExceptionInfo->ExceptionRecord->ExceptionCode);
+    return EXCEPTION_EXECUTE_HANDLER;
 }
 
 // Windows ends the process on heap corruption without calling the unhandled

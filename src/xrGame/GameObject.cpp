@@ -1418,8 +1418,11 @@ void CGameObject::queue_skeleton_update()
 		return;
 	}
 
+	// Drawn in one of the last two frames: the far sun cascade is drawn every other frame, and a skeleton only it
+	// sees would otherwise be posed on the main thread every time it is drawn.
 	const u32 last_exact_frame = kinematics->LastExactBonesRequestFrame();
-	if (last_exact_frame == u32(-1) || last_exact_frame != Device.dwFrame - 1)
+	const u32 frames_ago = Device.dwFrame - last_exact_frame;
+	if (last_exact_frame == u32(-1) || frames_ago < 1 || frames_ago > 2)
 	{
 		++Device.SkeletonJobStats.skip_hidden;
 		return;

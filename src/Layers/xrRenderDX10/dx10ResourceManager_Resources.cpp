@@ -19,7 +19,7 @@
 
 #include "../xrRender/ShaderResourceTraits.h"
 
-SHS* CResourceManager::_CreateHS(LPCSTR Name)
+ref_hs CResourceManager::_CreateHS(LPCSTR Name)
 {
 	return CreateShader<SHS>(Name);
 }
@@ -29,7 +29,7 @@ void CResourceManager::_DeleteHS(const SHS* HS)
 	DestroyShader(HS);
 }
 
-SDS* CResourceManager::_CreateDS(LPCSTR Name)
+ref_ds CResourceManager::_CreateDS(LPCSTR Name)
 {
 	return CreateShader<SDS>(Name);
 }
@@ -39,7 +39,7 @@ void CResourceManager::_DeleteDS(const SDS* DS)
 	DestroyShader(DS);
 }
 
-SCS* CResourceManager::_CreateCS(LPCSTR Name)
+ref_cs CResourceManager::_CreateCS(LPCSTR Name)
 {
 	return CreateShader<SCS>(Name);
 }
@@ -66,7 +66,7 @@ BOOL reclaim(xr_vector<T*>& vec, const T* ptr)
 }
 
 //--------------------------------------------------------------------------------------------------------------
-SState* CResourceManager::_CreateState(SimulatorStates& state_code)
+ref_state CResourceManager::_CreateState(SimulatorStates& state_code)
 {
 	xrCriticalSectionGuard guard(shaderGraphGuard);
 	// Search equal state-code 
@@ -74,7 +74,7 @@ SState* CResourceManager::_CreateState(SimulatorStates& state_code)
 	{
 		SState* C = v_states[it];;
 		SimulatorStates& base = C->state_code;
-		if (base.equal(state_code)) return C;
+		if (base.equal(state_code) && C->pin_alive()) return ref_state(C, false);
 	}
 
 	// Create New
@@ -82,7 +82,7 @@ SState* CResourceManager::_CreateState(SimulatorStates& state_code)
 	v_states.back()->dwFlags |= xr_resource_flagged::RF_REGISTERED;
 	v_states.back()->state = ID3DState::Create(state_code);
 	v_states.back()->state_code = state_code;
-	return v_states.back();
+	return ref_state(v_states.back());
 }
 
 void CResourceManager::_DeleteState(const SState* state)
@@ -94,12 +94,12 @@ void CResourceManager::_DeleteState(const SState* state)
 }
 
 //--------------------------------------------------------------------------------------------------------------
-SPass* CResourceManager::_CreatePass(const SPass& proto)
+ref_pass CResourceManager::_CreatePass(const SPass& proto)
 {
 	xrCriticalSectionGuard guard(shaderGraphGuard);
 	for (u32 it = 0; it < v_passes.size(); it++)
-		if (v_passes[it]->equal(proto))
-			return v_passes[it];
+		if (v_passes[it]->equal(proto) && v_passes[it]->pin_alive())
+			return ref_pass(v_passes[it], false);
 
 	SPass* P = xr_new<SPass>();
 	P->dwFlags |= xr_resource_flagged::RF_REGISTERED;
@@ -118,7 +118,7 @@ SPass* CResourceManager::_CreatePass(const SPass& proto)
 	P->C = proto.C;
 
 	v_passes.push_back(P);
-	return v_passes.back();
+	return P;
 }
 
 void CResourceManager::_DeletePass(const SPass* P)
@@ -130,8 +130,9 @@ void CResourceManager::_DeletePass(const SPass* P)
 }
 
 //--------------------------------------------------------------------------------------------------------------
-SVS* CResourceManager::_CreateVS(LPCSTR _name)
+ref_vs CResourceManager::_CreateVS(LPCSTR _name)
 {
+	PROF_EVENT();
 	xrCriticalSectionGuard guard(shaderProgramGuard);
 	int skinning = -1;
 	string_path name;
@@ -143,8 +144,12 @@ SVS* CResourceManager::_CreateVS(LPCSTR _name)
 	if (4 == ::Render->m_skinning) { xr_strcat(name, "_4"); skinning = 4; }
 	LPSTR N = LPSTR(name);
 	map_VS::iterator I = m_vs.find(N);
-	if (I != m_vs.end()) return I->second;
-	else
+	if (I != m_vs.end())
+	{
+		if (I->second->pin_alive()) return ref_vs(I->second, false);
+		// dying: its destructor waits for this lock and leaves the new entry in the map alone
+		m_vs.erase(I);
+	}
 	{
 		SVS* _vs = xr_new<SVS>();
 		_vs->skinning = skinning;
@@ -227,7 +232,8 @@ void CResourceManager::_DeleteVS(const SVS* vs)
 	map_VS::iterator I = m_vs.find(N);
 	if (I != m_vs.end())
 	{
-		m_vs.erase(I);
+		if (I->second == vs) // else a creator replaced this dying entry
+			m_vs.erase(I);
 		xr_vector<SDeclaration*>::iterator iDecl;
 		for (iDecl = v_declarations.begin(); iDecl != v_declarations.end(); ++iDecl)
 		{
@@ -246,8 +252,9 @@ void CResourceManager::_DeleteVS(const SVS* vs)
 }
 
 //--------------------------------------------------------------------------------------------------------------
-SPS* CResourceManager::_CreatePS(LPCSTR _name)
+ref_ps CResourceManager::_CreatePS(LPCSTR _name)
 {
+	PROF_EVENT();
 	xrCriticalSectionGuard guard(shaderProgramGuard);
 	string_path name;
 	xr_strcpy(name, _name);
@@ -259,10 +266,17 @@ SPS* CResourceManager::_CreatePS(LPCSTR _name)
 	if (5 == ::Render->m_MSAASample) xr_strcat(name, "_5");
 	if (6 == ::Render->m_MSAASample) xr_strcat(name, "_6");
 	if (7 == ::Render->m_MSAASample) xr_strcat(name, "_7");
+	// A depth-only pass of the material: the same source, compiled for its discard only (CRender::shader_compile)
+	if (m_depth_only_ps_thread == GetCurrentThreadId() && 0 != stricmp(_name, "null"))
+		xr_strcat(name, "@depth");
 	LPSTR N = LPSTR(name);
 	map_PS::iterator I = m_ps.find(N);
-	if (I != m_ps.end()) return I->second;
-	else
+	if (I != m_ps.end())
+	{
+		if (I->second->pin_alive()) return ref_ps(I->second, false);
+		// dying: its destructor waits for this lock and leaves the new entry in the map alone
+		m_ps.erase(I);
+	}
 	{
 		SPS* _ps = xr_new<SPS>();
 		_ps->dwFlags |= xr_resource_flagged::RF_REGISTERED;
@@ -357,20 +371,25 @@ void CResourceManager::_DeletePS(const SPS* ps)
 	map_PS::iterator I = m_ps.find(N);
 	if (I != m_ps.end())
 	{
-		m_ps.erase(I);
+		if (I->second == ps) // else a creator replaced this dying entry
+			m_ps.erase(I);
 		return;
 	}
 	Msg("! ERROR: Failed to find compiled pixel-shader '%s'", *ps->cName);
 }
 
 //--------------------------------------------------------------------------------------------------------------
-SGS* CResourceManager::_CreateGS(LPCSTR name)
+ref_gs CResourceManager::_CreateGS(LPCSTR name)
 {
 	xrCriticalSectionGuard guard(shaderProgramGuard);
 	LPSTR N = LPSTR(name);
 	map_GS::iterator I = m_gs.find(N);
-	if (I != m_gs.end()) return I->second;
-	else
+	if (I != m_gs.end())
+	{
+		if (I->second->pin_alive()) return ref_gs(I->second, false);
+		// dying: its destructor waits for this lock and leaves the new entry in the map alone
+		m_gs.erase(I);
+	}
 	{
 		SGS* _gs = xr_new<SGS>();
 		_gs->dwFlags |= xr_resource_flagged::RF_REGISTERED;
@@ -431,7 +450,8 @@ void CResourceManager::_DeleteGS(const SGS* gs)
 	map_GS::iterator I = m_gs.find(N);
 	if (I != m_gs.end())
 	{
-		m_gs.erase(I);
+		if (I->second == gs) // else a creator replaced this dying entry
+			m_gs.erase(I);
 		return;
 	}
 	Msg("! ERROR: Failed to find compiled geometry shader '%s'", *gs->cName);
@@ -447,14 +467,14 @@ static BOOL dcl_equal(D3DVERTEXELEMENT9* a, D3DVERTEXELEMENT9* b)
 	return 0 == memcmp(a, b, a_size * sizeof(D3DVERTEXELEMENT9));
 }
 
-SDeclaration* CResourceManager::_CreateDecl(D3DVERTEXELEMENT9* dcl)
+ref_declaration CResourceManager::_CreateDecl(D3DVERTEXELEMENT9* dcl)
 {
 	xrCriticalSectionGuard guard(geometryGuard);
 	// Search equal code
 	for (u32 it = 0; it < v_declarations.size(); it++)
 	{
 		SDeclaration* D = v_declarations[it];;
-		if (dcl_equal(dcl, &*D->dcl_code.begin())) return D;
+		if (dcl_equal(dcl, &*D->dcl_code.begin()) && D->pin_alive()) return ref_declaration(D, false);
 	}
 
 	// Create _new
@@ -478,16 +498,17 @@ void CResourceManager::_DeleteDecl(const SDeclaration* dcl)
 }
 
 //--------------------------------------------------------------------------------------------------------------
-R_constant_table* CResourceManager::_CreateConstantTable(R_constant_table& C)
+ref_ctable CResourceManager::_CreateConstantTable(R_constant_table& C)
 {
 	xrCriticalSectionGuard guard(shaderProgramGuard);
 	if (C.empty()) return NULL;
 
 	for (u32 it = 0; it < v_constant_tables.size(); it++)
-		if (v_constant_tables[it]->equal(C)) return v_constant_tables[it];
+		if (v_constant_tables[it]->equal(C) && v_constant_tables[it]->pin_alive())
+			return ref_ctable(v_constant_tables[it], false);
 	v_constant_tables.push_back(xr_new<R_constant_table>(C));
 	v_constant_tables.back()->dwFlags |= xr_resource_flagged::RF_REGISTERED;
-	return v_constant_tables.back();
+	return ref_ctable(v_constant_tables.back());
 }
 
 void CResourceManager::_DeleteConstantTable(const R_constant_table* C)
@@ -586,19 +607,20 @@ void CResourceManager::DBG_VerifyGeoms()
 	*/
 }
 
-SGeometry* CResourceManager::CreateGeom(D3DVERTEXELEMENT9* decl, ID3DVertexBuffer* vb, ID3DIndexBuffer* ib)
+ref_geom CResourceManager::CreateGeom(D3DVERTEXELEMENT9* decl, ID3DVertexBuffer* vb, ID3DIndexBuffer* ib)
 {
 	xrCriticalSectionGuard guard(geometryGuard);
 	R_ASSERT(decl && vb);
 
-	SDeclaration* dcl = _CreateDecl(decl);
+	ref_declaration dcl = _CreateDecl(decl);
 	u32 vb_stride = D3DXGetDeclVertexSize(decl, 0);
 
 	// ***** first pass - search already loaded shader
 	for (u32 it = 0; it < v_geoms.size(); it++)
 	{
 		SGeometry& G = *(v_geoms[it]);
-		if ((G.dcl == dcl) && (G.vb == vb) && (G.ib == ib) && (G.vb_stride == vb_stride)) return v_geoms[it];
+		if ((G.dcl == dcl) && (G.vb == vb) && (G.ib == ib) && (G.vb_stride == vb_stride) && G.pin_alive())
+			return ref_geom(&G, false);
 	}
 
 	SGeometry* Geom = xr_new<SGeometry>();
@@ -611,13 +633,12 @@ SGeometry* CResourceManager::CreateGeom(D3DVERTEXELEMENT9* decl, ID3DVertexBuffe
 	return Geom;
 }
 
-SGeometry* CResourceManager::CreateGeom(u32 FVF, ID3DVertexBuffer* vb, ID3DIndexBuffer* ib)
+ref_geom CResourceManager::CreateGeom(u32 FVF, ID3DVertexBuffer* vb, ID3DIndexBuffer* ib)
 {
 	xrCriticalSectionGuard guard(geometryGuard);
 	D3DVERTEXELEMENT9 dcl [MAX_FVF_DECL_SIZE];
 	CHK_DX(D3DXDeclaratorFromFVF(FVF,dcl));
-	SGeometry* g = CreateGeom(dcl, vb, ib);
-	return g;
+	return CreateGeom(dcl, vb, ib);
 }
 
 void CResourceManager::DeleteGeom(const SGeometry* Geom)
@@ -867,14 +888,14 @@ bool cmp_tl(const std::pair<u32, ref_texture>& _1, const std::pair<u32, ref_text
 	return _1.first < _2.first;
 }
 
-STextureList* CResourceManager::_CreateTextureList(STextureList& L)
+ref_texture_list CResourceManager::_CreateTextureList(STextureList& L)
 {
 	xrCriticalSectionGuard guard(textureGuard);
 	std::sort(L.begin(), L.end(), cmp_tl);
 	for (u32 it = 0; it < lst_textures.size(); it++)
 	{
 		STextureList* base = lst_textures[it];
-		if (L.equal(*base)) return base;
+		if (L.equal(*base) && base->pin_alive()) return ref_texture_list(base, false);
 	}
 	STextureList* lst = xr_new<STextureList>(L);
 	lst->dwFlags |= xr_resource_flagged::RF_REGISTERED;
@@ -891,7 +912,7 @@ void CResourceManager::_DeleteTextureList(const STextureList* L)
 }
 
 //--------------------------------------------------------------------------------------------------------------
-SMatrixList* CResourceManager::_CreateMatrixList(SMatrixList& L)
+ref_matrix_list CResourceManager::_CreateMatrixList(SMatrixList& L)
 {
 	BOOL bEmpty = TRUE;
 	for (u32 i = 0; i < L.size(); i++)
@@ -906,7 +927,7 @@ SMatrixList* CResourceManager::_CreateMatrixList(SMatrixList& L)
 	for (u32 it = 0; it < lst_matrices.size(); it++)
 	{
 		SMatrixList* base = lst_matrices[it];
-		if (L.equal(*base)) return base;
+		if (L.equal(*base) && base->pin_alive()) return ref_matrix_list(base, false);
 	}
 	SMatrixList* lst = xr_new<SMatrixList>(L);
 	lst->dwFlags |= xr_resource_flagged::RF_REGISTERED;
@@ -923,7 +944,7 @@ void CResourceManager::_DeleteMatrixList(const SMatrixList* L)
 }
 
 //--------------------------------------------------------------------------------------------------------------
-SConstantList* CResourceManager::_CreateConstantList(SConstantList& L)
+ref_constant_list CResourceManager::_CreateConstantList(SConstantList& L)
 {
 	BOOL bEmpty = TRUE;
 	for (u32 i = 0; i < L.size(); i++)
@@ -938,7 +959,7 @@ SConstantList* CResourceManager::_CreateConstantList(SConstantList& L)
 	for (u32 it = 0; it < lst_constants.size(); it++)
 	{
 		SConstantList* base = lst_constants[it];
-		if (L.equal(*base)) return base;
+		if (L.equal(*base) && base->pin_alive()) return ref_constant_list(base, false);
 	}
 	SConstantList* lst = xr_new<SConstantList>(L);
 	lst->dwFlags |= xr_resource_flagged::RF_REGISTERED;
@@ -955,7 +976,7 @@ void CResourceManager::_DeleteConstantList(const SConstantList* L)
 }
 
 //--------------------------------------------------------------------------------------------------------------
-dx10ConstantBuffer* CResourceManager::_CreateConstantBuffer(ID3DShaderReflectionConstantBuffer* pTable)
+ref_cbuffer CResourceManager::_CreateConstantBuffer(ID3DShaderReflectionConstantBuffer* pTable)
 {
 	VERIFY(pTable);
 	xrCriticalSectionGuard guard(shaderProgramGuard);
@@ -964,10 +985,10 @@ dx10ConstantBuffer* CResourceManager::_CreateConstantBuffer(ID3DShaderReflection
 	for (u32 it = 0; it < v_constant_buffer.size(); it++)
 	{
 		dx10ConstantBuffer* buf = v_constant_buffer[it];
-		if (pTempBuffer->Similar(*buf))
+		if (pTempBuffer->Similar(*buf) && buf->pin_alive())
 		{
 			xr_delete(pTempBuffer);
-			return buf;
+			return ref_cbuffer(buf, false);
 		}
 	}
 
@@ -986,7 +1007,7 @@ void CResourceManager::_DeleteConstantBuffer(const dx10ConstantBuffer* pBuffer)
 }
 
 //--------------------------------------------------------------------------------------------------------------
-SInputSignature* CResourceManager::_CreateInputSignature(ID3DBlob* pBlob)
+ref_input_sign CResourceManager::_CreateInputSignature(ID3DBlob* pBlob)
 {
 	VERIFY(pBlob);
 	xrCriticalSectionGuard guard(shaderProgramGuard);
@@ -999,8 +1020,8 @@ SInputSignature* CResourceManager::_CreateInputSignature(ID3DBlob* pBlob)
 		for (SInputSignature* sign : bucket_it->second)
 		{
 			if (blob_size == sign->signature->GetBufferSize() &&
-				memcmp(pBlob->GetBufferPointer(), sign->signature->GetBufferPointer(), blob_size) == 0)
-				return sign;
+				memcmp(pBlob->GetBufferPointer(), sign->signature->GetBufferPointer(), blob_size) == 0 && sign->pin_alive())
+				return ref_input_sign(sign, false);
 		}
 	}
 

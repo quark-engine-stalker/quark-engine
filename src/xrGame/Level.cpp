@@ -100,9 +100,8 @@ constexpr size_t retained_net_event_capacity = 512;
 #ifdef SPAWN_ANTIFREEZE
 constexpr size_t retained_prefetch_event_capacity = 128;
 // Spawn prefetch is already asynchronous. Keep the semantic commit on the main
-// thread, but cap one frame's commit burst so a wave of prepared objects cannot
+// thread, but cap one frame's commit time so a wave of prepared objects cannot
 // monopolize OnFrame. Ordering inside the queue remains stable.
-constexpr u32 spawn_event_max_per_frame = 4;
 constexpr u32 spawn_event_budget_us = 1500;
 #endif
 
@@ -266,6 +265,7 @@ CLevel::CLevel() :
 	_InterlockedExchange(&closeSignal, FALSE);
 	_InterlockedExchange(&prefetch_job_scheduled, FALSE);
     spawn_events = xr_new<NET_Queue_Event>();
+    spawn_events_owned = xr_new<NET_Queue_Event>();
     spawn_events_data = xr_new<spawn_events_data_map>();
     prefetch_events = xr_new<prefetch_event_queue>();
     prefetched_models = xr_new<models_set>();
@@ -303,6 +303,7 @@ CLevel::~CLevel()
 
 #ifdef SPAWN_ANTIFREEZE
 	xr_delete(spawn_events);
+	xr_delete(spawn_events_owned);
 	xr_delete(spawn_events_data);
 	xr_delete(prefetch_events);
 	xr_delete(prefetched_models);
@@ -504,69 +505,6 @@ void CLevel::cl_Process_Event(u16 dest, u16 type, NET_Packet& P)
 
 //AVO: used by SPAWN_ANTIFREEZE (by alpet, edited by demonized)
 #ifdef SPAWN_ANTIFREEZE
-bool CLevel::PostponedSpawnFind(u16 id, const NET_Event& E) const
-{
-    auto data = make_intrusive<ProcessNetPacket>();
-    NET_Packet& P = data->P;
-    E.implication(P);
-    return PostponedSpawnFind(id, P);
-}
-
-bool CLevel::PostponedSpawnFind(u16 id, NET_Packet& P) const
-{
-    u16 parent_id;
-    shared_str section;
-    return id == GetSpawnInfo(P, parent_id, section);
-}
-
-bool CLevel::PostponedSpawn(u16 id)
-{
-    PROF_EVENT("ProcessGameEvents PostponedSpawn");
-
-    xrSRWLockGuard g(prefetch_lock, true);
-    auto queue = prefetch_events;
-    auto it = std::find_if(queue->begin(), queue->end(), [id, this](prefetch_event& E) { return PostponedSpawnFind(id, E.p); });
-
-    auto& queue2 = spawn_events->queue;
-    auto it2 = std::find_if(queue2.begin(), queue2.end(), [id, this](const NET_Event& E) { return PostponedSpawnFind(id, E); });
-    return it != queue->end() || it2 != queue2.end();
-}
-
-int CLevel::GetSpawnEventPriority(const NET_Event& e) const
-{
-    if (e.ID == M_EVENT)
-        return 0;
-
-    if (e.ID == M_SPAWN) {
-        auto data = make_intrusive<ProcessNetPacket>();
-        NET_Packet& P = data->P;
-        e.implication(P);
-
-        u16 parent_id = 0;
-        shared_str section;
-        GetSpawnInfo(P, parent_id, section);
-        if (parent_id < 0xFFFF)
-            return 1;
-
-        return 2;
-    }
-
-    return 0;
-}
-
-bool CLevel::SpawnEventCompare(const NET_Event& a, const NET_Event& b) const
-{
-    return GetSpawnEventPriority(a) > GetSpawnEventPriority(b);
-}
-
-// demonized: If called manually, be aware of ProcessPrefetchEvents thread, which may modify spawn_events queue at the same time, maybe fix later
-void CLevel::SortSpawnEventsQueue()
-{
-    xrSRWLockGuard g(prefetch_lock);
-    auto& queue = spawn_events->queue;
-    std::stable_sort(queue.begin(), queue.end(), [this](const NET_Event& a, const NET_Event& b) { return SpawnEventCompare(a, b); });
-}
-
 void CLevel::ProcessPrefetchEvents(void* args)
 {
 	CLevel* level = static_cast<CLevel*>(args);
@@ -640,9 +578,8 @@ void CLevel::ProcessPrefetchEvents(void* args)
 			xrSRWLockGuard guard(level->prefetch_lock);
 			for (auto& event : saved_prefetch_events)
 			{
-				level->spawn_events->insert(event.p);
-				const u16 event_id = event.id;
-				level->spawn_events_data->emplace(event_id, std::move(event));
+				(event.owned ? level->spawn_events_owned : level->spawn_events)->insert(event.p);
+				level->spawn_events_data->emplace(event.id, event.hasAlifeObject);
 			}
 
 			// Keep only a bounded outer-vector working set for the next burst. The
@@ -661,33 +598,32 @@ void CLevel::ProcessSpawnEvents()
 {
     PROF_EVENT("ProcessSpawnEvents");
 
-    xr_vector<NET_Event> events_to_process;
-    u32 queued_after_extract = 0;
+    // Objects without a parent first, then the items of owners, each in arrival order: the order the stable sort by
+    // priority gave, without sorting the whole queue every frame (with a backlog of thousands that sort, a packet
+    // parse in every comparison, took the whole frame and the queue drained ever slower). Events are moved out by
+    // index and erased once at the end: the prefetch job only appends meanwhile.
+    NET_Queue_Event* const queues[] = {spawn_events, spawn_events_owned};
+    size_t taken[2] = {0, 0};
     {
         xrSRWLockGuard g(prefetch_lock);
-        auto& queue = spawn_events->queue;
-        if (!queue.empty())
-        {
-            const u32 batch_count = std::min(queue.size(), spawn_event_max_per_frame);
-            events_to_process.reserve(batch_count);
-            for (u32 i = 0; i < batch_count; ++i)
-                events_to_process.push_back(std::move(queue[i]));
-            queue.erase(queue.begin(), queue.begin() + batch_count);
-            queued_after_extract = queue.size();
-        }
+        if (spawn_events->queue.empty() && spawn_events_owned->queue.empty())
+            return;
     }
 
-    if (events_to_process.empty())
-        return;
-
-    const u64 started = CPU::qpc_freq ? CPU::QPC() : 0;
-    u32 processed = 0;
-    // Reuse the 16 KiB packet scratch storage for the whole bounded batch.
+    const u64 started = CPU::QPC();
+    // Reuse the 16 KiB packet scratch storage for the whole frame.
     auto data = make_intrusive<ProcessNetPacket>();
+    NET_Event E;
 
-    for (; processed < events_to_process.size(); ++processed)
+    for (;;)
     {
-        const auto& E = events_to_process[processed];
+        {
+            xrSRWLockGuard g(prefetch_lock);
+            const u32 q = taken[0] < queues[0]->queue.size() ? 0 : 1;
+            if (taken[q] >= queues[q]->queue.size())
+                break;
+            E = std::move(queues[q]->queue[taken[q]++]);
+        }
         u16 ID, dest, type;
         NET_Packet& P = data->P;
         ID = E.ID;
@@ -712,25 +648,38 @@ void CLevel::ProcessSpawnEvents()
             if (spawn_data_it != spawn_events_data->end())
             {
                 had_spawn_data = true;
-                had_alife_object = spawn_data_it->second.hasAlifeObject;
+                had_alife_object = spawn_data_it->second;
                 spawn_events_data->erase(spawn_data_it);
             }
         }
+
+        // Gone from the server while its spawn waited: its destroy event found no client object, so this one would
+        // never be destroyed, and its net export breaks the server when the ID goes to another object. Another owner
+        // on the server: the ID went to a newer object of this section meanwhile (its own spawn is queued too), this
+        // packet would put that object under the old owner, whose inventory then kept it as a freed item after the
+        // server destroyed it under the new one (AV in best_weapon). Bolts too: they skip only the alife checks.
+        if (Server)
+        {
+            const CSE_Abstract* entity = Server->ID_to_entity(obj_id);
+            if (!entity || entity->s_name != section || entity->ID_Parent != parent_id)
+            {
+                if (spawn_antifreeze_debug) Msg("![ProcessSpawnEvents] stale spawn, section %s, obj_id %d, parent_id %d; the server has %s, parent_id %d", section.c_str(), obj_id, parent_id, entity ? entity->s_name.c_str() : "nothing", entity ? entity->ID_Parent : 0xffff);
+                goto budget_check;
+            }
+        }
+        // An older spawn of this ID made the client object first: net_Spawn would refuse the ID
+        if (const CObject* object = Objects.net_Find(obj_id))
+            if (!object->getDestroy())
+            {
+                if (spawn_antifreeze_debug) Msg("![ProcessSpawnEvents] the client has this object already, section %s, obj_id %d", section.c_str(), obj_id);
+                goto budget_check;
+            }
 
         // demonized: If item is II_BOLT class - go through anyway
         if (pSettings->line_exist(section.c_str(), "class") && strstr(pSettings->r_string(section.c_str(), "class"), "II_BOLT") != nullptr)
         {
             // demonized: this is a sin, but its an easy way
             goto spawn;
-        }
-
-        // Gone from the server while its spawn waited: its destroy event found no client object, so this one would
-        // never be destroyed, and its net export breaks the server when the ID goes to another object.
-        if (Server)
-        {
-            const CSE_Abstract* entity = Server->ID_to_entity(obj_id);
-            if (!entity || entity->s_name != section)
-                goto budget_check;
         }
 
         // If the object was in alife, but now its absent, skip it
@@ -759,48 +708,34 @@ void CLevel::ProcessSpawnEvents()
         {
             u16 dummy16;
             P.r_begin(dummy16);
+            const u64 spawn_started = g_frame_detail_on ? CPU::QPC() : 0; // QUARK-PANEL: what a section's spawn costs
             cl_Process_Spawn(P);
+            if (spawn_started)
+                frame_detail_note(fsUpdSpawn, section.c_str(), CPU::QPC() - spawn_started);
         }
 
     budget_check:
-        // One spawn can itself exceed the budget; it cannot be preempted without
-        // changing script semantics. Stop after it and carry the untouched suffix
-        // to the next frame. This guarantees progress while preventing multiple
-        // heavy spawn callbacks from stacking in one frame.
-        if (processed + 1 < events_to_process.size() && CPU::qpc_freq)
+        // Only time limits a frame: a fixed count made the queue drain slower the lower the FPS went, and a dropped
+        // stale event costs next to nothing. One spawn can itself exceed the budget; it cannot be preempted without
+        // changing script semantics, so the rest waits for the next frame. Always at least one event a frame.
+        if ((CPU::QPC() - started) * 1000000ull >= static_cast<u64>(spawn_event_budget_us) * CPU::qpc_freq)
+            break;
+    }
+
+    u32 left = 0;
+    {
+        xrSRWLockGuard g(prefetch_lock);
+        for (u32 q = 0; q < 2; ++q)
         {
-            const u64 elapsed = CPU::QPC() - started;
-            if (elapsed * 1000000ull >= static_cast<u64>(spawn_event_budget_us) * CPU::qpc_freq)
-            {
-                ++processed;
-                break;
-            }
+            auto& queue = queues[q]->queue;
+            // the clamp keeps a queue cleared meanwhile safe
+            queue.erase(queue.begin(), queue.begin() + std::min<size_t>(taken[q], queue.size()));
+            left += static_cast<u32>(queue.size());
         }
     }
 
-    if (processed < events_to_process.size())
-    {
-        xrSRWLockGuard guard(prefetch_lock);
-        auto& queue = spawn_events->queue;
-        // Put older, already-sorted events in front of any newly produced ones.
-        // A stable priority sort on the next frame retains relative order among
-        // equal-priority events.
-        queue.insert(queue.begin(),
-            std::make_move_iterator(events_to_process.begin() + processed),
-            std::make_move_iterator(events_to_process.end()));
-        queued_after_extract = queue.size();
-    }
-
-    if (spawn_antifreeze_debug && queued_after_extract)
-        Msg("[ProcessSpawnEvents] deferred %u prepared spawn events", static_cast<u32>(queued_after_extract));
-
-    events_to_process.clear();
-    if (events_to_process.capacity() <= retained_net_event_capacity)
-    {
-        xrSRWLockGuard guard(prefetch_lock);
-        if (spawn_events->queue.empty())
-            events_to_process.swap(spawn_events->queue);
-    }
+    if (spawn_antifreeze_debug && left)
+        Msg("[ProcessSpawnEvents] deferred %u prepared spawn events", left);
 }
 
 #endif
@@ -946,6 +881,7 @@ void CLevel::ProcessGameEvents()
 							}
 							E.id = obj_id;
 							E.hasAlifeObject = obj != nullptr;
+							E.owned = parent_id != 0xffff;
 
 							if (spawn_antifreeze_debug) Msg("[ProcessGameEvents] added M_SPAWN to prefetch_events: section %s, obj_id %d, parent_id %d, event_id %d", section.c_str(), obj_id, parent_id, dest);
 							it++; // Move to next event
@@ -1158,34 +1094,20 @@ void CLevel::OnFrame()
 	{
 		Device.Statistic->netClient1.Begin();
 		{
-
+			SFrameScope stats_scope(fsUpdNet);
 			ClientReceive();
 		}
 		Device.Statistic->netClient1.End();
 	}
 
 	{
-
+		SFrameScope stats_scope(fsUpdGameEvents);
 		ProcessGameEvents();
 	}
 #ifdef SPAWN_ANTIFREEZE
 	{
-		bool queueEmpty = false;
-		{
-			xrSRWLockGuard g(prefetch_lock);
-			queueEmpty = spawn_events->queue.empty();
-		}
-		if (!queueEmpty)
-		{
-			{
-
-				SortSpawnEventsQueue();
-			}
-			{
-
-				ProcessSpawnEvents();
-			}
-		}
+		SFrameScope stats_scope(fsUpdSpawn);
+		ProcessSpawnEvents();
 	}
 #endif
 
@@ -1317,11 +1239,11 @@ void CLevel::OnFrame()
 	{
 		SFrameScope stats_scope(fsUpdPhysics);
 		{
-
+			SFrameScope own_scope(fsPhCommander);
 			m_ph_commander->update();
 		}
 		{
-
+			SFrameScope scripts_scope(fsPhScripts);
 			m_ph_commander_scripts->update();
 		}
 	}
@@ -1869,6 +1791,7 @@ extern int ps_r4_hdr10_pda; // NOTE: this is a hack to avoid double HDR tonemapp
 void CLevel::OnRender()
 {
 	PROF_EVENT();
+	SFrameDetailParts parts(fsRenderScene, "3D PDA");
 	// PDA
 	if (game && CurrentGameUI() && &CurrentGameUI()->GetPdaMenu() != nullptr)
 	{
@@ -1928,25 +1851,32 @@ void CLevel::OnRender()
 		}
 	}
 
+	parts.next(nullptr); // the scene: the stages of the renderer
 	inherited::OnRender();
 	if (!game)
 		return;
 	Game().OnRender();
+	parts.next("bullets and tracers");
 	BulletManager().Render();
 
+	parts.next("second viewport (3D scope)");
 	if (Device.m_SecondViewport.IsSVPFrame())
 		Render->RenderToTarget(Render->rtSVP);
 
+	parts.next("ReShade");
 	if (use_reshade)
 		render_reshade_effects();
 
 	// Scripts of the deferred scheduler change UI windows: the 2D part is drawn after them.
+	parts.next("waiting for the game logic");
 	{
 		SFrameScope stats_scope(fsJobsWait);
 		Device.WaitFrameParallelWork();
 	}
 
+	parts.next("interface (HUD, inventory, PDA)");
 	HUD().RenderUI();
+	parts.next(nullptr);
 
 	ScriptDebugRender();
 

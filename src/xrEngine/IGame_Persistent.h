@@ -168,7 +168,7 @@ public:
 	};
 	virtual void OnAssetsChanged();
 
-	virtual void RegisterModel(IRenderVisual* V)
+	virtual void RegisterModel(IRenderVisual* V, LPCSTR name)
 #ifndef _EDITOR
 	= 0;
 #else

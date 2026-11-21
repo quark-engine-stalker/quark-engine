@@ -865,6 +865,7 @@ CRenderTarget::CRenderTarget()
 
 		u32 size = RImplementation.o.smapsize;
 		rt_smap_depth.create(r2_RT_smap_depth, size, size, depth_format);
+		rt_smap_far.create(r2_RT_smap_far, size, size, depth_format);
 
 		// Light shadow cache page (+two atlases of VRAM). Created only together with
 		// the passes that clear its slots and copy them to the atlas; without them
@@ -911,6 +912,7 @@ CRenderTarget::CRenderTarget()
 				smap_cache_clear_raster)
 				rt_smap_cache.create(r2_RT_smap_cache, size * 2, size, depth_format);
 		}
+
 
 		if (RImplementation.o.dx10_minmax_sm)
 		{
@@ -1511,6 +1513,64 @@ CRenderTarget::CRenderTarget()
 	upscaler::create(*this);
 }
 
+// Grass of the sun cascades at r__detail_shadow_scale: its own smaller depth map, made (again) when the scale changes; a
+// triangle over the cascade's map keeps the nearer depth of the two (a texel centre takes the grass texel under it)
+bool CRenderTarget::grass_smap()
+{
+	const u32 size = RImplementation.o.smapsize;
+	const u32 grass_size = u32(float(size) / ps_r__detail_shadow_scale) & ~3u;
+	if (grass_size < 256 || grass_size >= size)
+	{
+		rt_smap_grass = nullptr;
+		return false;
+	}
+	if (rt_smap_grass && rt_smap_grass->dwWidth == grass_size)
+		return true;
+	rt_smap_grass = nullptr;
+	_RELEASE(smap_grass_merge_ps);
+	string512 merge_ps;
+	xr_sprintf(merge_ps, "Texture2D<float> s_grass : register(t0);"
+		"float main(float4 p : SV_Position) : SV_Depth { return s_grass.Load(int3(int2(p.xy * %.9g), 0)); }",
+		double(grass_size) / double(size));
+	auto compile = [](const char* source, const char* profile) -> ID3DBlob*
+	{
+		ID3DBlob* code = nullptr;
+		return SUCCEEDED(D3DCompile(source, xr_strlen(source), nullptr, nullptr, nullptr, "main", profile,
+			D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, nullptr)) ? code : nullptr;
+	};
+	if (!smap_cache_clear_vs)
+		if (ID3DBlob* code = compile("float4 main(uint id : SV_VertexID) : SV_Position"
+			"{ return float4(float2((id << 1) & 2, id & 2) * float2(2, -2) + float2(-1, 1), 1, 1); }", "vs_4_0"))
+		{
+			HW.pDevice->CreateVertexShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &smap_cache_clear_vs);
+			code->Release();
+		}
+	if (ID3DBlob* code = compile(merge_ps, "ps_4_0"))
+	{
+		HW.pDevice->CreatePixelShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &smap_grass_merge_ps);
+		code->Release();
+	}
+	if (!smap_cache_clear_raster)
+	{
+		D3D11_RASTERIZER_DESC raster = {};
+		raster.FillMode = D3D11_FILL_SOLID;
+		raster.CullMode = D3D11_CULL_NONE;
+		raster.DepthClipEnable = TRUE;
+		HW.pDevice->CreateRasterizerState(&raster, &smap_cache_clear_raster);
+	}
+	if (!smap_grass_merge_depth)
+	{
+		D3D11_DEPTH_STENCIL_DESC depth = {};
+		depth.DepthEnable = TRUE;
+		depth.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
+		depth.DepthFunc = D3D11_COMPARISON_LESS;
+		HW.pDevice->CreateDepthStencilState(&depth, &smap_grass_merge_depth);
+	}
+	if (smap_cache_clear_vs && smap_grass_merge_ps && smap_cache_clear_raster && smap_grass_merge_depth)
+		rt_smap_grass.create(r2_RT_smap_grass, grass_size, grass_size, (D3DFORMAT)RImplementation.o.HW_smap_FORMAT);
+	return !!rt_smap_grass;
+}
+
 CRenderTarget::~CRenderTarget()
 {
 	upscaler::release();
@@ -1520,6 +1580,8 @@ CRenderTarget::~CRenderTarget()
 	_RELEASE(smap_cache_copy_cb);
 	_RELEASE(smap_cache_clear_depth);
 	_RELEASE(smap_cache_clear_raster);
+	_RELEASE(smap_grass_merge_ps);
+	_RELEASE(smap_grass_merge_depth);
 
 	// Textures
 	t_material->surface_set(NULL);

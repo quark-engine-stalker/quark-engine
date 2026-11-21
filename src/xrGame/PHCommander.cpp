@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "PHCommander.h"
+#include "../xrCore/engine_error_logger.h"
 
 #include "phsimplecalls.h"
 #ifdef DEBUG
@@ -107,6 +108,7 @@ void CPHCommander::update()
 		}
 		catch (...)
 		{
+			EngineErrorLogger::ReportCaughtException("CPHCommander::update, removing failed physics callback");
 			remove = true;
 		}
 

@@ -18,6 +18,7 @@ class CScriptEntityAction;
 class CEntity;
 class CScriptGameObject;
 class CCustomMonster;
+template<typename TResult> class CScriptCallbackEx;
 
 using namespace ScriptEntity;
 
@@ -69,6 +70,8 @@ public:
 protected:
 	ref_sound* m_current_sound;
 	xr_vector<CSavedSound> m_saved_sounds;
+	CScriptCallbackEx<void>* m_script_sound_callback = nullptr;
+	CScriptCallbackEx<void>& script_sound_callback();
 
 	// The last delivered sound by source and type, direct-mapped: a collision only delivers a repeat.
 	struct SRecentSound

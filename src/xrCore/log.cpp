@@ -9,6 +9,7 @@
 #include "malloc.h"
 #endif
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <ctime>
@@ -24,8 +25,10 @@ static string_path log_file_name = "engine.log";
 static BOOL no_log = TRUE;
 #ifdef PROFILE_CRITICAL_SECTIONS
 static xrCriticalSection logCS(MUTEX_PROFILE_ID(log));
+static xrCriticalSection gameLogCS(MUTEX_PROFILE_ID(game_log_history));
 #else // PROFILE_CRITICAL_SECTIONS
 static xrCriticalSection logCS;
+static xrCriticalSection gameLogCS;
 #endif // PROFILE_CRITICAL_SECTIONS
 xr_vector<xr_string> LogFile;
 static LogCallback LogCB = 0;
@@ -39,6 +42,116 @@ namespace
 {
 constexpr size_t log_history_target = 8192;
 constexpr size_t log_history_limit = 12288;
+
+// The first lines of the session (system, renderer) for the error logger: LogFile drops its oldest lines.
+constexpr u32 log_head_limit = 64; // up to the video card and its memory
+char log_head[32768] = {};
+size_t log_head_used = 0;
+u32 log_head_lines = 0;
+bool log_head_full = false;
+u64 log_lines_total = 0; // lines LogFile got since the start (or clear_log): LogFile[0] is line total - size
+
+void note_log_line_locked(const char* line)
+{
+	++log_lines_total;
+	if (log_head_full)
+		return;
+	const size_t length = strlen(line);
+	const size_t remaining = sizeof(log_head) - log_head_used;
+	if (remaining < 5 || length > remaining - 5)
+	{
+		log_head_full = true;
+		return; // Keep complete startup lines; a long line must not be clipped.
+	}
+	memcpy(log_head + log_head_used, "  ", 2);
+	memcpy(log_head + log_head_used + 2, line, length);
+	memcpy(log_head + log_head_used + 2 + length, "\r\n", 2);
+	log_head_used += length + 4;
+	log_head[log_head_used] = 0;
+	++log_head_lines;
+	if (log_head_lines == log_head_limit)
+		log_head_full = true;
+}
+
+void reset_game_log_history_locked()
+{
+	log_head_used = 0;
+	log_head_lines = 0;
+	log_head_full = false;
+	log_lines_total = 0;
+	*log_head = 0;
+}
+
+void put_log_text(char* output, size_t capacity, size_t& used, const char* text, size_t length)
+{
+	if (used + 1 >= capacity)
+		return;
+	if (length > capacity - used - 1)
+		length = capacity - used - 1;
+	memcpy(output + used, text, length);
+	used += length;
+	output[used] = 0;
+}
+
+// The head, a gap note, then the newest lines that fit: the end of the log is what a crash needs most.
+void copy_game_log(char* output, size_t capacity, unsigned int tail)
+{
+	if (capacity < 128)
+		return;
+	const size_t size = LogFile.size();
+	const u64 first = log_lines_total - size;
+	const bool include_head = log_head_used + 128 < capacity;
+	const size_t head_used = include_head ? log_head_used : 0;
+	const u32 included_head_lines = include_head ? log_head_lines : 0;
+	size_t budget = capacity - head_used - 64;
+	const size_t line_limit = (std::min)(size_t{4096}, budget / 2);
+	size_t begin = size;
+	while (begin > 0 && size - begin < tail && first + begin > included_head_lines)
+	{
+		const size_t length = (std::min)(LogFile[begin - 1].size(), line_limit) + 4;
+		if (length > budget)
+			break;
+		budget -= length;
+		--begin;
+	}
+	size_t used = 0;
+	if (include_head)
+		put_log_text(output, capacity, used, log_head, log_head_used);
+	if (tail && first + begin > included_head_lines)
+	{
+		char gap[64];
+		_snprintf_s(gap, sizeof(gap), _TRUNCATE, "  ... %llu lines ...\r\n", first + begin - included_head_lines);
+		put_log_text(output, capacity, used, gap, strlen(gap));
+	}
+	for (size_t index = begin; index < size; ++index)
+	{
+		const xr_string& line = LogFile[index];
+		put_log_text(output, capacity, used, "  ", 2);
+		if (line.size() > line_limit)
+		{
+			constexpr char shortened[] = " ...";
+			size_t length = line_limit - (sizeof(shortened) - 1);
+			while (length && (static_cast<unsigned char>(line[length]) & 0xC0) == 0x80)
+				--length;
+			put_log_text(output, capacity, used, line.c_str(), length);
+			put_log_text(output, capacity, used, shortened, sizeof(shortened) - 1);
+		}
+		else
+			put_log_text(output, capacity, used, line.c_str(), line.size());
+		put_log_text(output, capacity, used, "\r\n", 2);
+	}
+}
+
+// Disk writes and callbacks hold logCS. The crash snapshot only needs the history lock.
+void write_game_log(char* output, size_t capacity, unsigned int tail)
+{
+	*output = 0;
+	if (!gameLogCS.TryEnter())
+		return;
+	__try { copy_game_log(output, capacity, tail); }
+	__except (EXCEPTION_EXECUTE_HANDLER) { *output = 0; }
+	gameLogCS.Leave();
+}
 
 void write_pending_log_line_locked()
 {
@@ -150,9 +263,6 @@ void AddOne(const char* split)
     OutputDebugString(t.c_str());
     OutputDebugString("\n");
 #endif
-    // "! [LUA]" lines dump a Lua stack whose error is repeated as "! [SCRIPT ERROR]".
-    if (split && split[0] == '!' && strncmp(split, "! [LUA]", 7) && !(LastLogLine == t.c_str()))
-        EngineErrorLogger::AddBreadcrumb(t.c_str());
 	if (logTimestamps)
 	{
 		std::string c;
@@ -174,11 +284,13 @@ void AddOne(const char* split)
 		compacted += " [";
 		compacted += std::to_string(LastLogLineCount).c_str();
 		compacted += "]";
+		xrCriticalSectionGuard history(gameLogCS);
 		if (!LogFile.empty())
 			LogFile.back() = std::move(compacted);
 		else
 		{
 			LogFile.push_back(std::move(compacted));
+			note_log_line_locked(LogFile.back().c_str());
 			trim_log_history_locked();
 		}
 	}
@@ -191,7 +303,9 @@ void AddOne(const char* split)
 		LastLogLine = t.c_str();
 		LastLogLineCount = 1;
 		DiskLinePending = true;
+		xrCriticalSectionGuard history(gameLogCS);
 		LogFile.emplace_back(t.c_str());
+		note_log_line_locked(t.c_str());
 		trim_log_history_locked();
 	}
 
@@ -331,7 +445,11 @@ LPCSTR log_name()
 
 void InitLog()
 {
-	LogFile.reserve(log_history_target);
+	{
+		xrCriticalSectionGuard history(gameLogCS);
+		LogFile.reserve(log_history_target);
+	}
+	EngineErrorLogger::SetGameLogWriter(&write_game_log);
 }
 
 void CreateLog(BOOL nl)
@@ -373,7 +491,11 @@ void ClearLog()
 		LogStream = nullptr;
 	}
 
-	LogFile.clear_not_free();
+	{
+		xrCriticalSectionGuard history(gameLogCS);
+		LogFile.clear_not_free();
+		reset_game_log_history_locked();
+	}
 	reset_log_run_locked();
 	LogIoFailed = false;
 
@@ -402,7 +524,11 @@ void CloseLog(void)
 	logCS.Enter();
 	stream = LogStream;
 	LogStream = nullptr;
-	LogFile.clear_and_free();
+	{
+		xrCriticalSectionGuard history(gameLogCS);
+		LogFile.clear_and_free();
+		reset_game_log_history_locked();
+	}
 	reset_log_run_locked();
 	logCS.Leave();
 

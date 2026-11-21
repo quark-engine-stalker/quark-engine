@@ -2,6 +2,7 @@
 
 void CRenderTarget::phase_sunshafts()
 {
+	PIX_EVENT(phase_sunshafts);
 	CEnvDescriptor& env = *g_pGamePersistent->Environment().CurrentEnv;
 	if (env.m_fSunShaftsIntensity <= 0.001) return;
 

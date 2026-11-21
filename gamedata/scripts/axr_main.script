@@ -285,6 +285,12 @@ function callback_unset(name,func_or_userdata)
 	end
 end
 
+-- QUARK: the engine asks this once a frame before building per-bullet tables for bullet_on_update.
+function callback_has_listeners(name)
+	local listeners = intercepts[name]
+	return listeners ~= nil and next(listeners) ~= nil
+end
+
 function make_callback(name,...)
 	local listeners = intercepts[name]
 	if (listeners) then

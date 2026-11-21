@@ -73,6 +73,39 @@ namespace luabind { namespace detail
 	private:
 		void* m_context;
 	};
+	// QUARK: told of every call the host makes into Lua (pcall, resume_impl and the host's own lua_resume through
+	// observed_lua_call), on the calling thread, enter before and leave after; set it null for nothing to be called.
+	struct lua_call_observer
+	{
+		void (*enter)(lua_State* L);
+		void (*leave)(lua_State* L);
+	};
+	extern LUABIND_API const lua_call_observer* g_lua_call_observer;
+	LUABIND_API void set_lua_call_observer(const lua_call_observer* observer);
+
+	class observed_lua_call
+	{
+	public:
+		explicit observed_lua_call(lua_State* L) : m_observer(g_lua_call_observer), m_L(L)
+		{
+			if (m_observer)
+				m_observer->enter(m_L);
+		}
+
+		~observed_lua_call()
+		{
+			if (m_observer)
+				m_observer->leave(m_L);
+		}
+
+		observed_lua_call(const observed_lua_call&) = delete;
+		observed_lua_call& operator=(const observed_lua_call&) = delete;
+
+	private:
+		const lua_call_observer* const m_observer; // the one told of the enter is told of the leave
+		lua_State* const m_L;
+	};
+
 	LUABIND_API int pcall(lua_State *L, int nargs, int nresults);
 	LUABIND_API int resume_impl(lua_State *L, int nargs, int nresults);
 	// The calling thread runs Lua now (inside a pcall or resume): error records may walk the VM's stack.

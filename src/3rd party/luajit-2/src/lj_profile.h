@@ -11,6 +11,9 @@
 #if LJ_HASPROFILE
 
 LJ_FUNC void LJ_FASTCALL lj_profile_interpreter(lua_State *L);
+/* QUARK host sampler (luajit_hostprof.h): allocation samples. */
+extern int lj_hostprof_alloc_on;
+LJ_FUNC void lj_hostprof_alloc(global_State *g, uint64_t size);
 LJ_FUNC int lj_profile_active(void);
 #if !LJ_PROFILE_SIGPROF
 LJ_FUNC void LJ_FASTCALL lj_profile_hook_enter(global_State *g);

@@ -3,6 +3,7 @@
 
 void CRenderTarget::phase_smaa()
 {
+	PIX_EVENT(phase_smaa);
 	//Constants
 	u32 Offset = 0;
 	u32 C = color_rgba(0, 0, 0, 255);
@@ -84,6 +85,7 @@ void CRenderTarget::phase_smaa()
 
 void CRenderTarget::phase_ssfx_taa()
 {
+	PIX_EVENT(phase_ssfx_taa);
 	const bool sourceGeneric = pp_source_is_generic();
 	const ref_shader& taaShader = sourceGeneric ? s_ssfx_taa_pp : s_ssfx_taa;
 

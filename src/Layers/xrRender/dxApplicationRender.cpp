@@ -1,6 +1,7 @@
 #include "stdafx.h"
 
 #include "dxApplicationRender.h"
+#include "../xrRenderDX10/dx10LowLatency.h"
 #include "../../xrEngine/GameFont.h"
 
 void draw_multiline_text(CGameFont* F, float fTargetWidth, LPCSTR pszText);
@@ -12,6 +13,7 @@ void dxApplicationRender::Copy(IApplicationRender& _in)
 
 void dxApplicationRender::LoadBegin()
 {
+	low_latency::reset_pacing();
 	ll_hGeom.create(FVF::F_TL, RCache.Vertex.Buffer(), RCache.QuadIB);
 	sh_progress.create("hud\\default", "ui\\ui_actor_loadgame_screen");
 	hLevelLogo_Add.create("hud\\default", "ui\\ui_actor_widescreen_sidepanels.dds");

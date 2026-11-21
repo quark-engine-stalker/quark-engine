@@ -2318,11 +2318,6 @@ void CScriptEngine::lua_error_not_crash(lua_State* L)
         funct(lua_error_line.c_str());
 }
 
-void printLuaStack()
-{
-	ai().script_engine().print_stack();
-}
-
 int CScriptEngine::lua_pcall_failed(lua_State* L)
 {
 	if (lua_error_is_out_of_memory(L))

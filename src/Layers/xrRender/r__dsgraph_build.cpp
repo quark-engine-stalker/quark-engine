@@ -1570,10 +1570,8 @@ void CRender::gather_sun_static(dxRender_Visual* pVisual, u32 sector_index, u32 
 	if (flags.test(IRenderVisualFlags::eNoShadow))
 		return;
 
-	if (!flags.test(IRenderVisualFlags::eIgnoreOptimization) && !IsValuableToRender(pVisual, true, true, *val_pTransform))
-		return;
-
-	if (!HOM.visible(pVisual->vis))
+	// No HOM test: the sun gather always ran with it disabled. Statics ignore the transform. It may run on a worker.
+	if (!flags.test(IRenderVisualFlags::eIgnoreOptimization) && !IsValuableToRender(pVisual, true, true, Fidentity))
 		return;
 
 	SunSectorGather& sector = m_sunSectorGather[sector_index];

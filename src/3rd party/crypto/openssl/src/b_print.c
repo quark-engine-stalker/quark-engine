@@ -378,9 +378,9 @@ _dopr(
                        flags, min, max);
                 break;
             case 'p':
-                value = (long)va_arg(args, void *);
+                value = (LLONG)va_arg(args, void *);
                 fmtint(sbuffer, buffer, &currlen, maxlen,
-                    value, 16, min, max, flags|DP_F_NUM);
+                    value, 16, min, max, flags|DP_F_NUM|DP_F_UNSIGNED);
                 break;
             case 'n': /* XXX */
                 if (cflags == DP_C_SHORT) {

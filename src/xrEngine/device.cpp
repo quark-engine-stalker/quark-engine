@@ -1594,6 +1594,7 @@ void CRenderDevice::SubmitFrameParallelWork()
 
 void CRenderDevice::WaitFrameParallelWork()
 {
+	PROF_EVENT();
 	if (InterlockedExchange(&mt_scene_rendering, FALSE) != FALSE) // opens the gates: this thread touches nothing until the job ends
 		mt_frame_render_end_ticks = CPU::QPC();
 
@@ -1791,43 +1792,25 @@ extern u32 g_screenmode;
 
 CTimer FreezeTimer;
 void mt_FreezeThread(void *ptr) {
-	const DWORD main_thread = DWORD(uintptr_t(ptr));
 	float freezetime = 0.f;
 	float repeatcheck = 500.f;
-	float hang_longest = 0.f; // a HANG record was written for the freeze going on, this long so far
 
 	while (!Device.mt_bMustExit)
 	{
 		PROF_EVENT();
 
-		// Before the first frame the engine loads its configs and XML (GAMMA: many seconds): a loading too.
-		const bool loading = g_loading_events.size() != 0 || Device.dwFrame == 0;
-		if (loading)
+		if (g_loading_events.size())
 			freezetime = 25000.0f;
 		else
 			freezetime = 5000.0f;
-		// A level load is one long frame (GAMMA: up to a minute): a HANG there only after two minutes.
-		const float hangtime = loading ? 120000.0f : freezetime;
 
 		repeatcheck = 500.f;
 
 		START_PROFILE("Check timer");
-		const float frozen = FreezeTimer.GetElapsed_sec()*1000.f;
-		if (frozen > freezetime)
+		if (FreezeTimer.GetElapsed_sec()*1000.f > freezetime)
 		{
 			FlushLog();
-			repeatcheck = 1000.f;
-		}
-		if (frozen > hangtime)
-		{
-			if (hang_longest == 0.f)
-				EngineErrorLogger::ReportHang(main_thread, u32(frozen), loading);
-			hang_longest = _max(hang_longest, frozen);
-		}
-		else if (hang_longest > 0.f)
-		{
-			EngineErrorLogger::ReportHangEnd(u32(hang_longest));
-			hang_longest = 0.f;
+			repeatcheck = 5000.f;
 		}
 		STOP_PROFILE;
 
@@ -1888,11 +1871,12 @@ void CRenderDevice::on_idle()
 
 	// Before FrameMove: input is read after this wait, which is what lowers the latency.
 	// Outside the frame body and not fsFrameWait: frame_ab skips frames of the limiter.
-	bool latency_limits_frames = false;
+	using frame_limit = IRenderDeviceRender::latency_frame_limit;
+	frame_limit limiter = frame_limit::late;
 	if (b_is_Active && !dwPrecacheFrame)
 	{
-		PROF_EVENT("Reflex wait");
-		latency_limits_frames = m_pRender->LatencyFrameBegin(ps_framelimiter);
+		PROF_EVENT("Low latency wait");
+		limiter = m_pRender->LatencyFrameBegin(ps_framelimiter);
 	}
 
 	// Times the engine body of every rendered frame (frame_stats command).
@@ -1970,8 +1954,11 @@ void CRenderDevice::on_idle()
 	START_PROFILE("Process render preparation");
 	{
 		SFrameScope stats_scope(fsRenderPrep);
+		SFrameDetailParts parts(fsRenderPrep, "frame jobs start");
 		StartFrameIndependentWork();
+		parts.next("skeletons");
 		ProcessRenderPrepParallelWork();
+		parts.next("after the poses");
 		for (u32 index = 0; index < seqAfterPoses.size(); ++index)
 			seqAfterPoses[index]();
 		seqAfterPoses.clear_not_free();
@@ -2041,7 +2028,8 @@ void CRenderDevice::on_idle()
 	STOP_PROFILE;
 
 #ifdef ECO_RENDER // ECO_RENDER START
-	if (Device.Paused() || IsMainMenuActive() || (ps_framelimiter && !latency_limits_frames))
+	if (limiter != frame_limit::before_input &&
+		(Device.Paused() || IsMainMenuActive() || (ps_framelimiter && limiter == frame_limit::late)))
 	{
 		PROF_EVENT("Eco Render");
 
@@ -2068,7 +2056,9 @@ void CRenderDevice::on_idle()
 	bool frame_began = false;
 	{
 		SFrameScope stats_scope(fsRenderBegin);
+		SFrameDetailParts parts(fsRenderBegin, "low latency pacing");
 		m_pRender->LatencyRenderBegin();
+		parts.next("device begin");
 		frame_began = b_is_Active && Begin();
 	}
 	if (frame_began)
@@ -2291,8 +2281,7 @@ void CRenderDevice::Run()
 	// Start auxiliary threads. Per-frame parallel work is dispatched through
 	// the shared worker pool instead of a dedicated secondary thread.
 	InterlockedExchange(&mt_bMustExit, FALSE);
-	FreezeTimer.Start(); // on_idle restarts it every frame, the app start callbacks come first
-	thread_spawn(mt_FreezeThread, "Freeze detecting thread", 0, reinterpret_cast<void*>(uintptr_t(GetCurrentThreadId())));
+	thread_spawn(mt_FreezeThread, "Freeze detecting thread", 0, 0);
 	thread_spawn(mt_DiscordThread, "X-RAY Discord thread", 0, 0);
 	// Message cycle
 	QUARK_DIAGNOSTIC_STAGE("main/run/app-start-callbacks");

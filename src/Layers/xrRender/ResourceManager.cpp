@@ -196,15 +196,15 @@ void CResourceManager::_ParseList(sh_list& dest, LPCSTR names)
 	}
 }
 
-ShaderElement* CResourceManager::_CreateElement(ShaderElement& S)
+ref_selement CResourceManager::_CreateElement(ShaderElement& S)
 {
-	if (S.passes.empty()) return 0;
+	if (S.passes.empty()) return nullptr;
 
 	xrCriticalSectionGuard guard(shaderGraphGuard);
 
 	// Search equal in shaders array
 	for (u32 it = 0; it < v_elements.size(); it++)
-		if (S.equal(*(v_elements[it]))) return v_elements[it];
+		if (S.equal(*(v_elements[it])) && v_elements[it]->pin_alive()) return ref_selement(v_elements[it], false);
 
 	// Create _new_ entry
 	ShaderElement* N = xr_new<ShaderElement>(S);
@@ -221,7 +221,7 @@ void CResourceManager::_DeleteElement(const ShaderElement* S)
 	Msg("! ERROR: Failed to find compiled 'shader-element'");
 }
 
-Shader* CResourceManager::_cpp_Create(IBlender* B, LPCSTR s_shader, LPCSTR s_textures, LPCSTR s_constants,
+ref_shader CResourceManager::_cpp_Create(IBlender* B, LPCSTR s_shader, LPCSTR s_textures, LPCSTR s_constants,
                                       LPCSTR s_matrices)
 {
 	xrCriticalSectionGuard guard(shaderGraphGuard);
@@ -319,7 +319,7 @@ Shader* CResourceManager::_cpp_Create(IBlender* B, LPCSTR s_shader, LPCSTR s_tex
 
 	// Search equal in shaders array
 	for (u32 it = 0; it < v_shaders.size(); it++)
-		if (S.equal(v_shaders[it])) return v_shaders[it];
+		if (S.equal(v_shaders[it]) && v_shaders[it]->pin_alive()) return ref_shader(v_shaders[it], false);
 
 	// Create _new_ entry
 	Shader* N = xr_new<Shader>(S);
@@ -328,7 +328,7 @@ Shader* CResourceManager::_cpp_Create(IBlender* B, LPCSTR s_shader, LPCSTR s_tex
 	return N;
 }
 
-Shader* CResourceManager::_cpp_Create(LPCSTR s_shader, LPCSTR s_textures, LPCSTR s_constants, LPCSTR s_matrices)
+ref_shader CResourceManager::_cpp_Create(LPCSTR s_shader, LPCSTR s_textures, LPCSTR s_constants, LPCSTR s_matrices)
 {
 	//#ifndef DEDICATED_SERVER
 #ifndef _EDITOR
@@ -350,7 +350,7 @@ Shader* CResourceManager::_cpp_Create(LPCSTR s_shader, LPCSTR s_textures, LPCSTR
 	//#endif
 }
 
-Shader* CResourceManager::Create(IBlender* B, LPCSTR s_shader, LPCSTR s_textures, LPCSTR s_constants, LPCSTR s_matrices)
+ref_shader CResourceManager::Create(IBlender* B, LPCSTR s_shader, LPCSTR s_textures, LPCSTR s_constants, LPCSTR s_matrices)
 {
 	//#ifndef DEDICATED_SERVER
 #ifndef _EDITOR
@@ -369,8 +369,9 @@ Shader* CResourceManager::Create(IBlender* B, LPCSTR s_shader, LPCSTR s_textures
 	}
 }
 
-Shader* CResourceManager::Create(LPCSTR s_shader, LPCSTR s_textures, LPCSTR s_constants, LPCSTR s_matrices)
+ref_shader CResourceManager::Create(LPCSTR s_shader, LPCSTR s_textures, LPCSTR s_constants, LPCSTR s_matrices)
 {
+	PROF_EVENT();
 	//#ifndef DEDICATED_SERVER
 #ifndef _EDITOR
 	if (!g_dedicated_server)
@@ -381,7 +382,7 @@ Shader* CResourceManager::Create(LPCSTR s_shader, LPCSTR s_textures, LPCSTR s_co
 			return _lua_Create(s_shader, s_textures);
 		else
 		{
-			Shader* pShader = _cpp_Create(s_shader, s_textures, s_constants, s_matrices);
+			ref_shader pShader = _cpp_Create(s_shader, s_textures, s_constants, s_matrices);
 			if (pShader)
 				return pShader;
 			else

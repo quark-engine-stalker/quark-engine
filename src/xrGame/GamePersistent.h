@@ -80,7 +80,7 @@ public:
 
 	virtual void UpdateGameType();
 
-	virtual void RegisterModel(IRenderVisual* V);
+	virtual void RegisterModel(IRenderVisual* V, LPCSTR name);
 	virtual float MtlTransparent(u32 mtl_idx);
 	virtual void Statistics(CGameFont* F);
 

@@ -164,33 +164,34 @@ void CDetailManager::cache_Update(int v_x, int v_z, Fvector& view, int limit)
 	}
 
 	// Task performer
-	// The whole cache at once (a jump of the camera) is ~60k slots, 180 ms the frame waits for. Nearest first, by time
-	// slices: the grass grows from the camera in under a second. The loading screen has no player to wait for it.
-	if (cache_task.size() == dm_cache_size && !m_cache_full_unpack)
+	// A bigger backlog (the whole cache after a load, a jump or new grass settings, a row of slots of a moving camera) is
+	// decompressed at once on every thread: the grass is complete on this frame instead of growing from the camera for
+	// minutes at the maximum density (a slot is up to 2601 rays then). A few slots go nearest first on this thread.
+	if (cache_task.size() > 32)
 	{
-		m_cache_full_unpack = true;
-		std::sort(cache_task.begin(), cache_task.end(), [&view](Slot* a, Slot* b)
+		struct Work
 		{
-			Fvector ca, cb;
-			a->vis.box.getcenter(ca);
-			b->vis.box.getcenter(cb);
-			return view.distance_to_sqr(ca) > view.distance_to_sqr(cb);
-		});
-	}
-
-	if (m_cache_full_unpack)
-	{
+			CDetailManager* self;
+			Slot* const* tasks;
+			u32 count;
+			volatile LONG next;
+		} work = {this, cache_task.begin(), cache_task.size(), 0};
+		auto lane = [](void* data)
+		{
+			Work& w = *static_cast<Work*>(data);
+			xrXRC collider;
+			for (u32 i; (i = static_cast<u32>(InterlockedIncrement(&w.next) - 1)) < w.count;)
+				w.self->cache_Decompress(w.tasks[i], collider);
+		};
 		const u64 started = CPU::QPC();
-		const u64 slice = RDEVICE.dwPrecacheFrame ? u64(-1) : CPU::qpc_freq * 3 / 1000;
-		// The slice holds the lock the render waits on for the visible lists: once the render waits, only the usual
-		// per-frame count more, then the visibility (the grass still grows from the camera, slower)
-		for (int unpacked = 0; cache_task.size() && CPU::QPC() - started < slice &&
-			(unpacked < limit || RDEVICE.dwPrecacheFrame || !m_render_waits); ++unpacked)
-		{
-			cache_Decompress(cache_task.back());
-			cache_task.pop_back();
-		}
-		m_cache_full_unpack = cache_task.size() != 0;
+		xr_jobs::task_group group;
+		xr_jobs::submit_many(lane, &work, _min(xr_jobs::worker_count(), cache_task.size() / 16), &group, xr_jobs::priority::high);
+		lane(&work);
+		xr_jobs::wait_own(group);
+		if (cache_task.size() > 1024)
+			Msg("* [DETAILS] %u slots decompressed in %.1f ms", cache_task.size(),
+				double(CPU::QPC() - started) * 1000.0 / double(CPU::qpc_freq));
+		cache_task.clear();
 	}
 	else
 	for (int iteration = 0; cache_task.size() && (iteration < limit); iteration++)
@@ -218,7 +219,7 @@ void CDetailManager::cache_Update(int v_x, int v_z, Fvector& view, int limit)
 		}
 
 		// Decompress and remove task
-		cache_Decompress(cache_task[best_id]);
+		cache_Decompress(cache_task[best_id], xrc);
 		cache_task.erase(best_id);
 	}
 

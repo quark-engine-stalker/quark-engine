@@ -22,6 +22,7 @@ static void Swap(T& a, T& b)
 
 void CRenderTarget::phase_hdr10_bloom(bool genericSource, const ref_rt& outputRT)
 {
+	PIX_EVENT(phase_hdr10_bloom);
     RCache.set_Z(FALSE);
 	const ref_shader& downsampleShader = genericSource ? s_hdr10_bloom_downsample_pp : s_hdr10_bloom_downsample;
 	const ref_shader& upsampleShader = genericSource ? s_hdr10_bloom_upsample_pp : s_hdr10_bloom_upsample;

@@ -6,7 +6,6 @@
 #include "xr_ioconsole.h"
 #include "xr_ioc_cmd.h"
 #include "../xrCore/engine_error_logger.h"
-#include "../xrCore/cpu_placement.h"
 #include "IGame_Persistent.h"
 //#include "fbasicvisual.h"
 #include "cameramanager.h"
@@ -1084,26 +1083,6 @@ float scope_fog_sharp = 4.0f;
 int scope_2dtexactive = 0.0;
 Fvector3 ssfx_wetness_multiplier = Fvector3().set(1.0f, 0.3f, 0.0f);
 
-// orchestration_threads on|off - soft placement of engine threads on the CPU topology
-//                          (xrCore/cpu_placement.cpp); on by default, kept in user.ltx
-static Flags32 ps_orchestration_threads = {TRUE};
-class CCC_OrchestrationThreads : public CCC_Mask
-{
-public:
-	CCC_OrchestrationThreads(LPCSTR N) : CCC_Mask(N, &ps_orchestration_threads, TRUE) {}
-
-	virtual void Execute(LPCSTR args)
-	{
-		const BOOL previous = GetValue();
-		CCC_Mask::Execute(args);
-		cpu_placement::set_enabled(GetValue() != FALSE);
-		// A player's change is saved at once, not only on a clean exit: a crash must not
-		// bring the feature back. Frame 0 is user.ltx itself being executed at startup.
-		if (GetValue() != previous && Device.dwFrame)
-			Console->Execute("cfg_save");
-	}
-};
-
 // frame_stats            - report: main-thread frame stages, scheduler cost per class;
 //                          also saved to quark_frame_stats.txt on the desktop
 // frame_stats <N>        - same, N rows in the per-class tables (default 25)
@@ -1452,6 +1431,7 @@ void CCC_Register()
 	CMD3(CCC_Mask, "mt_particle_turbulence", &mt_tasks::switches, 1u << mt_tasks::particle_turbulence);
 	CMD3(CCC_Mask, "mt_physics", &psDeviceFlags, mtPhysics);
 	CMD3(CCC_Mask, "mt_view_static", &mt_tasks::switches, 1u << mt_tasks::main_static);
+	CMD3(CCC_Mask, "mt_sun_static", &mt_tasks::switches, 1u << mt_tasks::sun_static);
 	CMD1(CCC_MTPanel, "quark_panel");
 	extern int ps_mt_panel_lang;
 	{ static CCC_Integer cmd("quark_panel_lang", &ps_mt_panel_lang, 0, 1); Console->AddHiddenCommand(&cmd); }
@@ -1460,7 +1440,6 @@ void CCC_Register()
 #ifdef TRACY_ENABLE
 	CMD1(CCC_TracyAlloc, "tracy_alloc");
 #endif
-	CMD1(CCC_OrchestrationThreads, "orchestration_threads");
 	CMD4(CCC_Integer, "scheduler_batch_size", &psShedulerBatchSize, 16, 8192);
 	CMD4(CCC_Integer, "scheduler_main_budget_ms", &psShedulerMainBudgetMs, 1, 33);
 	CMD4(CCC_Integer, "scheduler_deferred_budget_ms", &psShedulerDeferredBudgetMs, 1, 33);

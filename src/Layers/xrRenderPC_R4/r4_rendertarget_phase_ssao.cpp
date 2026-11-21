@@ -12,6 +12,7 @@ void set_viewport(ID3DDeviceContext* dev, float w, float h)
 
 void CRenderTarget::phase_ssao()
 {
+	PIX_EVENT(phase_ssao);
 	PROF_EVENT();
 	u32 Offset = 0;
 
@@ -111,6 +112,7 @@ void CRenderTarget::phase_ssao()
 
 void CRenderTarget::phase_downsamp()
 {
+	PIX_EVENT(phase_downsamp);
 	// DON'T DO THIS!!!
 	//IDirect3DSurface9 *source, *dest;
 	//rt_Position->pSurface->GetSurfaceLevel(0, &source);
@@ -166,6 +168,7 @@ void CRenderTarget::phase_downsamp()
 
 void CRenderTarget::phase_ssfx_ao()
 {
+	PIX_EVENT(phase_ssfx_ao);
 
 	//Constants
 	u32 Offset = 0;
@@ -313,6 +316,7 @@ void CRenderTarget::phase_ssfx_ao()
 
 void CRenderTarget::phase_ssfx_il()
 {
+	PIX_EVENT(phase_ssfx_il);
 
 	//Constants
 	u32 Offset = 0;

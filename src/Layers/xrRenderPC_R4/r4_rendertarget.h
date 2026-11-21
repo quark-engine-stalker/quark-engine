@@ -170,6 +170,7 @@ public:
 	ref_rt rt_smap_surf; // 32bit,		color
 	ref_rt rt_smap_depth; // 24(32) bit,	depth
 	ref_rt rt_smap_depth_minmax; //	is used for min/max sm
+	ref_rt rt_smap_far; // the far sun cascade, drawn every other frame and accumulated from here in between
 	// Light shadow cache page (same size and format as rt_smap_depth, kept across
 	// frames): static casters of light faces, cleared and copied to the atlas by slot.
 	ref_rt rt_smap_cache;
@@ -178,6 +179,11 @@ public:
 	ID3D11Buffer* smap_cache_copy_cb = nullptr;
 	ID3D11DepthStencilState* smap_cache_clear_depth = nullptr;
 	ID3D11RasterizerState* smap_cache_clear_raster = nullptr;
+	// Grass of the sun cascades at r__detail_shadow_scale: its depth map and the pass that keeps the nearer depth
+	ref_rt rt_smap_grass;
+	ID3D11PixelShader* smap_grass_merge_ps = nullptr;
+	ID3D11DepthStencilState* smap_grass_merge_depth = nullptr;
+	bool grass_smap(); // the map for this r__detail_shadow_scale, false at full resolution
 	//	TODO: DX10: CHeck if we need old-style SMAP
 	//	IDirect3DSurface9*			rt_smap_ZB;		//
 
@@ -250,10 +256,10 @@ public:
 	ref_texture t_noise [TEX_jitter_count];
 	ID3DTexture2D* t_noise_surf_mipped;
 	ref_texture t_noise_mipped;
-private:
-	// OCCq
-
+	// OCCq (the far grass tile queries use it as well)
 	ref_shader s_occq;
+private:
+
 	ref_shader s_sunshafts;
 	// SSAO
 	ref_rt rt_ssao_temp;
@@ -482,7 +488,8 @@ public:
 	void phase_smap_spot_tsh(light* L);
 	void phase_smap_cache(light* L); // phase_smap_spot into the light's cleared cache slot
 	void smap_cache_blit(light* L); // after phase_smap_spot: the face's cached static casters
-	void smap_cache_triangle(ID3D11DepthStencilView* dsv, ID3D11PixelShader* ps, ID3D11ShaderResourceView* srv);
+	void smap_cache_triangle(ID3D11DepthStencilView* dsv, ID3D11PixelShader* ps, ID3D11ShaderResourceView* srv,
+		ID3D11DepthStencilState* depth_state = nullptr);
 	void phase_accumulator();
 	void phase_vol_accumulator();
 	void shadow_direct(light* L, u32 dls_phase);

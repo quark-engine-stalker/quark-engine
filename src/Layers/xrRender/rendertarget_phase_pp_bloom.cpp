@@ -5,6 +5,7 @@ extern Fvector4 ps_pp_bloom_weight;
 
 void CRenderTarget::phase_pp_bloom()
 {
+	PIX_EVENT(phase_pp_bloom);
 	//Get common data
 	u32 Offset = 0;
 	float d_Z = EPS_S;

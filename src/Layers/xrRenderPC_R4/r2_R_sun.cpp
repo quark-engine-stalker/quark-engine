@@ -3,6 +3,7 @@
 #include "../../xrEngine/igame_persistent.h"
 #include "../../xrEngine/irenderable.h"
 #include "../../xrEngine/xr_object.h"
+#include "../../xrEngine/igame_level.h"
 #include "../xrRender/FBasicVisual.h"
 
 #include "r4_R_sun_support.h"
@@ -1273,20 +1274,50 @@ void CRender::prepare_sun_cascade(u32 cascade_ind, const Fmatrix& viewport, cons
 	FPU::m24r();
 }
 
-void CRender::gather_sun_casters(CSector* cull_sector)
+namespace
+{
+xr_jobs::task_group g_sun_static_group;
+void sun_static_lane(void* render)
+{
+	mt_tasks::lane_time time(mt_tasks::sun_static);
+	static_cast<CRender*>(render)->gather_sun_statics();
+}
+} // namespace
+
+// Static level geometry: each sector hierarchy is walked once and every leaf receives a 3-bit cascade mask. This
+// removes the old three independent recursive add_Geometry() walks while preserving portal-clipped frustums. It
+// reads only the level's static visuals and the copied sector records, so it may run on a worker.
+void CRender::gather_sun_statics()
 {
 	PROF_EVENT();
+	for (u32 i = 0; i < m_sunSectorGatherUsed; ++i)
+	{
+		SunSectorGather& record = m_sunSectorGather[i];
+		if (record.root && record.cascade_mask)
+			gather_sun_static(record.root, i, record.cascade_mask, 0);
+	}
+}
+
+// The portal traversal of every cascade on this thread; the static walk of the sectors they see goes to a worker
+// (mt_sun_static) until finish_sun_casters() needs it, the scene is drawn meanwhile. Nothing reads the sector
+// frustums of the main view after render_main, the rain, lamp faces and forward pass traverse again.
+void CRender::start_sun_casters(CSector* cull_sector)
+{
+	PROF_EVENT();
+	m_sunStaticJob = false;
 	m_sunSectorGatherIndex.clear();
 	m_sunStaticCasters.clear();
 	m_sunStaticFallback.clear();
 	m_sunLodCasters.clear();
 	m_sunDynamicCasters.clear();
 	m_sunSectorGatherUsed = 0;
+	m_sunGathered = false;
 
 	// Every used slot is initialized when its sector enters the new index below.
 	// Clearing all retained slots here repeats that work, including unused ones.
 	if (!cull_sector || m_sun_cascades.empty())
 		return;
+	m_sunGathered = true;
 
 	m_sunSectorGatherIndex.reserve(Sectors.size());
 
@@ -1296,7 +1327,7 @@ void CRender::gather_sun_casters(CSector* cull_sector)
 	for (u32 cascade = 0; cascade < m_sun_cascades.size() && cascade < SUN_CASCADE_GATHER_COUNT; ++cascade)
 	{
 		SunCascadePrepared& prepared = m_sunPrepared[cascade];
-		if (!prepared.valid)
+		if (!prepared.valid || (m_sunFarReuse && cascade == m_sun_cascades.size() - 1))
 			continue;
 
 		PortalTraverser.traverse(cull_sector, prepared.frustum, prepared.cop, prepared.xform, 0);
@@ -1336,6 +1367,29 @@ void CRender::gather_sun_casters(CSector* cull_sector)
 		}
 	}
 
+	if (m_sunSectorGatherUsed && mt_tasks::on(mt_tasks::sun_static) && xr_jobs::worker_count())
+	{
+		mt_tasks::lanes(mt_tasks::sun_static, 1);
+		xr_jobs::submit_many(&sun_static_lane, this, 1, &g_sun_static_group, xr_jobs::priority::high);
+		m_sunStaticJob = true;
+	}
+}
+
+void CRender::finish_sun_casters()
+{
+	PROF_EVENT();
+	// The frame job may hold the workers and wait for this render: a walk nobody started runs here.
+	if (m_sunStaticJob)
+		xr_jobs::wait_own(g_sun_static_group);
+	else if (m_sunGathered)
+	{
+		mt_tasks::lane_time serial_time(mt_tasks::sun_static);
+		gather_sun_statics();
+	}
+	m_sunStaticJob = false;
+	if (!m_sunGathered)
+		return;
+
 	HOM.Disable();
 	phase = PHASE_SMAP;
 	if (RImplementation.o.Tshadows)
@@ -1345,17 +1399,6 @@ void CRender::gather_sun_casters(CSector* cull_sector)
 	set_Object(0);
 	set_Transform(&Fidentity);
 
-
-	// Static level geometry: each sector hierarchy is walked once and every leaf
-	// receives a 3-bit cascade mask. This removes the old three independent
-	// recursive add_Geometry() walks while preserving portal-clipped frustums.
-	for (u32 i = 0; i < m_sunSectorGatherUsed; ++i)
-	{
-		SunSectorGather& record = m_sunSectorGather[i];
-		if (record.root && record.cascade_mask)
-			gather_sun_static(record.root, i, record.cascade_mask, 0);
-	}
-
 	// Dynamic objects: traverse the spatial octree once against all cascade
 	// frustums. The returned coarse mask is then intersected with the exact
 	// portal-frustum visibility for the object's sector.
@@ -1364,7 +1407,7 @@ void CRender::gather_sun_casters(CSector* cull_sector)
 	for (u32 c = 0; c < m_sun_cascades.size() && c < SUN_CASCADE_GATHER_COUNT; ++c)
 	{
 		cascade_frustums[c] = m_sunPrepared[c].frustum;
-		if (m_sunPrepared[c].valid)
+		if (m_sunPrepared[c].valid && !(m_sunFarReuse && c == m_sun_cascades.size() - 1))
 			prepared_count = c + 1;
 	}
 
@@ -1484,6 +1527,9 @@ void CRender::submit_sun_cascade_casters(u32 cascade_ind)
 	// The spatial-tree result was gathered once. Preserve the original dynamic
 	// portal-frustum submission semantics so child visuals, script renderables and
 	// GAMMA attachments see the same CFrustum they saw before this optimization.
+	const bool far_crows = m_sunFarCache && cascade_ind == m_sun_cascades.size() - 1;
+	if (far_crows)
+		m_sunFarCrows.clear();
 	for (u32 i = 0; i < m_sunDynamicCasters.size(); ++i)
 	{
 		SunDynamicCaster& caster = m_sunDynamicCasters[i];
@@ -1504,6 +1550,8 @@ void CRender::submit_sun_cascade_casters(u32 cascade_ind)
 			if (!View->testSphere_dirty(caster.spatial->spatial.sphere.P, caster.spatial->spatial.sphere.R))
 				continue;
 			renderable->renderable_Render();
+			if (far_crows && object && (m_sunFarCrows.empty() || m_sunFarCrows.back() != object->ID()))
+				m_sunFarCrows.push_back(object->ID());
 		}
 	}
 
@@ -1512,15 +1560,17 @@ void CRender::submit_sun_cascade_casters(u32 cascade_ind)
 	View = 0;
 }
 
-void CRender::render_sun_cascades()
+// Right after the main view: the cascades of this frame, their portal traversals and the static walk on a worker
+// while the scene is drawn. render_sun_cascades() does it itself when nothing started it.
+void CRender::start_sun_cascades()
 {
 	PROF_EVENT();
-	bool b_need_to_render_sunshafts = RImplementation.Target->need_to_render_sunshafts();
-	bool last_cascade_chain_mode = m_sun_cascades.back().reset_chain;
-	if (b_need_to_render_sunshafts)
+	m_sunStarted = true;
+	m_sunShafts = RImplementation.Target->need_to_render_sunshafts();
+	m_sunLastChain = m_sun_cascades.back().reset_chain;
+	if (m_sunShafts)
 		m_sun_cascades[m_sun_cascades.size() - 1].reset_chain = true;
 
-	CSector* largest_sector = m_sunLargestSector;
 	const float view_dim = float(RImplementation.o.smapsize);
 	Fmatrix viewport = {
 		view_dim / 2.f, 0.0f, 0.0f, 0.0f,
@@ -1531,10 +1581,37 @@ void CRender::render_sun_cascades()
 	Fmatrix viewport_inverse;
 	D3DXMatrixInverse((D3DXMATRIX*)&viewport_inverse, 0, (D3DXMATRIX*)&viewport);
 
-	SFrameScope stats_gather_scope(fsSunGather);
 	VERIFY(m_sun_cascades.size() <= SUN_CASCADE_GATHER_COUNT);
 	for (u32 i = 0; i < m_sun_cascades.size() && i < SUN_CASCADE_GATHER_COUNT; ++i)
 		prepare_sun_cascade(i, viewport, viewport_inverse);
+
+	// The far cascade is drawn on one frame and accumulated from its own map on the next one, unless the
+	// view or the sun changed enough for its old fit to miss a part of this view. A scope's second viewport
+	// draws every cascade for its own camera and leaves the far map alone.
+	const u32 far_cascade = u32(m_sun_cascades.size() - 1);
+	light* sun = (light*)Lights.sun_adapted._get();
+	const SunFarCache& F = m_sunFar;
+	m_sunFarCache = Target->rt_smap_far && sun && far_cascade > 0 &&
+		far_cascade < SUN_CASCADE_GATHER_COUNT && m_sunPrepared[far_cascade].valid && !o.Tshadows && !o.sunfilter &&
+		!Device.m_SecondViewport.IsSVPFrame();
+	m_sunFarReuse = m_sunFarCache && F.valid && F.frame + 1 == Device.dwFrame &&
+		F.size == m_sun_cascades[far_cascade].size && F.reset_chain == m_sun_cascades[far_cascade].reset_chain &&
+		F.camera.distance_to_sqr(Device.vCameraPosition) < 4.f && F.view.dotproduct(Device.vCameraDirection) > 0.9962f &&
+		F.sun.dotproduct(Fvector().set(sun->direction).normalize()) > 0.99985f && _abs(F.fov - Device.fFOV) < 1.f;
+
+	start_sun_casters(m_sunLargestSector);
+}
+
+void CRender::render_sun_cascades()
+{
+	PROF_EVENT();
+	SFrameScope stats_gather_scope(fsSunGather);
+	SFrameDetailParts parts(fsSunGather, "cascades start");
+	if (!m_sunStarted)
+		start_sun_cascades();
+	parts.next("grass for the shadows");
+	m_sunStarted = false;
+	const u32 far_cascade = u32(m_sun_cascades.size() - 1);
 
 	// Details already use shader-compatible pseudo-instancing (up to hw_BatchSize
 	// instances per draw). Give that renderer the same prepared caster frustums so
@@ -1548,25 +1625,28 @@ void CRender::render_sun_cascades()
 		{
 			if (static_cast<float>(i) > ps_ssfx_grass_shadows.x)
 				break;
-			if (!m_sunPrepared[i].valid)
+			if (!m_sunPrepared[i].valid || (m_sunFarReuse && i == far_cascade))
 				continue;
 			detail_frustums[i] = &m_sunPrepared[i].frustum;
 			detail_cascade_count = i + 1;
 		}
-		Details->PrepareSunShadowCascades(detail_frustums, detail_cascade_count);
+		const light* sun = (light*)Lights.sun_adapted._get();
+		Details->PrepareSunShadowCascades(detail_frustums, detail_cascade_count, sun ? sun->direction : Fvector().set(0.f, -1.f, 0.f));
 	}
 
-	gather_sun_casters(largest_sector);
+	parts.next("waiting for the casters (worker)");
+	finish_sun_casters();
+	parts.next(nullptr);
 	stats_gather_scope.stop();
 
 	for (u32 i = 0; i < m_sun_cascades.size() && i < SUN_CASCADE_GATHER_COUNT; ++i)
-		render_sun_cascade(i, largest_sector);
+		render_sun_cascade(i, m_sunLargestSector);
 
 	if (Details)
 		Details->ClearSunShadowCascades();
 
-	if (b_need_to_render_sunshafts)
-		m_sun_cascades[m_sun_cascades.size() - 1].reset_chain = last_cascade_chain_mode;
+	if (m_sunShafts)
+		m_sun_cascades[m_sun_cascades.size() - 1].reset_chain = m_sunLastChain;
 }
 
 void CRender::render_sun_cascade(u32 cascade_ind, CSector* cull_sector)
@@ -1582,6 +1662,8 @@ void CRender::render_sun_cascade(u32 cascade_ind, CSector* cull_sector)
 		return;
 
 	g_frame_stats.count(fcSunCascades, 1);
+	const char* const cascade_name = cascade_ind == 0 ? "near cascade" :
+		cascade_ind + 1 == m_sun_cascades.size() ? "far cascade" : "middle cascade";
 	const s32 limit = RImplementation.o.smapsize - 1;
 	fuckingsun->X.D.minX = 0;
 	fuckingsun->X.D.maxX = limit;
@@ -1598,22 +1680,48 @@ void CRender::render_sun_cascade(u32 cascade_ind, CSector* cull_sector)
 	else
 		r_pmask(true, false);
 
+	// The far map takes the place of the shared one from its draw to the end of its accumulation; a reused
+	// one is accumulated with the transform it was drawn with.
+	const bool far_map = m_sunFarCache && cascade_ind == m_sun_cascades.size() - 1;
+	const bool far_reuse = far_map && m_sunFarReuse;
+	auto swap_far_map = [this]()
+	{
+		Target->rt_smap_depth->swap(*Target->rt_smap_far);
+		RCache.forget_texture(&*Target->rt_smap_depth->pTexture);
+	};
+
 	// Fill dsgraph from the shared gather instead of traversing the sector graph
 	// and spatial octree independently for every cascade.
 	{
 		SFrameScope stats_submit_scope(fsSunSubmit);
-		submit_sun_cascade_casters(cascade_ind);
+		SFrameDetailParts part(fsSunSubmit, cascade_name);
+		if (!far_reuse)
+			submit_sun_cascade_casters(cascade_ind);
 	}
 
-	fuckingsun->X.D.combine = m_sunPrepared[cascade_ind].xform;
+	if (far_reuse)
+	{
+		g_frame_stats.count(fcSunFarReused, 1);
+		m_sun_cascades[cascade_ind].xform = m_sunFar.xform;
+		// What its draw does for the game: the objects it shows stay crows (an UpdateCL and a skeleton job on the next
+		// frame), else one seen only by the far cascade beyond CROW_RADIUS2 skips those every frame it is drawn.
+		if (g_pGameLevel)
+			for (u16 id : m_sunFarCrows)
+				if (CObject* object = g_pGameLevel->Objects.net_Find(id))
+					object->MakeMeCrow();
+	}
+	fuckingsun->X.D.combine = m_sun_cascades[cascade_ind].xform;
 
 	// Render shadow-map. The draw path, shader selection, textures, constants and
 	// cascade transforms are intentionally unchanged for GAMMA/shader compatibility.
 	bool bNormal = mapNormalPasses[0][0].size() || mapMatrixPasses[0][0].size();
 	bool bSpecial = mapNormalPasses[1][0].size() || mapMatrixPasses[1][0].size() || mapSorted.size();
 	SFrameScope stats_draw_scope(fsSunDraw);
+	SFrameDetailParts draw_part(fsSunDraw, cascade_name, &RCache.stat.calls);
 	const u32 stats_calls_before = RCache.stat.calls;
 	const u32 stats_polys_before = RCache.stat.polys;
+	if (far_map)
+		swap_far_map();
 	if (bNormal || bSpecial)
 	{
 		Target->phase_smap_direct(fuckingsun, SE_SUN_FAR);
@@ -1625,7 +1733,32 @@ void CRender::render_sun_cascade(u32 cascade_ind, CSector* cull_sector)
 		{
 			Details->SetSunShadowCascade(cascade_ind);
 			Details->fade_distance = dm_fade * dm_fade * ps_ssfx_grass_shadows.y;
+			// At r__detail_shadow_scale: the grass into its own smaller map, then the nearer depth of the two into the
+			// cascade's (the static casters stay at full resolution)
+			const bool grass_map = Target->grass_smap();
+			if (grass_map)
+			{
+				Target->u_setrt(Target->rt_smap_surf, NULL, NULL, Target->rt_smap_grass->pZRT);
+				HW.pContext->ClearDepthStencilView(Target->rt_smap_grass->pZRT, D3D_CLEAR_DEPTH, 1.0f, 0);
+				rmNormal();
+			}
+			const u32 grass_calls_before = RCache.stat.calls;
 			Details->Render();
+			if (grass_map)
+			{
+				Target->u_setrt(Target->rt_smap_surf, NULL, NULL, Target->rt_smap_depth->pZRT);
+				rmNormal();
+				// A cleared grass map can never pass the merge's strict LESS depth test.
+				if (RCache.stat.calls != grass_calls_before)
+					Target->smap_cache_triangle(Target->rt_smap_depth->pZRT, Target->smap_grass_merge_ps,
+						Target->rt_smap_grass->pTexture->get_SRView(), Target->smap_grass_merge_depth);
+				else
+				{
+					RCache.set_CullMode(CULL_CCW);
+					RCache.set_Stencil(FALSE);
+					RCache.set_ColorWriteEnable(FALSE);
+				}
+			}
 		}
 		fuckingsun->X.D.transluent = FALSE;
 		if (bSpecial)
@@ -1636,13 +1769,21 @@ void CRender::render_sun_cascade(u32 cascade_ind, CSector* cull_sector)
 			r_dsgraph_render_sorted();
 		}
 	}
+	else if (far_map && !far_reuse)
+		Target->phase_smap_direct(fuckingsun, SE_SUN_FAR); // no old depth under the new transform
 
 	r_pmask(true, false);
 	g_frame_stats.count(fcSunCalls, RCache.stat.calls - stats_calls_before);
 	g_frame_stats.count(fcSunPolys, RCache.stat.polys - stats_polys_before);
+	draw_part.next(nullptr);
 	stats_draw_scope.stop();
+	if (far_map && !far_reuse)
+		m_sunFar = {m_sun_cascades[cascade_ind].xform, Device.vCameraPosition, Device.vCameraDirection,
+			Fvector().set(fuckingsun->direction).normalize(), Device.fFOV, m_sun_cascades[cascade_ind].size,
+			Device.dwFrame, true, m_sun_cascades[cascade_ind].reset_chain};
 
 	SFrameScope stats_accum_scope(fsSunAccum);
+	SFrameDetailParts accum_part(fsSunAccum, cascade_name);
 	Target->phase_accumulator();
 	if (Target->use_minmax_sm_this_frame())
 	{
@@ -1660,6 +1801,8 @@ void CRender::render_sun_cascade(u32 cascade_ind, CSector* cull_sector)
 	else
 		Target->accum_direct_cascade(SE_SUN_FAR, m_sun_cascades[cascade_ind].xform,
 			m_sun_cascades[cascade_ind - 1].xform, m_sun_cascades[cascade_ind].bias);
+	if (far_map)
+		swap_far_map();
 
 	RCache.set_xform_world(Fidentity);
 	RCache.set_xform_view(Device.mView);

@@ -27,6 +27,7 @@ enum task : u32
 	particle_turbulence,
 	ai_vision,
 	main_static, // main view statics recorded on the workers
+	sun_static, // static casters of the sun cascades walked on a worker while the scene is drawn
 	// parts of the frame job without a switch of their own, shown in the THREADS tab
 	job_scheduler, // NPC and A-Life scheduler
 	job_lua_prelude, // actor and hear Lua callbacks

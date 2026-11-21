@@ -59,7 +59,6 @@ void xrCore::_initialize(LPCSTR _ApplicationName, LogCallback cb, BOOL init_fs, 
 
 		EngineErrorLogger::SetEnabled(strstr(Params, "-no_engine_error_log") == nullptr);
 		EngineErrorLogger::Initialize();
-		EngineErrorLogger::SetDumpsEnabled(strstr(Params, "-no_crash_dump") == nullptr);
 		if (!strstr(Params, "-editor"))
 			CoInitializeEx(NULL, COINIT_MULTITHREADED);
 
@@ -102,7 +101,6 @@ void xrCore::_initialize(LPCSTR _ApplicationName, LogCallback cb, BOOL init_fs, 
 
 		InitLog();
 		_initialize_cpu();
-		cpu_placement::initialize();
 
 		// Debug._initialize ();
 
@@ -186,6 +184,9 @@ void xrCore::_initialize(LPCSTR _ApplicationName, LogCallback cb, BOOL init_fs, 
 #endif
 #endif // DEBUG
 	}
+	// After the log file exists (FS._initialize creates it), before the worker pool and the engine's threads.
+	if (0 == init_counter)
+		cpu_placement::initialize();
 	SetLogCB(cb);
 	init_counter++;
 }

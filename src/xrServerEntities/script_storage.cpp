@@ -11,6 +11,7 @@
 #include "script_storage.h"
 #include "script_thread.h"
 #include "../xrCore/mezz_stringbuffer.h"
+#include "../xrEngine/mods_info.h"
 #include <luabind/weak_ref.hpp>
 #include <stdarg.h>
 #include <unordered_map>
@@ -356,6 +357,11 @@ static void put_function(lua_State* state, u8 const* buffer, u32 const buffer_si
 #endif //!DEBUG
 #endif //-USE_LUAJIT_ONE
 
+namespace
+{
+lua_State* g_logged_vm = nullptr; // read by fatal/crash records on the VM thread
+DWORD g_logged_vm_thread = 0;     // the thread that made the VM and loads the scripts
+}
 
 CScriptStorage::CScriptStorage()
 {
@@ -434,6 +440,8 @@ CScriptStorage::~CScriptStorage()
 #endif
 	if (m_virtual_machine)
 	{
+		g_logged_vm = nullptr; // a crash at shutdown must not walk the closed VM
+		mods_info::set_vm(nullptr);
 		set_lua_allocation_tracking(false);
 		luabind::weak_ref::invalidate(m_virtual_machine);
 		lua_close(m_virtual_machine);
@@ -572,10 +580,7 @@ bool LoadKernelScriptToGlobal(lua_State* L, const char* name)
 
 namespace
 {
-lua_State* g_logged_vm = nullptr; // read by fatal/crash records on the VM thread
-DWORD g_logged_vm_thread = 0;     // the thread that made the VM and loads the scripts
 void write_lua_stack(char* output, size_t capacity);
-bool sample_lua_for_hang(char* output, size_t capacity, unsigned timeout_ms, DWORD* thread_id);
 }
 
 BOOL lua_debug = FALSE;
@@ -589,6 +594,7 @@ void CScriptStorage::reinit()
 	if (m_virtual_machine)
 	{
 		g_logged_vm = nullptr;
+		mods_info::set_vm(nullptr);
 		set_lua_allocation_tracking(false);
 		luabind::weak_ref::invalidate(m_virtual_machine);
 		lua_close(m_virtual_machine);
@@ -609,8 +615,8 @@ void CScriptStorage::reinit()
 	}
 	g_logged_vm = m_virtual_machine;
 	g_logged_vm_thread = GetCurrentThreadId();
+	mods_info::set_vm(m_virtual_machine);
 	EngineErrorLogger::SetLuaStackWriter(&write_lua_stack);
-	EngineErrorLogger::SetLuaHangSampler(&sample_lua_for_hang);
 	luabind::detail::set_caught_exception_callback(&EngineErrorLogger::ReportCaughtException);
 	lua_gc(m_virtual_machine, LUA_GCDEFER, 1); // until CGamePersistent::game_loaded
 
@@ -1128,6 +1134,7 @@ bool CScriptStorage::do_file(LPCSTR caScriptName, LPCSTR caNameSpaceName)
 
 		const char* cursor = scriptContents;
 		const char* const sourceEnd = scriptContents + scriptLength;
+		bool first_line = true;
 		while (cursor < sourceEnd)
 		{
 			const void* newlinePtr = std::memchr(cursor, '\n', static_cast<size_t>(sourceEnd - cursor));
@@ -1181,8 +1188,11 @@ bool CScriptStorage::do_file(LPCSTR caScriptName, LPCSTR caNameSpaceName)
 				}
 			}
 
-			if (!unlocalizerResult.empty())
+			// Every line but the first starts on a new line, the empty ones at the top too: Lua's line numbers stay the
+			// file's (joining only after a non-empty result lost them, error lines were off by those)
+			if (!first_line)
 				unlocalizerResult.push_back('\n');
+			first_line = false;
 			unlocalizerResult += line;
 		}
 
@@ -1473,52 +1483,27 @@ void collect_lua_error_trace(lua_State* state, int status, char* output, size_t 
             "Lua frames unavailable after protected-call unwind; consult error message/chunk", _TRUNCATE);
 }
 
+// Only a thread that runs the VM may walk it: the one that made it, or one inside a Lua call now
+// (scripts also run on the frame job). No VM: none yet (startup) or none any more (shutdown).
+bool lua_stack_walkable()
+{
+    return g_logged_vm && (GetCurrentThreadId() == g_logged_vm_thread || luabind::detail::lua_running_on_this_thread());
+}
+
 void write_lua_stack(char* output, size_t capacity)
 {
     output[0] = 0;
-    // Only a thread that runs the VM may walk it: the one that made it, or one inside a Lua call now
-    // (scripts also run on the frame job).
-    if (g_logged_vm && (GetCurrentThreadId() == g_logged_vm_thread || luabind::detail::lua_running_on_this_thread()))
+    if (lua_stack_walkable())
         collect_lua_frames(g_logged_vm, output, capacity);
 }
-
-char g_hang_sample[8192];
-volatile LONG g_hang_sample_ready = 0;
-DWORD g_hang_sample_thread = 0;
-
-// Runs on whichever thread runs Lua, at its next instruction: there the frames are consistent.
-void hang_sample_hook(lua_State* L, lua_Debug*)
-{
-    lua_sethook(L, nullptr, 0, 0);
-    if (InterlockedCompareExchange(&g_hang_sample_ready, 0, 0))
-        return;
-    g_hang_sample[0] = 0;
-    collect_lua_frames(L, g_hang_sample, sizeof(g_hang_sample));
-    g_hang_sample_thread = GetCurrentThreadId();
-    InterlockedExchange(&g_hang_sample_ready, 1);
 }
 
-// From the freeze watchdog. lua_sethook may be called from another thread (luajit.c does it from its
-// Ctrl+C handler); compiled traces do not run hooks, so a loop that never leaves one is not sampled.
-bool sample_lua_for_hang(char* output, size_t capacity, unsigned timeout_ms, DWORD* thread_id)
+// The Lua stack in the game log of a fatal error (xrDebug::gather_info). A fatal before the script engine
+// exists must not build it here through ai(): with no settings loaded yet that crashed inside the handler.
+void printLuaStack()
 {
-    lua_State* L = g_logged_vm;
-    if (!L || lua_gethook(L)) // a profiler or a debugger hook: leave it alone
-        return false;
-    InterlockedExchange(&g_hang_sample_ready, 0);
-    lua_sethook(L, &hang_sample_hook, LUA_MASKCOUNT, 1);
-    for (unsigned waited = 0; waited < timeout_ms && !InterlockedCompareExchange(&g_hang_sample_ready, 0, 0); waited += 10)
-        Sleep(10);
-    if (!InterlockedCompareExchange(&g_hang_sample_ready, 0, 0))
-    {
-        if (lua_gethook(L) == &hang_sample_hook)
-            lua_sethook(L, nullptr, 0, 0);
-        return false;
-    }
-    strncpy_s(output, capacity, g_hang_sample, _TRUNCATE);
-    *thread_id = g_hang_sample_thread;
-    return true;
-}
+    if (lua_stack_walkable())
+        ai().script_engine().print_stack();
 }
 
 bool CScriptStorage::print_output(lua_State* L, LPCSTR caScriptFileName, int iErorCode, bool recoveredModuleLoad,
@@ -1526,11 +1511,11 @@ bool CScriptStorage::print_output(lua_State* L, LPCSTR caScriptFileName, int iEr
 {
     const char* message = lua_type(L, -1) == LUA_TSTRING ? lua_tostring(L, -1) : nullptr;
     // The Debug.fatal record that follows already carries the message and the Lua stack.
-    if (!fatalFollows && EngineErrorLogger::IsEnabled() &&
-        EngineErrorLogger::ShouldReportScriptFailure(iErorCode, recoveredModuleLoad, message))
+    if (!fatalFollows && iErorCode > LUA_YIELD && EngineErrorLogger::IsEnabled())
     {
         char traceback[8192] = {};
-        collect_lua_error_trace(L, iErorCode, traceback, sizeof(traceback));
+        if (EngineErrorLogger::ShouldReportScriptFailure(iErorCode, recoveredModuleLoad, message))
+            collect_lua_error_trace(L, iErorCode, traceback, sizeof(traceback));
         EngineErrorLogger::ReportScriptFailure(iErorCode, caScriptFileName,
             message, traceback,
             __FILE__, __LINE__, __FUNCTION__, recoveredModuleLoad);

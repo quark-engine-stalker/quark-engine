@@ -8,6 +8,8 @@
 #include <ShlObj.h>
 #include <DbgHelp.h>
 #include <Psapi.h>
+#include <algorithm>
+#include <climits>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -32,18 +34,18 @@ namespace EngineErrorLogger
 {
 namespace
 {
-    constexpr unsigned long long kMaxLogSize = 16ull * 1024ull * 1024ull;
     constexpr unsigned int kStackFrameLimit = 32;
-    constexpr unsigned int kOtherThreadFrames = 12; // hang records: the other threads, after the main one
+    constexpr unsigned int kOtherThreadFrames = 12; // crash records: the other engine threads
     constexpr unsigned int kBreadcrumbCount = 128;
     constexpr unsigned int kBreadcrumbsShown = 32;  // lines in a record, a run of similar lines takes three
     constexpr unsigned int kThreadSlots = 128;
+    constexpr unsigned int kGameLogTailFatal = 24;
     constexpr DWORD kCppException = 0xE06D7363;
     constexpr DWORD kNoMemory = 0xC0000017;
     constexpr DWORD kHeapCorruption = 0xC0000374;
-    constexpr DWORD kDumpWaitMs = 20000;
+    constexpr DWORD kHelperWaitMs = 20000;
     constexpr DWORD kSessionMagic = 0x51534553; // "SESQ"
-    enum : DWORD { kSessionRunning = 1, kSessionRecorded = 2, kSessionHang = 3 };
+    enum : DWORD { kSessionRunning = 1, kSessionRecorded = 2 };
 
     enum class Category : u8
     {
@@ -58,8 +60,7 @@ namespace
         Game,
         Engine,
         Script,
-        Crash,
-        Hang
+        Crash
     };
 
     struct __declspec(align(64)) BreadcrumbSlot
@@ -80,13 +81,14 @@ namespace
         char symbols[24576]; // the same stack with symbols, when DbgHelp succeeds
         char lua[8192];
         char machine[1024];
-        char record[65536];
+        char threads[65536]; // stacks of the other engine threads
+        char gameLog[65536]; // the player's xray log, so it need not be sent separately
+        char record[196608];
     };
 
     volatile LONG g_enabled = 1;
     volatile LONG64 g_breadcrumbSequence = 0;
     volatile LONG g_crashWorkspaceInUse = 0;
-    volatile LONG g_sessionFiles = 0; // bit per category: already written by this process
     SRWLOCK g_writeLock = SRWLOCK_INIT;
     SRWLOCK g_symbolLock = SRWLOCK_INIT;
     char g_directory[MAX_PATH * 3] = {};
@@ -96,17 +98,25 @@ namespace
     HANDLE g_symbolProcess = nullptr; // unique DbgHelp session, process lifetime
     char g_buildIdentity[512] = {};
     LuaStackWriter g_luaStackWriter = nullptr;
-    thread_local LPCSTR g_testFilename = nullptr;
+    GameLogWriter g_gameLogWriter = nullptr;
+    thread_local bool g_selfTest = false;
+    uint64_t g_errorSignatures[128] = {};
+    size_t g_nextErrorSignature = 0;
+
+    struct ScriptLoadFailure { char chunk[160], error[768]; unsigned int count; };
+    SRWLOCK g_scriptLoadLock = SRWLOCK_INIT;
+    ScriptLoadFailure g_scriptLoads[16] = {};
+    size_t g_scriptLoadCursor = 0;
     thread_local bool g_lastWriteSucceeded = false;
     struct FailureCodeState { long result = 0, removedReason = 0; bool valid = false, hasRemovedReason = false; };
     thread_local FailureCodeState g_failureCode;
-    char g_recordBuffer[65536] = {};
+    char g_recordBuffer[131072] = {};
     BreadcrumbSlot g_breadcrumbs[kBreadcrumbCount] = {};
     CrashWorkspace g_crashWorkspace = {};
     thread_local bool g_insideLogger = false;
     thread_local bool g_insideCrashHandler = false;
 
-    // A thread's crash context. Hang records read it from the watchdog thread, under SEH.
+    // A thread's crash context, read under SEH.
     struct ThreadState
     {
         DWORD id = 0;
@@ -135,20 +145,33 @@ namespace
     char g_contextLevel[64] = {};
     char g_contextSave[192] = {};
 
-    LuaHangSampler g_luaHangSampler = nullptr;
-
-    // Dumps, and the symbols of a thread out of stack, are made by a helper thread: the failing thread may
-    // have no stack left or hold a lock. A job without a name walks context into output.
-    struct DumpJob
+    // The symbols of a thread out of stack are walked by a helper thread made at startup: the failing
+    // thread may have no stack left or hold a lock.
+    struct HelperJob
     {
-        EXCEPTION_POINTERS* pointers; DWORD threadId; LPCWSTR name; bool ok;
-        const CONTEXT* context; char* output; size_t capacity; size_t* used; char* first; size_t firstCapacity;
+        bool ok; const CONTEXT* context; char* output; size_t capacity; size_t* used; char* first; size_t firstCapacity;
     };
-    volatile LONG g_dumpsEnabled = 1;
-    volatile LONG g_dumpFiles = 0; // bit per dump name: the previous session's file was moved already
-    HANDLE g_dumpRequest = nullptr, g_dumpDone = nullptr;
-    SRWLOCK g_dumpLock = SRWLOCK_INIT;
-    DumpJob g_dumpJob = {};
+    HANDLE g_helperRequest = nullptr, g_helperDone = nullptr;
+    SRWLOCK g_helperLock = SRWLOCK_INIT;
+    HelperJob g_helperJob = {};
+
+    // A fault caught by luabind: the game goes on, so the helper finishes the record. The catch block only
+    // copies the frames and the text it alone can give; DbgHelp (the first PDB load takes up to seconds)
+    // never stalls the game. One record at a time: the helper owns the job while caughtBusy is set.
+    struct CaughtJob
+    {
+        char title[512];
+        char error[1024];
+        char context[16384]; // thread, game, memory, Lua stack
+        char machine[1024];  // registers, code bytes
+        char events[8192];
+        char record[81920];
+        DWORD64 frames[kStackFrameLimit];
+        unsigned int count;
+    };
+    CaughtJob g_caught = {};
+    volatile LONG g_caughtBusy = 0;
+    HANDLE g_caughtRequest = nullptr;
 
     // How the previous process ended, for the deaths Windows does not hand to the process (fast-fail).
     struct SessionMarker { DWORD magic, pid; ULONGLONG created; DWORD state; };
@@ -157,13 +180,7 @@ namespace
     wchar_t g_sessionPath[MAX_PATH] = {};
     INIT_ONCE g_sessionOnce = INIT_ONCE_STATIC_INIT;
 
-    struct HangWorkspace
-    {
-        char record[262144];
-        char lua[8192];
-        unsigned char stack[1u << 20]; // one thread's stack, copied while it is suspended
-    };
-    HangWorkspace g_hang = {};
+    unsigned char g_threadStack[1u << 20]; // another thread's stack, copied while it is suspended (crash records)
 
     bool ascii_equal_i(char left, char right)
     {
@@ -535,89 +552,112 @@ namespace
         case Category::Engine: return "ENGINE";
         case Category::Script: return "SCRIPT";
         case Category::Crash: return "CRASH";
-        case Category::Hang: return "HANG";
         }
         return "ENGINE";
     }
 
-    // One file per category and session: the first write of this process moves
-    // the previous session's file to .previous, so records need no timestamps.
-    HANDLE open_log_file(Category category, DWORD access)
+    bool log_path(wchar_t (&path)[MAX_PATH], const wchar_t* stem, unsigned long number)
     {
-        if (!*g_directoryWide) return INVALID_HANDLE_VALUE;
-        wchar_t name[96] = {}, path[MAX_PATH] = {}, previous[MAX_PATH] = {};
-        MultiByteToWideChar(CP_UTF8, 0, g_testFilename ? g_testFilename : category_name(category), -1, name, int(_countof(name)));
-        if (_snwprintf_s(path, _countof(path), _TRUNCATE, L"%s\\%s%s",
-                g_directoryWide, name, g_testFilename ? L"" : L"-LOG.log") < 0 ||
-            _snwprintf_s(previous, _countof(previous), _TRUNCATE, L"%s.previous", path) < 0)
+        return (number == 1
+            ? _snwprintf_s(path, _countof(path), _TRUNCATE, L"%s\\%s.log", g_directoryWide, stem)
+            : _snwprintf_s(path, _countof(path), _TRUNCATE, L"%s\\%s-%lu.log", g_directoryWide, stem, number)) >= 0;
+    }
+
+    unsigned long next_log_number(const wchar_t* stem)
+    {
+        wchar_t pattern[MAX_PATH] = {};
+        if (_snwprintf_s(pattern, _countof(pattern), _TRUNCATE, L"%s\\%s*.log", g_directoryWide, stem) < 0)
+            return 1;
+
+        WIN32_FIND_DATAW entry = {};
+        HANDLE files = FindFirstFileW(pattern, &entry);
+        if (files == INVALID_HANDLE_VALUE)
+            return 1;
+
+        unsigned long newest = 0;
+        const size_t stemLength = wcslen(stem);
+        do
+        {
+            if (_wcsnicmp(entry.cFileName, stem, stemLength) != 0)
+                continue;
+            const wchar_t* suffix = entry.cFileName + stemLength;
+            if (_wcsicmp(suffix, L".log") == 0)
+                newest = (std::max)(newest, 1ul);
+            else if (suffix[0] == L'-' && suffix[1] >= L'1' && suffix[1] <= L'9')
+            {
+                wchar_t* end = nullptr;
+                const unsigned long number = wcstoul(suffix + 1, &end, 10);
+                if (number >= 2 && number < ULONG_MAX && _wcsicmp(end, L".log") == 0)
+                    newest = (std::max)(newest, number);
+            }
+        } while (FindNextFileW(files, &entry));
+        FindClose(files);
+        return newest + 1;
+    }
+
+    HANDLE open_log_file(Category category)
+    {
+        if (!*g_directoryWide)
             return INVALID_HANDLE_VALUE;
 
-        const LONG bit = 1L << int(category);
-        bool rotate = !g_testFilename && !(InterlockedOr(&g_sessionFiles, bit) & bit);
-        WIN32_FILE_ATTRIBUTE_DATA attributes = {};
-        if (!rotate && GetFileAttributesExW(path, GetFileExInfoStandard, &attributes))
-            rotate = (ULONGLONG(attributes.nFileSizeHigh) << 32 | attributes.nFileSizeLow) >= kMaxLogSize;
-        if (rotate)
-            MoveFileExW(path, previous, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+        wchar_t stem[64] = {}, path[MAX_PATH] = {};
+        if (g_selfTest)
+            wcscpy_s(stem, L"RENDER-LOG-SELFTEST");
+        else if (_snwprintf_s(stem, _countof(stem), _TRUNCATE, L"%hs-LOG", category_name(category)) < 0)
+            return INVALID_HANDLE_VALUE;
 
-        const auto create = [&]() { return CreateFileW(path, access, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr); };
-        HANDLE file = create();
-        if (file == INVALID_HANDLE_VALUE && GetLastError() == ERROR_PATH_NOT_FOUND)
+        unsigned long number = g_selfTest ? 1 : next_log_number(stem);
+        bool recreated = false;
+        HANDLE file = INVALID_HANDLE_VALUE;
+        while (number && log_path(path, stem, number))
         {
-            // The folder was deleted while the game was running: create it again.
+            file = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                g_selfTest ? CREATE_ALWAYS : CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (file != INVALID_HANDLE_VALUE)
+                break;
+
+            const DWORD error = GetLastError();
+            if (!g_selfTest && (error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS))
+            {
+                ++number; // Another writer reserved this number first.
+                continue;
+            }
+            if (error != ERROR_PATH_NOT_FOUND || recreated)
+                return INVALID_HANDLE_VALUE;
+
             wchar_t parent[MAX_PATH] = {};
             wcscpy_s(parent, g_directoryWide);
             if (wchar_t* slash = wcsrchr(parent, L'\\'))
                 *slash = 0;
-            ensure_subdirectory(parent);
-            ensure_subdirectory(g_directoryWide);
-            file = create();
+            if (!ensure_subdirectory(parent) || !ensure_subdirectory(g_directoryWide))
+                return INVALID_HANDLE_VALUE;
+            recreated = true;
+            number = g_selfTest ? 1 : next_log_number(stem);
         }
         if (file == INVALID_HANDLE_VALUE)
             return file;
-        LARGE_INTEGER size = {};
-        if (GetFileSizeEx(file, &size) && !size.QuadPart)
-        {
-            char header[768] = {}, process[MAX_PATH] = {};
-            GetModuleFileNameA(nullptr, process, DWORD(sizeof(process)));
-            _snprintf_s(header, sizeof(header), _TRUNCATE, "QUARK ENGINE error log 2.2 | %s | %s\r\n",
-                path_basename(process), safe_text(g_buildIdentity));
-            write_handle_text(file, header);
-        }
-        SetFilePointerEx(file, LARGE_INTEGER{}, nullptr, FILE_END);
+
+        char header[768] = {}, process[MAX_PATH] = {};
+        GetModuleFileNameA(nullptr, process, DWORD(sizeof(process)));
+        _snprintf_s(header, sizeof(header), _TRUNCATE, "QUARK-ENGINE LOG 2.3 | %s | %s\r\n",
+            path_basename(process), safe_text(g_buildIdentity));
+        write_handle_text(file, header);
         return file;
     }
 
-    // Lock-free append for paths that must not wait (busy logger, crash notes).
-    void append_text_record(Category category, LPCSTR text)
+    bool append_text_record(Category category, LPCSTR text)
     {
-        HANDLE file = open_log_file(category, FILE_APPEND_DATA);
-        if (file == INVALID_HANDLE_VALUE) return;
-        write_handle_text(file, text);
-        FlushFileBuffers(file);
+        HANDLE file = open_log_file(category);
+        if (file == INVALID_HANDLE_VALUE)
+            return false;
+        const bool written = write_handle_text(file, text) && FlushFileBuffers(file);
         CloseHandle(file);
+        return written;
     }
 
-    bool contains_script_failure(
-        LPCSTR expression,
-        LPCSTR description,
-        LPCSTR argument0,
-        LPCSTR argument1
-    )
+    bool contains_script_failure(LPCSTR expression, LPCSTR description)
     {
-        LPCSTR values[] = { expression, description, argument0, argument1 };
-        for (LPCSTR value : values)
-        {
-            if (contains_i(value, "lua error") ||
-                contains_i(value, "[lua]") ||
-                contains_i(value, "gamedata\\scripts") ||
-                contains_i(value, "gamedata/scripts") ||
-                contains_i(value, ".script:") ||
-                contains_i(value, "luabind"))
-                return true;
-        }
-        return false;
+        return contains_i(expression, "lua error:") || contains_i(description, "lua error:");
     }
 
     bool contains_memory_failure(LPCSTR expression, LPCSTR description, LPCSTR argument0, LPCSTR argument1)
@@ -635,59 +675,49 @@ namespace
         return false;
     }
 
-    Category classify_source(
-        LPCSTR file,
-        LPCSTR expression,
-        LPCSTR description,
-        LPCSTR argument0,
-        LPCSTR argument1
-    )
+    Category classify_source(LPCSTR file, LPCSTR expression, LPCSTR description, LPCSTR argument0, LPCSTR argument1)
     {
         if (contains_memory_failure(expression, description, argument0, argument1))
             return Category::Memory;
 
-        if (contains_i(file, "xrgame\\ai\\") || contains_i(file, "xrgame/ai/") ||
-            contains_i(file, "ai_") || contains_i(file, "alife") ||
-            contains_i(file, "stalker") || contains_i(file, "monster") ||
-            contains_i(file, "path_manager") || contains_i(file, "movement_manager") ||
-            contains_i(file, "graph_engine"))
-            return Category::AI;
+        char source[512] = {};
+        format_source_path(file, source, sizeof(source));
+        LPCSTR name = path_basename(source);
 
-        if (contains_i(file, "xrrender") || contains_i(file, "\\layers\\") ||
-            contains_i(file, "dx10") || contains_i(file, "dx11") ||
-            contains_i(file, "d3d11") || contains_i(file, "shader") ||
-            contains_i(file, "seqrender") || contains_i(file, "render/"))
+        if (find_i(source, "Layers/") == source || contains_i(name, "dx11") || contains_i(name, "d3d11") ||
+            contains_i(name, "shader") || contains_i(name, "seqrender") || find_i(source, "xrEngine/render/") == source)
             return Category::Render;
-
-        if (contains_i(file, "xrphysics") || contains_i(file, "phworld") ||
-            contains_i(file, "phobject") || contains_i(file, "phshell") ||
-            contains_i(file, "physics"))
+        // Debug.fatal puts the Lua error text in Details, after the Lua call site.
+        if (contains_script_failure(expression, description) ||
+            (find_i(source, "xrServerEntities/") == source && contains_script_failure(argument0, argument1)))
+            return Category::Script;
+        if (find_i(source, "xrPhysics/") == source || find_i(name, "ph") == name || contains_i(name, "physics"))
             return Category::Physics;
-
-        if (contains_i(file, "xrsound") || contains_i(file, "soundrender") ||
-            contains_i(file, "sound_"))
+        if (find_i(source, "xrSound/") == source || contains_i(name, "sound_"))
             return Category::Sound;
-
-        if (contains_i(file, "xrnetserver") || contains_i(file, "gamespy") ||
-            contains_i(file, "net_") || contains_i(file, "network"))
+        if (find_i(source, "xrNetServer/") == source || contains_i(name, "net_") || contains_i(name, "network"))
             return Category::Network;
-
-        if (contains_i(file, "xrcdb") || contains_i(file, "cdb") ||
-            contains_i(file, "collide"))
+        if (find_i(source, "xrCDB/") == source || contains_i(name, "collide"))
             return Category::Collision;
-
-        if (contains_i(file, "xrmemory") || contains_i(file, "allocator") ||
-            contains_i(file, "memory"))
+        if (contains_i(name, "xrmemory") || contains_i(name, "allocator"))
             return Category::Memory;
-
-        if (contains_i(file, "xrcore"))
+        if (find_i(source, "xrCore/") == source)
             return Category::Core;
-
-        if (contains_i(file, "xrgame") || contains_i(file, "xrserverentities") ||
-            contains_i(file, "xrparticles"))
+        if (find_i(source, "xrGame/ai/") == source || contains_i(name, "ai_") ||
+            contains_i(name, "alife") || contains_i(name, "path_manager") || contains_i(name, "movement_manager") ||
+            contains_i(name, "graph_engine"))
+            return Category::AI;
+        if (find_i(source, "xrGame/") == source || find_i(source, "xrServerEntities/") == source ||
+            find_i(source, "xrParticles/") == source)
             return Category::Game;
-
         return Category::Engine;
+    }
+
+    Category crash_category(DWORD code)
+    {
+        if (is_luajit_exception_code(code))
+            return (code & 0xffu) == 4u ? Category::Memory : Category::Script;
+        return code == kNoMemory ? Category::Memory : Category::Crash;
     }
 
     LPCSTR exception_name(DWORD code)
@@ -876,7 +906,99 @@ namespace
         output[used] = 0;
     }
 
-    // One walker can walk several threads (hang records): DbgHelp loads the modules once.
+    // Protected module-load errors can precede the crash by an entire level load.
+    // Keep original order and collapse repeats independently of the ordinary game log.
+    void remember_script_load_failure(LPCSTR script, LPCSTR message)
+    {
+        char chunk[sizeof(ScriptLoadFailure::chunk)] = {}, error[sizeof(ScriptLoadFailure::error)] = {};
+        copy_text(chunk, sizeof(chunk), path_basename(script));
+        SanitizeText(message, error, sizeof(error));
+        AcquireSRWLockExclusive(&g_scriptLoadLock);
+        for (auto& issue : g_scriptLoads)
+        {
+            if (issue.count && !strcmp(issue.chunk, chunk) && !strcmp(issue.error, error))
+            {
+                if (issue.count != UINT_MAX)
+                    ++issue.count;
+                ReleaseSRWLockExclusive(&g_scriptLoadLock);
+                return;
+            }
+        }
+        auto& issue = g_scriptLoads[g_scriptLoadCursor++ % _countof(g_scriptLoads)];
+        copy_text(issue.chunk, sizeof(issue.chunk), chunk);
+        copy_text(issue.error, sizeof(issue.error), error);
+        issue.count = 1;
+        ReleaseSRWLockExclusive(&g_scriptLoadLock);
+    }
+
+    void append_script_load_failures(char* output, size_t capacity, size_t& used)
+    {
+        if (!TryAcquireSRWLockShared(&g_scriptLoadLock))
+            return;
+        if (g_scriptLoadCursor)
+        {
+            append_format(output, capacity, used, "Earlier Lua module-load errors (game continued):\r\n");
+            const auto count = (std::min)(g_scriptLoadCursor, _countof(g_scriptLoads));
+            for (size_t index = g_scriptLoadCursor - count; index < g_scriptLoadCursor; ++index)
+            {
+                const auto& issue = g_scriptLoads[index % _countof(g_scriptLoads)];
+                append_format(output, capacity, used, "  ");
+                if (!contains_i(issue.error, issue.chunk))
+                    append_format(output, capacity, used, "%s | ", issue.chunk);
+                append_single_line_text(output, capacity, used, issue.error);
+                if (issue.count > 1)
+                    append_format(output, capacity, used, " (%u occurrences)", issue.count);
+                append_format(output, capacity, used, "\r\n");
+            }
+        }
+        ReleaseSRWLockShared(&g_scriptLoadLock);
+    }
+
+    // Serialized by g_writeLock. Keep one copy of the same continuing failure per session.
+    uint64_t error_signature(Category category, LPCSTR file, int line, LPCSTR expression, LPCSTR description,
+        LPCSTR argument0, LPCSTR argument1, LPCSTR luaStack)
+    {
+        uint64_t hash = 14695981039346656037ull;
+        const auto add = [&hash](uint64_t value) { hash = (hash ^ value) * 1099511628211ull; };
+        add(static_cast<unsigned int>(category));
+        add(line);
+        if (g_failureCode.valid)
+        {
+            add(g_failureCode.result);
+            if (g_failureCode.hasRemovedReason)
+                add(g_failureCode.removedReason);
+        }
+        const LPCSTR fields[] = {file, expression, description, argument0, argument1, luaStack};
+        for (LPCSTR text : fields)
+        {
+            if (text)
+                while (*text)
+                    add(static_cast<unsigned char>(*text++));
+            add(0);
+        }
+        return hash ? hash : 1;
+    }
+
+    void append_game_log(char* output, size_t capacity, size_t& used, unsigned int tail)
+    {
+        if (!g_gameLogWriter || used + 256 >= capacity)
+            return;
+        const size_t start = used;
+        append_format(output, capacity, used, "Game log (xray log of this session):\r\n");
+        __try { g_gameLogWriter(output + used, capacity - used, tail); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { output[used] = 0; }
+        const size_t added = strnlen(output + used, capacity - used - 1);
+        if (!added)
+        {
+            used = start;
+            output[used] = 0;
+            return;
+        }
+        used += added;
+        output[used] = 0;
+    }
+
+    // One walker can walk several threads: DbgHelp loads the modules once.
     class LogStackWalker final : public StackWalker
     {
     public:
@@ -898,7 +1020,8 @@ namespace
         LPCSTR first_frame() const { return first_; }
 
         // Symbol, source line and module of one code address (a crash Windows recorded in its event log).
-        void describe_address(DWORD64 address, char* output, size_t capacity)
+        // Without a line (no PDB) a frame shows how far shown is from the nearest export, as a walk does.
+        void describe_address(DWORD64 address, char* output, size_t capacity, DWORD64 shown = 0)
         {
             LoadModules();
             alignas(SYMBOL_INFO) char storage[sizeof(SYMBOL_INFO) + 512] = {};
@@ -921,6 +1044,21 @@ namespace
                 format_source_path(line.FileName, source, sizeof(source));
                 append_format(output, capacity, used, " (%s:%lu)", source, line.LineNumber);
             }
+            else if (shown >= symbol->Address)
+                append_format(output, capacity, used, "+0x%llX", static_cast<unsigned long long>(shown - symbol->Address));
+        }
+
+        // A frame copied earlier, printed as a walk prints it. lookup resolves the symbol: a return address
+        // minus one, so the line is the call's.
+        void describe_frame(DWORD64 address, DWORD64 lookup, char* output, size_t capacity)
+        {
+            char location[MAX_PATH + 32] = {}, symbol[768] = {};
+            format_address_location(reinterpret_cast<const void*>(address), location, sizeof(location));
+            describe_address(lookup, symbol, sizeof(symbol), address);
+            if (*symbol)
+                _snprintf_s(output, capacity, _TRUNCATE, "%s [%s]", symbol, location);
+            else
+                copy_text(output, capacity, location);
         }
 
     protected:
@@ -1035,19 +1173,16 @@ namespace
         return frames;
     }
 
-    // Module+RVA frames straight from the unwind tables: no DbgHelp, no heap.
-    // They identify the code with the matching PDB if symbolization fails.
-    void append_raw_stack(CONTEXT& context, char* output, size_t capacity, size_t& used)
+    // Code addresses straight from the unwind tables: no DbgHelp, no heap.
+    unsigned int capture_frames(CONTEXT& context, DWORD64* frames, unsigned int limit)
     {
+        unsigned int count = 0;
 #if defined(_M_X64)
         __try
         {
-            for (unsigned int index = 0; index < kStackFrameLimit && context.Rip; ++index)
+            while (count < limit && context.Rip)
             {
-                char location[MAX_PATH + 32] = {};
-                format_address_location(reinterpret_cast<const void*>(context.Rip), location, sizeof(location));
-                append_format(output, capacity, used, "  #%02u %s\r\n", index, location);
-
+                frames[count++] = context.Rip;
                 const DWORD64 previousStack = context.Rsp;
                 DWORD64 imageBase = 0;
                 PRUNTIME_FUNCTION function = RtlLookupFunctionEntry(context.Rip, &imageBase, nullptr);
@@ -1072,6 +1207,59 @@ namespace
         {
         }
 #endif
+        return count;
+    }
+
+    // Captured frames as a walk prints them: symbols when walker is given (the caller holds the symbol
+    // lock), module+RVA otherwise, a recursion as one run; where gets the first frame outside Windows/CRT.
+    void append_frames(LogStackWalker* walker, const DWORD64* frames, unsigned int count, char* output, size_t capacity,
+        size_t& used, char* where = nullptr, size_t whereCapacity = 0)
+    {
+        char last[1024] = {};
+        unsigned int printed = 0, repeats = 0;
+        bool systemFirst = false;
+        for (unsigned int index = 0; index < count; ++index)
+        {
+            const void* address = reinterpret_cast<const void*>(frames[index]);
+            char frame[1024] = {}, module[MAX_PATH] = {};
+            unsigned long long offset = 0;
+            if (walker)
+                walker->describe_frame(frames[index], index ? frames[index] - 1 : frames[index], frame, sizeof(frame));
+            else
+                format_address_location(address, frame, sizeof(frame));
+            module_from_address(address, module, sizeof(module), offset);
+            if (where && (!index || (systemFirst && !is_system_module(module))))
+            {
+                copy_text(where, whereCapacity, frame);
+                systemFirst = is_system_module(module);
+            }
+            if (printed && !strcmp(frame, last))
+            {
+                ++repeats;
+                continue;
+            }
+            if (repeats)
+                append_format(output, capacity, used, "      ... the frame above %u more times\r\n", repeats);
+            repeats = 0;
+            copy_text(last, sizeof(last), frame);
+            append_format(output, capacity, used, "  #%02u %s\r\n", printed++, frame);
+        }
+        if (repeats)
+            append_format(output, capacity, used, "      ... the frame above %u more times\r\n", repeats);
+    }
+
+    void symbolize_frames(const DWORD64* frames, unsigned int count, char* output, size_t capacity, size_t& used,
+        char* where, size_t whereCapacity)
+    {
+        LogStackWalker walker;
+        append_frames(&walker, frames, count, output, capacity, used, where, whereCapacity);
+    }
+
+    // Module+RVA frames: they identify the code with the matching PDB if symbolization fails.
+    void append_raw_stack(CONTEXT& context, char* output, size_t capacity, size_t& used)
+    {
+        DWORD64 frames[kStackFrameLimit] = {};
+        append_frames(nullptr, frames, capture_frames(context, frames, kStackFrameLimit), output, capacity, used);
     }
 
     void append_machine_state(const EXCEPTION_POINTERS* pointers, char* output, size_t capacity, size_t& used)
@@ -1321,83 +1509,84 @@ namespace
 
     void __cdecl clean_session_exit()
     {
+        // A caught fault's record may still be on the helper thread: let it reach the disk.
+        for (int waited = 0; waited < 5000 && InterlockedCompareExchange(&g_caughtBusy, 0, 0); waited += 10)
+            Sleep(10);
         if (*g_sessionPath && g_session.state == kSessionRunning)
             DeleteFileW(g_sessionPath);
     }
 
-    BOOL CALLBACK dump_module_filter(PVOID, const PMINIDUMP_CALLBACK_INPUT input, PMINIDUMP_CALLBACK_OUTPUT output)
+    // The CRASH CAUGHT record from what the catch block copied, symbols resolved here.
+    void finish_caught_record()
     {
-        // Globals of the game only: the data of drivers and system modules would multiply the size.
-        if (input->CallbackType == ModuleCallback &&
-            input->Module.BaseOfImage != reinterpret_cast<ULONG64>(GetModuleHandleW(nullptr)))
-            output->ModuleWriteFlags &= ~ModuleWriteDataSeg;
-        return TRUE;
-    }
-
-    bool write_dump_file(const DumpJob& job)
-    {
-        if (!*g_directoryWide)
-            return false;
-        wchar_t path[MAX_PATH] = {}, previous[MAX_PATH] = {};
-        if (_snwprintf_s(path, _countof(path), _TRUNCATE, L"%s\\%s.dmp", g_directoryWide, job.name) < 0 ||
-            _snwprintf_s(previous, _countof(previous), _TRUNCATE, L"%s\\%s.previous.dmp", g_directoryWide, job.name) < 0)
-            return false;
-        const LONG bit = job.name[0] == L'H' ? 2 : 1;
-        if (!(InterlockedOr(&g_dumpFiles, bit) & bit))
-            MoveFileExW(path, previous, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
-        HANDLE file = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (file == INVALID_HANDLE_VALUE)
-            return false;
-        MINIDUMP_EXCEPTION_INFORMATION exception = { job.threadId, job.pointers, FALSE };
-        MINIDUMP_CALLBACK_INFORMATION callback = { dump_module_filter, nullptr };
-        const auto type = MINIDUMP_TYPE(MiniDumpWithDataSegs | MiniDumpWithIndirectlyReferencedMemory |
-            MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules);
-        const bool ok = MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), file, type,
-            job.pointers ? &exception : nullptr, nullptr, &callback) != FALSE;
-        CloseHandle(file);
-        if (!ok)
-            DeleteFileW(path);
-        return ok;
-    }
-
-    DWORD WINAPI dump_thread(LPVOID request)
-    {
-        g_insideCrashHandler = true; // a failure while dumping must not start another crash record
-        while (WaitForSingleObject(static_cast<HANDLE>(request), INFINITE) == WAIT_OBJECT_0)
+        CaughtJob& job = g_caught;
+        char stack[24576] = {}, where[1536] = {};
+        size_t stackUsed = 0;
+        bool symbols = false;
+        for (int attempt = 0; attempt < 1000 && !(symbols = TryBeginSymbolWork()); ++attempt)
+            Sleep(10); // a crash or a fatal walks a stack now; this record is not in a hurry
+        if (symbols)
         {
-            __try
-            {
-                const DumpJob& job = g_dumpJob;
-                g_dumpJob.ok = job.name ? write_dump_file(job) : append_symbolized_stack(job.context, false,
-                    job.output, job.capacity, *job.used, job.first, job.firstCapacity) != 0;
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER) { g_dumpJob.ok = false; }
-            SetEvent(g_dumpDone);
+            __try { symbolize_frames(job.frames, job.count, stack, sizeof(stack), stackUsed, where, sizeof(where)); }
+            __except (EXCEPTION_EXECUTE_HANDLER) { stackUsed = 0; *stack = 0; *where = 0; }
+            EndSymbolWork();
         }
-        return 0;
+        if (!stackUsed)
+            append_frames(nullptr, job.frames, job.count, stack, sizeof(stack), stackUsed, where, sizeof(where));
+
+        size_t used = 0;
+        char* record = job.record;
+        const size_t capacity = sizeof(job.record);
+        append_format(record, capacity, used, "\r\n==== CRASH CAUGHT (the game went on: %s) ====\r\n",
+            job.title);
+        append_field(record, capacity, used, "Error", job.error);
+        append_field(record, capacity, used, "Where", where);
+        append_format(record, capacity, used, "%sNative stack:\r\n%s%s%s", job.context, stack, job.machine, job.events);
+        append_script_load_failures(record, capacity, used);
+        append_game_log(record, capacity, used, kGameLogTailFatal);
+        append_text_record(Category::Crash, record);
     }
 
-    // The failing thread waits; the dump thread suspends it and every other thread while it writes.
-    bool run_on_helper(const DumpJob& job)
+    DWORD WINAPI helper_thread(LPVOID requests)
     {
-        if (!g_dumpRequest)
+        g_insideCrashHandler = true; // a failure in here must not start another crash record
+        for (;;)
+        {
+            const DWORD signaled = WaitForMultipleObjects(2, static_cast<HANDLE*>(requests), FALSE, INFINITE);
+            if (signaled == WAIT_OBJECT_0)
+            {
+                __try
+                {
+                    const HelperJob& job = g_helperJob;
+                    g_helperJob.ok = append_symbolized_stack(job.context, false, job.output, job.capacity, *job.used,
+                        job.first, job.firstCapacity) != 0;
+                }
+                __except (EXCEPTION_EXECUTE_HANDLER) { g_helperJob.ok = false; }
+                SetEvent(g_helperDone);
+            }
+            else if (signaled == WAIT_OBJECT_0 + 1)
+            {
+                __try { finish_caught_record(); }
+                __except (EXCEPTION_EXECUTE_HANDLER) {}
+                InterlockedExchange(&g_caughtBusy, 0);
+            }
+            else
+                return 0;
+        }
+    }
+
+    // The failing thread waits; the helper walks its stack.
+    bool run_on_helper(const HelperJob& job)
+    {
+        if (!g_helperRequest)
             return false;
-        AcquireSRWLockExclusive(&g_dumpLock);
-        g_dumpJob = job;
-        ResetEvent(g_dumpDone);
-        SetEvent(g_dumpRequest);
-        const bool ok = WaitForSingleObject(g_dumpDone, kDumpWaitMs) == WAIT_OBJECT_0 && g_dumpJob.ok;
-        ReleaseSRWLockExclusive(&g_dumpLock);
+        AcquireSRWLockExclusive(&g_helperLock);
+        g_helperJob = job;
+        ResetEvent(g_helperDone);
+        SetEvent(g_helperRequest);
+        const bool ok = WaitForSingleObject(g_helperDone, kHelperWaitMs) == WAIT_OBJECT_0 && g_helperJob.ok;
+        ReleaseSRWLockExclusive(&g_helperLock);
         return ok;
-    }
-
-    bool request_dump(LPCWSTR name, EXCEPTION_POINTERS* pointers)
-    {
-        if (!InterlockedCompareExchange(&g_dumpsEnabled, 0, 0))
-            return false;
-        DumpJob job = {};
-        job.pointers = pointers; job.threadId = GetCurrentThreadId(); job.name = name;
-        return run_on_helper(job);
     }
 
     void append_record_head(char* output, size_t capacity, size_t& used, Category category, Severity severity,
@@ -1407,7 +1596,7 @@ namespace
         format_source_path(file, source, sizeof(source));
         append_format(output, capacity, used, "\r\n==== %s [%s] ====\r\n",
             severity == Severity::Fatal ? "FATAL" : "ERROR", category_name(category));
-        if (g_testFilename)
+        if (g_selfTest)
             append_format(output, capacity, used, "Note      : simulated by 'engine_error_log test', nothing failed\r\n");
         append_field(output, capacity, used, "Error", description);
         append_field(output, capacity, used, "Expression", expression);
@@ -1434,14 +1623,30 @@ namespace
         {
             char record[4096] = {};
             size_t used = 0;
-            append_record_head(record, sizeof(record), used, category, severity,
+            // Reserve half of the emergency record for the game-log tail.
+            append_record_head(record, sizeof(record) / 2, used, category, severity,
                 expression, description, argument0, argument1, file, line, function);
-            append_text_record(category, record);
+            append_script_load_failures(record, sizeof(record), used);
+            g_lastWriteSucceeded = append_text_record(category, record);
             g_insideLogger = false;
             SetLastError(preservedLastError);
             return;
         }
 
+        const uint64_t signature = !fatal && !g_selfTest
+            ? error_signature(category, file, line, expression, description, argument0, argument1, luaStack)
+            : 0;
+        if (signature)
+        {
+            for (const uint64_t previous : g_errorSignatures)
+                if (previous == signature)
+                {
+                    ReleaseSRWLockExclusive(&g_writeLock);
+                    g_insideLogger = false;
+                    SetLastError(preservedLastError);
+                    return;
+                }
+        }
         if (ensure_directory_unlocked())
         {
             char* record = g_recordBuffer;
@@ -1450,11 +1655,9 @@ namespace
             record[0] = 0;
             append_record_head(record, capacity, used, category, severity,
                 expression, description, argument0, argument1, file, line, function);
+            append_game_context(record, capacity, used);
             if (fatal || category == Category::Memory)
-            {
-                append_game_context(record, capacity, used);
                 append_memory_facts(record, capacity, used);
-            }
             if (luaStack && *luaStack)
                 append_format(record, capacity, used, "Lua stack:\r\n%s", luaStack);
             else if (fatal)
@@ -1470,21 +1673,23 @@ namespace
                     append_raw_stack(context, record, capacity, used);
                 }
                 append_breadcrumbs(record, capacity, used);
+                append_script_load_failures(record, capacity, used);
+                append_game_log(record, capacity, used, kGameLogTailFatal);
             }
+            else if (category == Category::Render || category == Category::Memory)
+                append_game_log(record, capacity, used, category == Category::Memory ? kGameLogTailFatal : 0);
 
-            HANDLE fileHandle = open_log_file(category, FILE_APPEND_DATA);
-            if (fileHandle != INVALID_HANDLE_VALUE)
-            {
-                g_lastWriteSucceeded = write_handle_text(fileHandle, record);
-                if (!FlushFileBuffers(fileHandle)) g_lastWriteSucceeded = false;
-                CloseHandle(fileHandle);
-            }
+            g_lastWriteSucceeded = append_text_record(category, record);
+            if (signature && g_lastWriteSucceeded)
+                g_errorSignatures[g_nextErrorSignature++ % _countof(g_errorSignatures)] = signature;
         }
 
         ReleaseSRWLockExclusive(&g_writeLock);
         g_insideLogger = false;
         SetLastError(preservedLastError);
     }
+
+    void append_other_threads(char* output, size_t capacity, size_t& used);
 
     void compose_crash_record(CrashWorkspace& workspace, bool complete)
     {
@@ -1505,13 +1710,17 @@ namespace
         }
         append_format(record, capacity, used, "%s", workspace.lua);
         append_format(record, capacity, used, "Native stack:\r\n%s", *workspace.symbols ? workspace.symbols : workspace.stack);
-        if (!complete)
-            return;
-        append_format(record, capacity, used, "%s", workspace.machine);
-        append_breadcrumbs(record, capacity, used);
+        if (complete)
+        {
+            append_format(record, capacity, used, "%s", workspace.machine);
+            append_breadcrumbs(record, capacity, used);
+            append_format(record, capacity, used, "%s", workspace.threads);
+        }
+        append_script_load_failures(record, capacity, used);
+        append_format(record, capacity, used, "%s", workspace.gameLog);
     }
 
-    void report_crash(EXCEPTION_POINTERS* pointers, CrashWorkspace& workspace)
+    void report_crash(EXCEPTION_POINTERS* pointers, CrashWorkspace& workspace, bool& checkpoint)
     {
         ZeroMemory(&workspace, sizeof(workspace));
         const EXCEPTION_RECORD& exception = *pointers->ExceptionRecord;
@@ -1537,54 +1746,63 @@ namespace
             append_raw_stack(workspace.context, workspace.stack, sizeof(workspace.stack), used);
         }
 
-        // The original failure reaches the disk before DbgHelp loads any PDB.
+        // Keep the original fault and the game log on disk before walking optional stacks.
+        used = 0;
+        append_game_log(workspace.gameLog, sizeof(workspace.gameLog), used, kGameLogTailFatal);
         compose_crash_record(workspace, false);
         if (!ensure_directory_unlocked())
             return;
-        HANDLE file = open_log_file(Category::Crash, GENERIC_WRITE);
+        HANDLE file = open_log_file(crash_category(code));
         if (file == INVALID_HANDLE_VALUE)
             return;
-        const LARGE_INTEGER zero = {};
-        LARGE_INTEGER start = {}, end = {}, size = {};
-        SetFilePointerEx(file, zero, &start, FILE_CURRENT);
-        write_handle_text(file, workspace.record);
-        FlushFileBuffers(file);
-        SetFilePointerEx(file, zero, &end, FILE_CURRENT);
-
-        const bool constrained = code == EXCEPTION_STACK_OVERFLOW || code == kNoMemory ||
-            (is_luajit_exception_code(code) && (code & 0xffu) == 4u);
-        if (!constrained && pointers->ContextRecord)
+        __try
         {
-            used = 0;
-            append_symbolized_stack(pointers->ContextRecord, false, workspace.symbols, sizeof(workspace.symbols),
-                used, workspace.where, sizeof(workspace.where));
-        }
-        else if (pointers->ContextRecord)
-        {
-            // Out of stack or memory here: the helper thread walks this thread's stack with symbols.
-            used = 0;
-            DumpJob job = {};
-            job.context = pointers->ContextRecord; job.output = workspace.symbols; job.capacity = sizeof(workspace.symbols);
-            job.used = &used; job.first = workspace.where; job.firstCapacity = sizeof(workspace.where);
-            if (!run_on_helper(job))
-                workspace.symbols[0] = 0;
-        }
-        used = 0;
-        append_lua_stack(workspace.lua, sizeof(workspace.lua), used);
-        used = 0;
-        if (!systemFault)
-            append_machine_state(pointers, workspace.machine, sizeof(workspace.machine), used);
-        compose_crash_record(workspace, true);
+            LARGE_INTEGER start = {};
+            checkpoint = SetFilePointerEx(file, LARGE_INTEGER{}, &start, FILE_CURRENT) &&
+                write_handle_text(file, workspace.record) && FlushFileBuffers(file);
+            if (checkpoint)
+                write_session_state(kSessionRecorded);
 
-        // Replace the checkpoint, unless another thread appended after it.
-        if (GetFileSizeEx(file, &size) && size.QuadPart == end.QuadPart)
-            SetFilePointerEx(file, start, nullptr, FILE_BEGIN);
-        else
-            SetFilePointerEx(file, zero, nullptr, FILE_END);
-        write_handle_text(file, workspace.record);
-        SetEndOfFile(file);
-        FlushFileBuffers(file);
-        CloseHandle(file);
+            const bool constrained = code == EXCEPTION_STACK_OVERFLOW || code == kNoMemory ||
+                (is_luajit_exception_code(code) && (code & 0xffu) == 4u);
+            if (!constrained && pointers->ContextRecord)
+            {
+                used = 0;
+                append_symbolized_stack(pointers->ContextRecord, false, workspace.symbols, sizeof(workspace.symbols),
+                    used, workspace.where, sizeof(workspace.where));
+            }
+            else if (pointers->ContextRecord)
+            {
+                // Out of stack or memory here: the helper thread walks this thread's stack with symbols.
+                used = 0;
+                HelperJob job = {};
+                job.context = pointers->ContextRecord; job.output = workspace.symbols; job.capacity = sizeof(workspace.symbols);
+                job.used = &used; job.first = workspace.where; job.firstCapacity = sizeof(workspace.where);
+                if (!run_on_helper(job))
+                    workspace.symbols[0] = 0;
+            }
+            used = 0;
+            append_lua_stack(workspace.lua, sizeof(workspace.lua), used);
+            used = 0;
+            if (!systemFault)
+                append_machine_state(pointers, workspace.machine, sizeof(workspace.machine), used);
+            used = 0;
+            if (!constrained && code != kHeapCorruption) // a broken heap: no more DbgHelp work than the main stack
+                append_other_threads(workspace.threads, sizeof(workspace.threads), used);
+            if (!*workspace.gameLog)
+            {
+                // The history lock may have been busy when we wrote the checkpoint.
+                used = 0;
+                append_game_log(workspace.gameLog, sizeof(workspace.gameLog), used, kGameLogTailFatal);
+            }
+            compose_crash_record(workspace, true);
+
+            // This incident owns the file. Keep the flushed checkpoint if optional diagnostics faulted.
+            if (SetFilePointerEx(file, start, nullptr, FILE_BEGIN) && write_handle_text(file, workspace.record) &&
+                SetEndOfFile(file) && FlushFileBuffers(file) && !checkpoint)
+                write_session_state(kSessionRecorded);
+        }
+        __finally { CloseHandle(file); }
     }
 
     void report_simultaneous_crash(EXCEPTION_POINTERS* pointers)
@@ -1603,7 +1821,7 @@ namespace
         append_field(record, sizeof(record), used, "Error", error);
         append_field(record, sizeof(record), used, "Where", where);
         append_thread_context(record, sizeof(record), used);
-        append_text_record(Category::Crash, record);
+        append_text_record(crash_category(pointers->ExceptionRecord->ExceptionCode), record);
     }
 
     // A thread's stack as it was at the suspension: DbgHelp walks this copy after the thread runs again.
@@ -1640,8 +1858,8 @@ namespace
             {
                 const DWORD64 low = context.Rsp, high = reinterpret_cast<DWORD64>(state.stackBase);
                 const DWORD64 size = high > low ? high - low : 0;
-                copy = { low, low + (size < sizeof(g_hang.stack) ? size : sizeof(g_hang.stack)), g_hang.stack };
-                memcpy(g_hang.stack, reinterpret_cast<const void*>(low), size_t(copy.high - copy.low));
+                copy = { low, low + (size < sizeof(g_threadStack) ? size : sizeof(g_threadStack)), g_threadStack };
+                memcpy(g_threadStack, reinterpret_cast<const void*>(low), size_t(copy.high - copy.low));
                 ok = true;
             }
         }
@@ -1667,7 +1885,7 @@ namespace
             (strstr(top, "Wait") || strstr(top, "Delay") || strstr(top, "Remove"));
     }
 
-    void append_hang_thread(LogStackWalker& walker, ThreadState* live, bool main, char* output, size_t capacity, size_t& used,
+    void append_other_thread(LogStackWalker& walker, ThreadState* live, char* output, size_t capacity, size_t& used,
         char* idle, size_t idleCapacity, size_t& idleUsed)
     {
         ThreadState state = {};
@@ -1683,7 +1901,7 @@ namespace
         StackCopy copy = {};
         const bool copied = suspend_and_copy(thread, live, state, object, sizeof(object), context, copy);
         state.name[sizeof(state.name) - 1] = 0;
-        if (copied && !main && is_parked(walker, state, context))
+        if (copied && is_parked(walker, state, context))
         {
             append_format(idle, idleCapacity, idleUsed, "%s%s", idleUsed ? ", " : "", *state.name ? state.name : "unnamed");
             CloseHandle(thread);
@@ -1692,79 +1910,57 @@ namespace
         char callback[768] = {};
         if (state.stageCallback)
             walker.describe_address(reinterpret_cast<DWORD64>(state.stageCallback), callback, sizeof(callback));
-        append_format(output, capacity, used, "-- %s%s\r\n", *state.name ? state.name : "unnamed", main ? " (the frozen thread)" : "");
+        append_format(output, capacity, used, "-- %s\r\n", *state.name ? state.name : "unnamed");
         append_thread_state(state, object, output, capacity, used, callback);
         if (copied)
         {
-            walker.begin(output, capacity, &used, false, main ? kStackFrameLimit : kOtherThreadFrames);
+            walker.begin(output, capacity, &used, false, kOtherThreadFrames);
             __try { walker.ShowCallstack(thread, &context, &read_stack_copy, &copy); }
             __except (EXCEPTION_EXECUTE_HANDLER) {}
         }
         CloseHandle(thread);
     }
 
-    // The frozen thread first, with its whole stack, then the other engine threads.
-    void walk_registered_threads(LogStackWalker& walker, DWORD frozenThread, char* output, size_t capacity, size_t& used)
+    void walk_registered_threads(LogStackWalker& walker, char* output, size_t capacity, size_t& used)
     {
         char idle[2048] = {};
         size_t idleUsed = 0;
-        for (int pass = 0; pass < 2; ++pass)
-            for (ThreadState* volatile& slot : g_threads)
+        for (ThreadState* volatile& slot : g_threads)
+        {
+            ThreadState* live = slot;
+            __try
             {
-                ThreadState* live = slot;
-                __try
-                {
-                    if (live && (live->id == frozenThread) == (pass == 0))
-                        append_hang_thread(walker, live, pass == 0, output, capacity, used, idle, sizeof(idle), idleUsed);
-                }
-                __except (EXCEPTION_EXECUTE_HANDLER) {}
+                if (live)
+                    append_other_thread(walker, live, output, capacity, used, idle, sizeof(idle), idleUsed);
             }
+            __except (EXCEPTION_EXECUTE_HANDLER) {}
+        }
         if (idleUsed)
             append_format(output, capacity, used, "Idle      : %s\r\n", idle);
     }
 
-    void walk_hang_threads(DWORD frozenThread, char* output, size_t capacity, size_t& used)
+    void walk_other_threads(char* output, size_t capacity, size_t& used)
     {
         LogStackWalker walker;
-        walk_registered_threads(walker, frozenThread, output, capacity, used);
+        walk_registered_threads(walker, output, capacity, used);
     }
 
-    void compose_hang_record(DWORD frozenThread, unsigned int frozenMs, bool loading, bool luaSampled, DWORD luaThread)
+    // Include a few frames from each of the other engine threads.
+    void append_other_threads(char* output, size_t capacity, size_t& used)
     {
-        char* record = g_hang.record;
-        const size_t capacity = sizeof(g_hang.record);
-        size_t used = 0;
-        record[0] = 0;
-        append_format(record, capacity, used, "\r\n==== HANG ====\r\n");
-        append_format(record, capacity, used, "Frozen    : the main thread has not finished a frame for %.1f s (%s)\r\n",
-            frozenMs / 1000.0, loading ? "loading screen" : "in game");
-        append_game_context(record, capacity, used);
-        append_memory_facts(record, capacity, used);
-        if (luaSampled)
-        {
-            char name[64] = "unnamed";
-            for (ThreadState* volatile& slot : g_threads)
-                __try { if (slot && slot->id == luaThread) { memcpy(name, slot->name, sizeof(name)); name[63] = 0; } }
-                __except (EXCEPTION_EXECUTE_HANDLER) {}
-            append_format(record, capacity, used, "Lua stack (the script running during the hang, on %s):\r\n%s", name, g_hang.lua);
-        }
-        else
-            append_format(record, capacity, used, "Lua       : no script reached a hook in 1 s (the time goes to engine code or compiled Lua)\r\n");
-
-        // DbgHelp is shared with crash records: wait for it, a hang record is not in a hurry.
-        bool symbols = false;
-        for (int attempt = 0; attempt < 500 && !(symbols = TryBeginSymbolWork()); ++attempt)
-            Sleep(10);
-        if (!symbols)
-        {
-            append_format(record, capacity, used, "Threads   : not walked, the symbol engine stayed busy\r\n");
+        if (!TryBeginSymbolWork())
             return;
-        }
-        append_format(record, capacity, used, "Threads:\r\n");
-        __try { walk_hang_threads(frozenThread, record, capacity, used); }
+        const size_t start = used;
+        append_format(output, capacity, used, "Other threads:\r\n");
+        const size_t header = used;
+        __try { walk_other_threads(output, capacity, used); }
         __except (EXCEPTION_EXECUTE_HANDLER) {}
         EndSymbolWork();
-        append_breadcrumbs(record, capacity, used);
+        if (used == header)
+        {
+            used = start;
+            output[used] = 0;
+        }
     }
 
     // Event data as text: strings as they are, numbers in hex, the way Application Error writes them.
@@ -1801,22 +1997,19 @@ namespace
 
     struct PreviousCrash
     {
-        WORD eventId;
         char values[16][256];
         DWORD count;
     };
 
-    // Application Error (1000) and Application Hang (1002) of the previous process: its id and its
-    // creation time both match, so a reused process id never picks another program's event.
+    // Match the pid and creation time to exclude crashes of other processes.
     bool find_previous_event(const SessionMarker& previous, PreviousCrash& found)
     {
         const EVT_HANDLE query = EvtQuery(nullptr, L"Application",
-            L"*[System[(EventID=1000 or EventID=1002) and TimeCreated[timediff(@SystemTime) <= 1209600000]]]",
+            L"*[System[EventID=1000 and TimeCreated[timediff(@SystemTime) <= 1209600000]]]",
             EvtQueryChannelPath | EvtQueryReverseDirection);
         if (!query)
             return false;
         const EVT_HANDLE userContext = EvtCreateRenderContext(0, nullptr, EvtRenderContextUser);
-        const EVT_HANDLE systemContext = EvtCreateRenderContext(0, nullptr, EvtRenderContextSystem);
         static BYTE buffer[65536];
         bool matched = false;
         EVT_HANDLE events[16] = {};
@@ -1837,16 +2030,11 @@ namespace
                         pid = pid || number_equals(found.values[value], previous.pid);
                         created = created || number_equals(found.values[value], previous.created);
                     }
-                    if (pid && created && EvtRender(systemContext, events[index], EvtRenderEventValues, sizeof(buffer), buffer, &size, &count))
-                    {
-                        found.eventId = reinterpret_cast<const EVT_VARIANT*>(buffer)[EvtSystemEventID].UInt16Val;
-                        matched = true;
-                    }
+                    matched = pid && created;
                 }
                 EvtClose(events[index]);
             }
         }
-        EvtClose(systemContext);
         EvtClose(userContext);
         EvtClose(query);
         return matched;
@@ -1858,14 +2046,15 @@ namespace
         walker.describe_address(address, output, capacity);
     }
 
-    void compose_previous_session_record(const SessionMarker& previous, const PreviousCrash* event, char* record, size_t capacity)
+    // Only a crash Windows recorded: an end from outside (Task Manager, power loss) or a closed hang is no
+    // bug report. Returns false when there is nothing to write.
+    bool compose_previous_session_record(const PreviousCrash& event, char* record, size_t capacity)
     {
         size_t used = 0;
-        const bool hang = previous.state == kSessionHang;
-        if (event && event->eventId == 1000 && event->count >= 8)
+        if (event.count >= 8)
         {
             // AppName, AppVersion, AppTimeStamp, ModuleName, ModuleVersion, ModuleTimeStamp, ExceptionCode, FaultingOffset
-            const auto& v = event->values;
+            const auto& v = event.values;
             const DWORD code = DWORD(_strtoui64(v[6], nullptr, 16));
             const ULONGLONG offset = _strtoui64(v[7], nullptr, 16);
             append_format(record, capacity, used,
@@ -1902,25 +2091,9 @@ namespace
                 "a fast-fail: the C runtime or Windows found broken state (a stack buffer overrun, an invalid "
                 "parameter, a failed security check) and ended the process at once, past every crash handler" :
                 "the engine's crash handler did not run: another program replaced it, or the process died inside it");
+            return true;
         }
-        else if (event && event->eventId == 1002)
-            append_format(record, capacity, used,
-                "\r\n==== HANG (previous session: the game stopped responding and was closed, Windows 'Application Hang')%s ====\r\n",
-                hang ? "; the engine's record of the hang is in HANG-LOG.log" : "");
-        else if (hang)
-            append_format(record, capacity, used,
-                "\r\n==== HANG (previous session: the game was closed during a hang, see HANG-LOG.log) ====\r\n");
-        else
-        {
-            append_format(record, capacity, used,
-                "\r\n==== EXIT (previous session ended without any record and Windows logged no error for it: "
-                "the game was ended from outside (Task Manager, a launcher), the PC lost power or Windows crashed) ====\r\n");
-            DWORD disabled = 0, size = sizeof(disabled);
-            if (RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\Windows Error Reporting", L"Disabled",
-                    RRF_RT_REG_DWORD, nullptr, &disabled, &size) == ERROR_SUCCESS && disabled)
-                append_field(record, capacity, used, "Note", "Windows Error Reporting is turned off on this PC: "
-                    "a fast-fail (a death past every crash handler) would leave no event either");
-        }
+        return false;
     }
 
     DWORD WINAPI previous_session_thread(LPVOID)
@@ -1931,10 +2104,10 @@ namespace
         for (int attempt = 0; attempt < 3 && !(found = find_previous_event(g_previousSession, event)); ++attempt)
             Sleep(3000);
         static char record[8192];
-        compose_previous_session_record(g_previousSession, found ? &event : nullptr, record, sizeof(record));
-        AcquireSRWLockExclusive(&g_writeLock);
-        append_text_record(Category::Crash, record);
-        ReleaseSRWLockExclusive(&g_writeLock);
+        if (!found || !compose_previous_session_record(event, record, sizeof(record)))
+            return 0;
+        const DWORD code = DWORD(_strtoui64(event.values[6], nullptr, 16));
+        append_text_record(crash_category(code), record);
         return 0;
     }
 
@@ -1972,12 +2145,14 @@ namespace
                 CloseHandle(thread);
 
         // Created now: at the time of a crash a new thread could wait on the loader lock the failing thread holds.
-        HANDLE request = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-        g_dumpDone = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-        HANDLE thread = request && g_dumpDone ? CreateThread(nullptr, 256 * 1024, dump_thread, request, 0, nullptr) : nullptr;
+        static HANDLE requests[2] = { CreateEventW(nullptr, FALSE, FALSE, nullptr), CreateEventW(nullptr, FALSE, FALSE, nullptr) };
+        g_helperDone = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        HANDLE thread = requests[0] && requests[1] && g_helperDone ?
+            CreateThread(nullptr, 256 * 1024, helper_thread, requests, 0, nullptr) : nullptr;
         if (thread)
         {
-            g_dumpRequest = request;
+            g_helperRequest = requests[0];
+            g_caughtRequest = requests[1];
             CloseHandle(thread);
         }
         return TRUE;
@@ -1990,16 +2165,16 @@ void Initialize()
     InitOnceExecuteOnce(&g_privacyOnce, initialize_privacy, nullptr, nullptr);
     AcquireSRWLockExclusive(&g_writeLock);
     ensure_directory_unlocked();
-    if (!*g_buildIdentity) format_image_identity(GetModuleHandleA(nullptr), g_buildIdentity, sizeof(g_buildIdentity));
+    if (!*g_buildIdentity)
+    {
+        format_image_identity(GetModuleHandleA(nullptr), g_buildIdentity, sizeof(g_buildIdentity));
+        if (char* age = strstr(g_buildIdentity, "} age ")) // the header names the build by its PDB GUID alone
+            age[1] = 0;
+    }
     ReleaseSRWLockExclusive(&g_writeLock);
     if (IsEnabled())
         InitOnceExecuteOnce(&g_sessionOnce, start_session, nullptr, nullptr);
     SetLastError(lastError);
-}
-
-void SetDumpsEnabled(bool enabled)
-{
-    InterlockedExchange(&g_dumpsEnabled, enabled ? 1 : 0);
 }
 
 ObjectScope::ObjectScope(LPCSTR action, const void* object, ObjectDescriber describer)
@@ -2026,40 +2201,12 @@ void SetContext(Context item, LPCSTR value)
     }
 }
 
-void SetLuaHangSampler(LuaHangSampler sampler)
-{
-    g_luaHangSampler = sampler;
-}
-
-void ReportHang(DWORD threadId, unsigned frozenMs, bool loading)
-{
-    // Under a debugger a breakpoint stops the frame too.
-    if (!IsEnabled() || IsDebuggerPresent() || g_insideLogger)
-        return;
-    Initialize();
-    const DWORD lastError = GetLastError();
-    // The script first: the sampler waits for the VM to reach its hook while the frame stays frozen.
-    DWORD luaThread = 0;
-    bool luaSampled = false;
-    g_hang.lua[0] = 0;
-    if (g_luaHangSampler)
-        __try { luaSampled = g_luaHangSampler(g_hang.lua, sizeof(g_hang.lua), 1000, &luaThread) && *g_hang.lua; }
-        __except (EXCEPTION_EXECUTE_HANDLER) { luaSampled = false; }
-    __try { compose_hang_record(threadId, frozenMs, loading, luaSampled, luaThread); }
-    __except (EXCEPTION_EXECUTE_HANDLER) {}
-    AcquireSRWLockExclusive(&g_writeLock);
-    append_text_record(Category::Hang, g_hang.record);
-    ReleaseSRWLockExclusive(&g_writeLock);
-    write_session_state(kSessionHang);
-    SetLastError(lastError);
-}
-
 void ReportCaughtException(LPCSTR where)
 {
     if (!IsEnabled() || g_insideLogger || g_insideCrashHandler)
         return;
     // vcruntime keeps the exception a catch block handles; on x64 the block runs above the faulting
-    // frames, so their stack is still there to walk.
+    // frames, so their stack is still there to copy.
     const auto record = static_cast<EXCEPTION_RECORD*>(*__current_exception());
     const auto context = static_cast<CONTEXT*>(*__current_exception_context());
     if (!record || !context)
@@ -2067,57 +2214,36 @@ void ReportCaughtException(LPCSTR where)
     const DWORD code = record->ExceptionCode;
     if (code == kCppException || is_luajit_exception_code(code))
         return; // a thrown error (luabind::error, a Lua error) is the code's own way of failing
+    // The helper still writes the previous one: the same fault in a loop, as a rule.
+    if (!g_caughtRequest || InterlockedCompareExchange(&g_caughtBusy, 1, 0) != 0)
+        return;
     static volatile LONG reported = 0;
     if (InterlockedIncrement(&reported) > 5)
-        return; // the same fault in a loop: the first records tell it
-    const DWORD lastError = GetLastError();
-    AcquireSRWLockExclusive(&g_writeLock);
-    g_insideLogger = true;
-    if (ensure_directory_unlocked())
     {
-        char* output = g_recordBuffer;
-        const size_t capacity = sizeof(g_recordBuffer);
-        size_t used = 0;
-        output[0] = 0;
-        char error[1024] = {}, symbols[24576] = {}, firstFrame[1536] = {};
-        describe_exception(*record, error, sizeof(error));
-        size_t symbolsUsed = 0;
-        if (!append_symbolized_stack(context, false, symbols, sizeof(symbols), symbolsUsed, firstFrame, sizeof(firstFrame)))
-        {
-            CONTEXT copy = *context;
-            append_raw_stack(copy, symbols, sizeof(symbols), symbolsUsed);
-        }
-        append_format(output, capacity, used,
-            "\r\n==== CRASH CAUGHT (the game went on: %s, the script that called it got a Lua error) ====\r\n", safe_text(where));
-        append_field(output, capacity, used, "Error", error);
-        append_field(output, capacity, used, "Where", firstFrame);
-        append_thread_context(output, capacity, used);
-        append_game_context(output, capacity, used);
-        append_memory_facts(output, capacity, used);
-        append_lua_stack(output, capacity, used);
-        append_format(output, capacity, used, "Native stack:\r\n%s", symbols);
-        EXCEPTION_POINTERS pointers = { record, context };
-        append_machine_state(&pointers, output, capacity, used);
-        append_breadcrumbs(output, capacity, used);
-        append_text_record(Category::Crash, output);
+        InterlockedExchange(&g_caughtBusy, 0);
+        return; // a fault that keeps coming back: the first records tell it
     }
+    const DWORD lastError = GetLastError();
+    g_insideLogger = true;
+    CaughtJob& job = g_caught;
+    copy_text(job.title, sizeof(job.title), safe_text(where));
+    describe_exception(*record, job.error, sizeof(job.error));
+    size_t used = 0;
+    job.context[0] = job.machine[0] = job.events[0] = 0;
+    append_thread_context(job.context, sizeof(job.context), used);
+    append_game_context(job.context, sizeof(job.context), used);
+    append_memory_facts(job.context, sizeof(job.context), used);
+    append_lua_stack(job.context, sizeof(job.context), used);
+    used = 0;
+    EXCEPTION_POINTERS pointers = { record, context };
+    append_machine_state(&pointers, job.machine, sizeof(job.machine), used);
+    used = 0;
+    append_breadcrumbs(job.events, sizeof(job.events), used);
+    CONTEXT copy = *context;
+    job.count = capture_frames(copy, job.frames, kStackFrameLimit);
     g_insideLogger = false;
-    ReleaseSRWLockExclusive(&g_writeLock);
+    SetEvent(g_caughtRequest);
     SetLastError(lastError);
-}
-
-void ReportHangEnd(unsigned frozenMs)
-{
-    if (!IsEnabled() || IsDebuggerPresent())
-        return;
-    char note[160] = {};
-    _snprintf_s(note, sizeof(note), _TRUNCATE,
-        "==== HANG END: the main thread finished a frame again after about %.0f s ====\r\n", frozenMs / 1000.0);
-    AcquireSRWLockExclusive(&g_writeLock);
-    append_text_record(Category::Hang, note);
-    ReleaseSRWLockExclusive(&g_writeLock);
-    if (g_session.state == kSessionHang)
-        write_session_state(kSessionRunning);
 }
 
 void SetEnabled(bool enabled)
@@ -2189,6 +2315,11 @@ void SetLuaStackWriter(LuaStackWriter writer)
     g_luaStackWriter = writer;
 }
 
+void SetGameLogWriter(GameLogWriter writer)
+{
+    g_gameLogWriter = writer;
+}
+
 void Report(
     Severity severity,
     LPCSTR expression,
@@ -2203,17 +2334,14 @@ void Report(
     if (!IsEnabled())
         return;
 
-    Category category = classify_source(file, expression, description, argument0, argument1);
-    if (contains_script_failure(expression, description, argument0, argument1))
-        category = contains_memory_failure(expression, description, argument0, argument1) ? Category::Memory : Category::Script;
+    const Category category = classify_source(file, expression, description, argument0, argument1);
 
     write_record(category, severity, expression, description, argument0, argument1, file, line, function, nullptr);
 
     if (severity == Severity::Fatal)
     {
-        write_session_state(kSessionRecorded);
-        if (!g_insideLogger && request_dump(L"CRASH-DUMP", nullptr))
-            append_text_record(category, "Dump      : CRASH-DUMP.dmp\r\n");
+        if (g_lastWriteSucceeded)
+            write_session_state(kSessionRecorded);
         char source[512] = {}, event[160] = {};
         format_source_path(file, source, sizeof(source));
         _snprintf_s(event, sizeof(event), _TRUNCATE, "fatal error at %s:%d", source, line);
@@ -2232,18 +2360,16 @@ void ReportUnhandledException(void* exceptionPointers)
     else
     {
         const DWORD code = pointers->ExceptionRecord->ExceptionCode;
-        write_session_state(kSessionRecorded);
-        __try { report_crash(pointers, g_crashWorkspace); }
+        bool checkpoint = false;
+        __try { report_crash(pointers, g_crashWorkspace, checkpoint); }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
             char note[256] = {};
             _snprintf_s(note, sizeof(note), _TRUNCATE,
                 "\r\n==== CRASH 0x%08lX: the logger failed while recording it; a record above may be incomplete ====\r\n", code);
-            append_text_record(Category::Crash, note);
+            if (!checkpoint && append_text_record(crash_category(code), note))
+                write_session_state(kSessionRecorded);
         }
-        // A corrupted heap may hold its lock: DbgHelp would wait on it until the timeout.
-        if (code != kHeapCorruption && request_dump(L"CRASH-DUMP", pointers))
-            append_text_record(Category::Crash, "Dump      : CRASH-DUMP.dmp\r\n");
         InterlockedExchange(&g_crashWorkspaceInUse, 0);
     }
     g_insideCrashHandler = false;
@@ -2318,8 +2444,14 @@ bool ShouldReportScriptFailure(int status, bool recoveredModuleLoad, LPCSTR mess
 void ReportScriptFailure(int status, LPCSTR script, LPCSTR message, LPCSTR traceback,
     LPCSTR file, int line, LPCSTR function, bool recoveredModuleLoad)
 {
-    if (!IsEnabled() || !ShouldReportScriptFailure(status, recoveredModuleLoad, message)) return;
+    if (!IsEnabled() || status == 0 || status == 1) return;
     const DWORD lastError = GetLastError();
+    if (!ShouldReportScriptFailure(status, recoveredModuleLoad, message))
+    {
+        remember_script_load_failure(script, message);
+        SetLastError(lastError);
+        return;
+    }
     const bool memoryFailure = status == 4 || contains_memory_failure(nullptr, message, nullptr, nullptr);
     char details[512] = {};
     if (script && *script)
@@ -2336,14 +2468,14 @@ void ReportScriptFailure(int status, LPCSTR script, LPCSTR message, LPCSTR trace
 
 bool WriteSelfTest()
 {
-    if (!IsEnabled() || g_insideLogger || g_testFilename) return false;
+    if (!IsEnabled() || g_insideLogger || g_selfTest) return false;
     Initialize();
-    g_testFilename = "RENDER-LOG-SELFTEST.log";
+    g_selfTest = true;
     ReportRenderFailure(static_cast<long>(0x887A0005u), static_cast<long>(0x887A0006u),
         "SIMULATED ID3D11Device/CreateTexture2D; texture=gamedata/textures/ui/selftest.dds; "
         "install=Z:\\Private Test User\\Private GAMMA Install\\bin\\engine.exe; token=dummy-secret",
         "Layers/xrRenderDX10/diagnostic_selftest.cpp", 42, "EngineErrorLogger::WriteSelfTest");
-    g_testFilename = nullptr;
+    g_selfTest = false;
     return g_lastWriteSucceeded;
 }
 }

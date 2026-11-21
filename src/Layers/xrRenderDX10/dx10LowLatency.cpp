@@ -29,7 +29,12 @@ bool frame_open = false;
 bool render_open = false;
 NvU64 frame_id = 0;
 double wait_us = 0.0;
+u64 last_limited_start = 0;
 u64 present_start = 0;
+// QUARK-PANEL: the wait before the input, so it can tell a video card limit (the wait grows) from a processor limit
+u64 wait_ticks = 0, wait_window = 0;
+u32 wait_frames = 0;
+float wait_ms_shown = 0.f;
 
 // QUARK-PANEL: start of frame -> GPU finished the frame, by a GPU fence. Runs only while the panel shows the numbers.
 constexpr u32 meter_slots = 64;
@@ -192,7 +197,7 @@ void apply_settings(int fps_limit)
 	applied_interval_us = interval_us;
 	frame_open = false;
 	render_open = false;
-	wait_us = 0.0;
+	low_latency::reset_pacing();
 
 	// Off and never started: neither DXGI nor NVAPI is touched.
 	if (mode == mode_off && !queue_lowered && !reflex_active)
@@ -225,27 +230,45 @@ void apply_settings(int fps_limit)
 		mode == mode_on ? "on" : "off");
 }
 
-// A timer up to 0.5 ms before the end, a spin after it: Sleep could wake too late and starve the GPU.
-void wait_precise(double us)
+// Leave the last 0.5 ms to a spin so the timer does not routinely overshoot the deadline.
+void wait_precise(u64 deadline, u64 now)
 {
-	static HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
-	const u64 start = CPU::QPC();
-	const u64 ticks = u64(us * double(CPU::qpc_freq) / 1000000.0);
-	if (timer && us > 1000.0)
+	if (deadline <= now)
+		return;
+	const double us = double(deadline - now) * 1000000.0 / double(CPU::qpc_freq);
+	if (us > 1000.0)
 	{
+		static HANDLE timer = [] {
+			HANDLE precise = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+			return precise ? precise : CreateWaitableTimerW(nullptr, FALSE, nullptr);
+		}();
 		LARGE_INTEGER due;
 		due.QuadPart = -LONGLONG((us - 500.0) * 10.0);
-		if (SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE))
-			WaitForSingleObject(timer, INFINITE);
+		if (!timer || !SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE) ||
+			WaitForSingleObject(timer, INFINITE) != WAIT_OBJECT_0)
+			Sleep(DWORD((us - 500.0) / 1000.0));
 	}
-	while (CPU::QPC() - start < ticks)
+	while (CPU::QPC() < deadline)
 		_mm_pause();
 }
 }
 
 namespace low_latency
 {
-bool frame_begin(int fps_limit)
+using frame_limit = IRenderDeviceRender::latency_frame_limit;
+
+void reset_pacing()
+{
+	wait_us = 0.0;
+	last_limited_start = 0;
+	if (applied_mode == mode_on)
+	{
+		frame_open = false;
+		meter_frame_start = 0;
+	}
+}
+
+frame_limit frame_begin(int fps_limit)
 {
 	apply_settings(fps_limit);
 	const bool vsync = psDeviceFlags.test(rsVSync);
@@ -254,26 +277,51 @@ bool frame_begin(int fps_limit)
 		generation_limit = fps_limit;
 		generation_vsync = vsync;
 		++generation;
+		reset_pacing();
 	}
 
-	// A scope's second viewport pass presents nothing: it and the next pass are one frame.
-	if ((reflex_active || applied_mode == mode_on) && !frame_open)
+	const bool engine_limit = applied_mode == mode_on && fps_limit > 0;
+	// Pacing is per Present. The explicit cap still applies to every update, including scope passes.
+	const bool start_present_frame = (reflex_active || applied_mode == mode_on) && !frame_open;
+	if (engine_limit || start_present_frame)
 	{
+		const u64 wait_start = CPU::QPC();
 		if (reflex_active)
 		{
 			NvAPI_D3D_Sleep(HW.pDevice);
 			++frame_id;
 			send_marker(SIMULATION_START);
+			wait_ticks += CPU::QPC() - wait_start;
 		}
-		// With VSync the queue of 1 is enough: this wait makes frames miss the vblank, -5.5 % FPS on the stand.
-		else if (!psDeviceFlags.test(rsVSync) && wait_us > 0.0)
-			wait_precise(wait_us);
-		frame_open = true;
-		render_open = false;
+		else
+		{
+			u64 gpu_deadline = wait_start;
+			// Present can block on vblank with VSync. Its duration only drives pacing with VSync off.
+			if (start_present_frame && !vsync)
+				gpu_deadline += u64(wait_us * double(CPU::qpc_freq) / 1000000.0);
+			u64 cap_deadline = wait_start;
+			if (engine_limit && last_limited_start)
+				cap_deadline = _max(wait_start, last_limited_start + CPU::qpc_freq / u32(fps_limit));
+			wait_precise(_max(gpu_deadline, cap_deadline), wait_start);
+			const u64 now = CPU::QPC();
+			if (engine_limit)
+				last_limited_start = now;
+			// The panel uses this time to distinguish GPU back-pressure from the FPS cap.
+			if (gpu_deadline > cap_deadline)
+				wait_ticks += now - cap_deadline;
+		}
+		++wait_frames;
+		if (start_present_frame)
+		{
+			frame_open = true;
+			render_open = false;
+		}
 	}
 	if (meter_active && !meter_frame_start)
 		meter_frame_start = CPU::QPC();
-	return reflex_active;
+	if (engine_limit)
+		return frame_limit::before_input;
+	return reflex_active ? frame_limit::driver : frame_limit::late;
 }
 
 void render_begin()
@@ -288,6 +336,8 @@ void render_begin()
 
 void present_begin()
 {
+	if (applied_mode == mode_on && (Device.dwPrecacheFrame || !g_loading_events.empty()))
+		reset_pacing();
 	if (!frame_open)
 		return;
 	if (reflex_active)
@@ -298,17 +348,21 @@ void present_begin()
 	present_start = CPU::QPC();
 }
 
-void present_end()
+void present_end(bool presented)
 {
+	const bool tune_wait = frame_open && !reflex_active && !psDeviceFlags.test(rsVSync);
+	const u64 blocked_ticks = tune_wait && presented ? CPU::QPC() - present_start : 0;
 	meter_present_done();
 	if (!frame_open)
 		return;
 	if (reflex_active)
 		send_marker(PRESENT_END);
-	else
+	else if (!presented)
+		wait_us = 0.0;
+	else if (tune_wait)
 	{
 		// Slowly up, quickly back: a starved GPU costs FPS, a little extra wait in Present costs almost nothing.
-		const double block_us = double(CPU::QPC() - present_start) * 1000000.0 / double(CPU::qpc_freq);
+		const double block_us = double(blocked_ticks) * 1000000.0 / double(CPU::qpc_freq);
 		const double error_us = block_us - present_block_target_us;
 		wait_us = std::clamp(wait_us + error_us * (error_us > 0.0 ? 0.05 : 0.5), 0.0, wait_max_us);
 	}
@@ -318,6 +372,7 @@ void present_end()
 
 void device_destroyed()
 {
+	reset_pacing();
 	_RELEASE(meter_context);
 	_RELEASE(meter_fence);
 	meter_failed = false;
@@ -340,5 +395,14 @@ void report(IRenderDeviceRender::latency_report& out, bool measure)
 		out.ms[mode] = mode_ms[mode];
 		out.fps[mode] = mode_fps[mode];
 	}
+	const u64 now = CPU::QPC();
+	if (now - wait_window >= CPU::qpc_freq)
+	{
+		wait_ms_shown = wait_frames ? float(double(wait_ticks) * 1000.0 / double(CPU::qpc_freq) / wait_frames) : 0.f;
+		wait_ticks = 0;
+		wait_frames = 0;
+		wait_window = now;
+	}
+	out.wait_ms = wait_ms_shown;
 }
 }

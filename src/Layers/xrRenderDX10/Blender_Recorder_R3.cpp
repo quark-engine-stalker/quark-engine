@@ -213,9 +213,9 @@ void CBlender_Compile::r_Pass(LPCSTR _vs, LPCSTR _gs, LPCSTR _ps, bool bFog, BOO
 	PassSET_LightFog(FALSE, bFog);
 
 	// Create shaders
-	SPS* ps = DEV->_CreatePS(_ps);
-	SVS* vs = DEV->_CreateVS(_vs);
-	SGS* gs = DEV->_CreateGS(_gs);
+	ref_ps ps = DEV->_CreatePS(_ps);
+	ref_vs vs = DEV->_CreateVS(_vs);
+	ref_gs gs = DEV->_CreateGS(_gs);
 	dest.ps = ps;
 	dest.vs = vs;
 	dest.gs = gs;

@@ -18,6 +18,7 @@
 #include "ai_space.h"
 
 #include <luabind/detail/ref.hpp>
+#include <luabind/detail/pcall.hpp>
 
 #ifdef USE_DEBUGGER
 #	ifndef USE_LUA_STUDIO
@@ -53,7 +54,6 @@ CScriptThread::CScriptThread(LPCSTR caNamespaceName, bool do_string, bool reload
 
 	try
 	{
-		string256 S;
 		if (!do_string)
 		{
 			m_script_name = caNamespaceName;
@@ -62,8 +62,8 @@ CScriptThread::CScriptThread(LPCSTR caNamespaceName, bool do_string, bool reload
 		else
 		{
 			m_script_name = "console command";
-			xr_sprintf(S, "function %s()\n%s\nend\n", main_function, caNamespaceName);
-			int l_iErrorCode = luaL_loadbuffer(ai().script_engine().lua(), S, xr_strlen(S), "@console_command");
+			const xr_string source = xr_string("function ") + main_function + "()\n" + caNamespaceName + "\nend\n";
+			int l_iErrorCode = luaL_loadbuffer(ai().script_engine().lua(), source.c_str(), source.size(), "@console_command");
 			if (!l_iErrorCode)
 			{
 				l_iErrorCode = lua_pcall(ai().script_engine().lua(), 0, 0, 0);
@@ -120,6 +120,7 @@ CScriptThread::CScriptThread(LPCSTR caNamespaceName, bool do_string, bool reload
 #	endif // #ifdef DEBUG
 #endif // #ifndef USE_LUA_STUDIO
 
+		string256 S;
 		if (!do_string)
 			xr_sprintf(S, "%s.main()", caNamespaceName);
 		else
@@ -185,7 +186,10 @@ bool CScriptThread::update()
 		int l_iErrorCode = LUA_ERRRUN;
 		try
 		{
-			l_iErrorCode = lua_resume(lua(), 0);
+			{
+				const luabind::detail::observed_lua_call observed(lua());
+				l_iErrorCode = lua_resume(lua(), 0);
+			}
 			ai().script_engine().end_lua_profile_call(profile_context, l_iErrorCode);
 			profile_context = nullptr;
 		}

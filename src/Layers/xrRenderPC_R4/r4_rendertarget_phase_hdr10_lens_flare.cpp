@@ -22,6 +22,7 @@ static void Swap(T& a, T& b)
 
 void CRenderTarget::phase_hdr10_lens_flare(bool genericSource)
 {
+	PIX_EVENT(phase_hdr10_lens_flare);
     RCache.set_Z(FALSE);
 	const ref_shader& downsampleShader = genericSource ? s_hdr10_lens_flare_downsample_pp : s_hdr10_lens_flare_downsample;
 	const ref_shader& upsampleShader = genericSource ? s_hdr10_lens_flare_upsample_pp : s_hdr10_lens_flare_upsample;

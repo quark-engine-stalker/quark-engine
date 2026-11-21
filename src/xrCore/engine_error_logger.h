@@ -21,7 +21,7 @@ namespace EngineErrorLogger
     XRCORE_API void ClearThreadStage();
     XRCORE_API void SetThreadName(LPCSTR name);
 
-    // Bounded in-memory history (game-log warnings, loading, saving). It is
+    // Bounded history of explicit engine events (loading, saving). It is
     // printed in fatal and crash records and never touches the disk by itself.
     XRCORE_API void AddBreadcrumb(LPCSTR message);
 
@@ -31,10 +31,11 @@ namespace EngineErrorLogger
     using LuaStackWriter = void (*)(char* output, size_t capacity);
     XRCORE_API void SetLuaStackWriter(LuaStackWriter writer);
 
-    // The Lua stack of whatever script runs now, asked from another thread (hang records): the sampler
-    // arms a hook, waits up to timeoutMs for the VM to reach it and names the thread it ran on.
-    using LuaHangSampler = bool (*)(char* output, size_t capacity, unsigned timeoutMs, DWORD* threadId);
-    XRCORE_API void SetLuaHangSampler(LuaHangSampler sampler);
+    // Writes the game log (xray_<user>.log) as the engine holds it in memory: the first lines of the
+    // session, then the last `tail` lines, "  line\r\n" each; the newest lines are kept when it does not
+    // fit. Records call it under SEH; it must not allocate and may only try the game log's lock.
+    using GameLogWriter = void (*)(char* output, size_t capacity, unsigned int tail);
+    XRCORE_API void SetGameLogWriter(GameLogWriter writer);
 
     // The object the calling thread works on ("Object: wpn_pm1117 [wpn_pm] id 1117 (UpdateCL)").
     // Hot paths: the scope stores two pointers and a literal; the describer formats the object only
@@ -53,18 +54,14 @@ namespace EngineErrorLogger
         ObjectDescriber previousDescriber_;
     };
 
-    // The "Game" line of fatal, crash and hang records.
+    // The "Game" line of fatal and crash records.
     enum class Context : unsigned char { Level, Save };
     XRCORE_API void SetContext(Context item, LPCSTR value);
 
-    // The freeze watchdog: threadId has not finished a frame for frozenMs (one record per freeze).
-    XRCORE_API void ReportHang(DWORD threadId, unsigned frozenMs, bool loading);
-    XRCORE_API void ReportHangEnd(unsigned frozenMs);
     // From inside a catch(...) that goes on (luabind turns a native fault into a Lua error, "Busy
     // Hands"): a hardware fault is recorded with the stack where it happened; thrown errors are skipped.
+    // The calling thread only copies the frames, a helper thread resolves the symbols and writes it.
     XRCORE_API void ReportCaughtException(LPCSTR where);
-    // Crash and fatal minidumps (CRASH-DUMP.dmp); -no_crash_dump turns them off.
-    XRCORE_API void SetDumpsEnabled(bool enabled);
 
     XRCORE_API void Report(
         Severity severity,
@@ -99,9 +96,8 @@ namespace EngineErrorLogger
 
     XRCORE_API void ReportRenderFailure(long result, long removedReason,
         LPCSTR expression, LPCSTR file, int line, LPCSTR function);
-    // A protected module load can reject content and continue. Keep its normal
-    // game-log output, but reserve ERROR files for critical/unknown failures.
-    // OOM and failures outside this explicitly recoverable path remain visible.
+    // Whether the error needs its own report and traceback. ReportScriptFailure
+    // still retains protected module-load errors as context for a later crash.
     XRCORE_API bool ShouldReportScriptFailure(int status, bool recoveredModuleLoad,
         LPCSTR message);
     XRCORE_API void ReportScriptFailure(int status, LPCSTR script,

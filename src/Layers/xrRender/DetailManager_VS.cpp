@@ -43,6 +43,7 @@ void CDetailManager::hw_Load()
 {
 	hw_Load_Geom();
 	hw_Load_Shaders();
+	m_grass_tile_geom.create(D3DFVF_XYZ, RCache.Vertex.Buffer(), 0);
 }
 
 void CDetailManager::hw_Load_Geom()
@@ -127,6 +128,17 @@ void CDetailManager::hw_Unload()
 {
 	// Destroy VS/VB/IB
 	hw_Geom.destroy();
+	m_grass_tile_geom.destroy();
+	for (xr_vector<ID3D11Predicate*>& pool : m_grass_tile_predicates)
+	{
+		for (ID3D11Predicate*& predicate : pool)
+			_RELEASE(predicate);
+		pool.clear();
+	}
+	for (auto& queries : m_grass_tile_queries)
+		queries.clear();
+	m_grass_tiles.clear();
+	m_grass_tile_map.clear();
 	HW.stats_manager.decrement_stats_vb(hw_VB);
 	HW.stats_manager.decrement_stats_ib(hw_IB);
 	_RELEASE(hw_IB);

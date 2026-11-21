@@ -1,6 +1,10 @@
 #include "stdafx.h"
 #pragma hdrstop
 #include "detailmodel.h"
+#ifndef _EDITOR
+#include "dxRenderDeviceRender.h"
+#include "ResourceManager.h"
+#endif
 
 CDetail::~CDetail()
 {
@@ -19,6 +23,7 @@ void CDetail::Unload()
 		indices = 0;
 	}
 	shader.destroy();
+	shader_depth.destroy();
 }
 
 void CDetail::transfer(Fmatrix& mXform, fvfVertexOut* vDest, u32 C, u16* iDest, u32 iOffset)
@@ -86,6 +91,11 @@ void CDetail::Load(IReader* S)
 	S->r_stringZ(fnS, sizeof(fnS));
 	S->r_stringZ(fnT, sizeof(fnT));
 	shader.create(fnS, fnT);
+#ifndef _EDITOR
+	DEV->m_depth_only_ps_thread = GetCurrentThreadId();
+	shader_depth.create(fnS, fnT);
+	DEV->m_depth_only_ps_thread = 0;
+#endif
 
 	// Params
 	m_Flags.assign(S->r_u32());

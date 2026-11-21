@@ -20,6 +20,7 @@
 #include "lj_allocprof.h"
 
 #include "luajit.h"
+#include "luajit_hostprof.h"
 #include "lua.h"
 
 #include <stdio.h>
@@ -60,6 +61,14 @@ typedef struct ProfileState {
   int added_maskline;		/* Profiler owns the LUA_MASKLINE trap bit. */
   int32_t saved_count;		/* Saved hookcount, restored on stop. */
   int32_t saved_cstart;		/* Saved hookcstart, restored on stop. */
+  /* QUARK: the host's sampler (luajit_hostprof.h), hcb NULL otherwise. */
+  luaJIT_hostprof_callback hcb;
+  volatile long *gate;		/* Nonzero while Lua runs a call of the host. */
+  long tag;			/* *gate when the pending samples were taken. */
+  uint64_t alloc_due;		/* Bytes of the allocation samples pending for the hook. */
+  uint64_t alloc_counted;	/* Bytes allocated in calls of the host since the last allocation sample. */
+  uint64_t alloc_next;		/* Distance to the next allocation sample. */
+  unsigned int alloc_mean;
 #if LJ_PROFILE_SIGPROF
   struct sigaction oldsa;	/* Previous SIGPROF state. */
 #elif LJ_PROFILE_PTHREAD
@@ -129,6 +138,69 @@ void lj_profile_unlock(void)
 
 /* -- Profile callbacks --------------------------------------------------- */
 
+int lj_hostprof_alloc_on = 0;
+
+/* Arm the profile hook unless it is armed or a hook runs. Under the lock. */
+static void profile_arm(ProfileState *ps, global_State *g, long tag)
+{
+  uint8_t mask = g->hookmask;
+  if (!(mask & (HOOK_PROFILE|HOOK_VMEVENT|HOOK_GC))) {
+    int st = g->vmstate;
+    ps->vmstate = st >= 0 ? 'N' :
+		  st == ~LJ_VMST_INTERP ? 'I' :
+		  st == ~LJ_VMST_C ? 'C' :
+		  st == ~LJ_VMST_GC ? 'G' : 'J';
+    ps->tag = tag;
+    g->hookmask = (uint8_t)(mask | HOOK_PROFILE |
+			    (ps->added_maskline ? LUA_MASKLINE : 0));
+    lj_dispatch_update(g, 1);
+  }
+}
+
+/* Host: the hook was armed in a call that has ended, its samples are stale. Under the lock. */
+static void profile_drop_stale(ProfileState *ps, global_State *g, long tag)
+{
+  if ((g->hookmask & HOOK_PROFILE) && ps->tag != tag) {
+    ps->samples = 0;
+    ps->alloc_due = 0;
+    g->hookmask &= (uint8_t)~(HOOK_PROFILE | (ps->added_maskline ? LUA_MASKLINE : 0));
+    lj_dispatch_update(g, 1);
+  }
+}
+
+static uint64_t hostprof_rng = 0x2545f4914f6cdd1dull;
+
+/* Next allocation sample distance from exp(mean). */
+static uint64_t hostprof_dist(unsigned int mean)
+{
+  uint64_t x = hostprof_rng;
+  double u, d;
+  x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+  hostprof_rng = x;
+  u = ((double)(x >> 11) + 1.0) / 9007199254740993.0;
+  d = -(double)mean * log(u);
+  return d < 1.0 ? 1u : (uint64_t)d;
+}
+
+/* The VM allocated size bytes (lj_gc.c, on the Lua thread). Bytes outside the calls of the host are the host's own. */
+void lj_hostprof_alloc(global_State *g, uint64_t size)
+{
+  ProfileState *ps = &profile_state;
+  long tag = *ps->gate;
+  if (!tag) return;
+  ps->alloc_counted += size;
+  if (ps->alloc_counted < ps->alloc_next) return;
+  profile_lock(ps);
+  if (ps->hcb) {
+    profile_drop_stale(ps, g, tag);
+    ps->alloc_due += ps->alloc_counted;
+    ps->alloc_counted = 0;
+    ps->alloc_next = hostprof_dist(ps->alloc_mean);
+    profile_arm(ps, g, tag);
+  }
+  profile_unlock(ps);
+}
+
 /* Callback from profile hook (HOOK_PROFILE already cleared). */
 void LJ_FASTCALL lj_profile_interpreter(lua_State *L)
 {
@@ -145,11 +217,19 @@ void LJ_FASTCALL lj_profile_interpreter(lua_State *L)
   mask = (uint8_t)(g->hookmask & ~armbits);
   if (!(mask & HOOK_VMEVENT)) {
     int samples = ps->samples;
+    uint64_t bytes = ps->alloc_due;
+    int vmstate = ps->vmstate;
+    int fresh = !ps->gate || *ps->gate == ps->tag;  /* Host: still the call that was sampled. */
+    luaJIT_hostprof_callback hcb = ps->hcb;
     ps->samples = 0;
+    ps->alloc_due = 0;
     g->hookmask = HOOK_VMEVENT;
     lj_dispatch_update(g, 1);
     profile_unlock(ps);
-    ps->cb(ps->data, L, samples, ps->vmstate);  /* Invoke user callback. */
+    if (!hcb)
+      ps->cb(ps->data, L, samples, vmstate);  /* Invoke user callback. */
+    else if (fresh && (samples || bytes))
+      hcb(ps->data, L, samples, (unsigned long long)bytes, vmstate);
     profile_lock(ps);
     mask |= (uint8_t)(g->hookmask & armbits);
   }
@@ -162,20 +242,16 @@ void LJ_FASTCALL lj_profile_interpreter(lua_State *L)
 static void profile_trigger(ProfileState *ps)
 {
   global_State *g = ps->g;
-  uint8_t mask;
-  profile_lock(ps);
-  ps->samples++;  /* Always increment number of samples. */
-  mask = g->hookmask;
-  if (!(mask & (HOOK_PROFILE|HOOK_VMEVENT|HOOK_GC))) {  /* Set profile hook. */
-    int st = g->vmstate;
-    ps->vmstate = st >= 0 ? 'N' :
-		  st == ~LJ_VMST_INTERP ? 'I' :
-		  st == ~LJ_VMST_C ? 'C' :
-		  st == ~LJ_VMST_GC ? 'G' : 'J';
-    g->hookmask = (uint8_t)(mask | HOOK_PROFILE |
-			    (ps->added_maskline ? LUA_MASKLINE : 0));
-    lj_dispatch_update(g, 1);
+  long tag = 1;
+  if (ps->gate) {
+    tag = *ps->gate;
+    if (!tag) return;  /* Host: no call of the host runs Lua. */
   }
+  profile_lock(ps);
+  if (ps->hcb)
+    profile_drop_stale(ps, g, tag);
+  ps->samples++;  /* Always increment number of samples. */
+  profile_arm(ps, g, tag);
   profile_unlock(ps);
 }
 
@@ -344,6 +420,8 @@ LUA_API void luaJIT_profile_start(lua_State *L, const char *mode,
   ps->interval = interval;
   ps->cb = cb;
   ps->data = data;
+  ps->hcb = NULL;
+  ps->gate = NULL;
   ps->samples = 0;
   ps->added_maskline = !(G(L)->hookmask & LUA_MASKLINE);
   ps->saved_count = G(L)->hookcount;
@@ -358,13 +436,51 @@ LUA_API void luaJIT_profile_stop(lua_State *L)
   global_State *g = ps->g;
   if (G(L) == g) {  /* Only stop profiler if started by this VM. */
     profile_timer_stop(ps);  /* Join the timer thread first: no profile_trigger can read a cleared g. */
+    lj_hostprof_alloc_on = 0;
     ps->g = NULL;
+    ps->hcb = NULL;
     g->hookmask &= (uint8_t)~(HOOK_PROFILE |
 			      (ps->added_maskline ? LUA_MASKLINE : 0));
     g->hookcount = ps->saved_count;
     g->hookcstart = ps->saved_cstart;
     lj_dispatch_update(g, 0);
   }
+}
+
+LUA_API int luaJIT_hostprof_start(lua_State *L, int interval_ms, unsigned int alloc_mean, volatile long *gate,
+				  luaJIT_hostprof_callback cb, void *data)
+{
+  ProfileState *ps = &profile_state;
+  if (ps->g || lj_allocprof_active || !gate || !cb) return 0;
+  ps->g = G(L);
+  ps->interval = interval_ms > 0 ? interval_ms : 1;
+  ps->cb = NULL;
+  ps->hcb = cb;
+  ps->data = data;
+  ps->gate = gate;
+  ps->tag = 0;
+  ps->samples = 0;
+  ps->alloc_due = 0;
+  ps->alloc_counted = 0;
+  ps->alloc_mean = alloc_mean;
+  ps->alloc_next = alloc_mean ? hostprof_dist(alloc_mean) : 0;
+  ps->added_maskline = !(G(L)->hookmask & LUA_MASKLINE);
+  ps->saved_count = G(L)->hookcount;
+  ps->saved_cstart = G(L)->hookcstart;
+  profile_timer_start(ps);
+  lj_hostprof_alloc_on = alloc_mean != 0;
+  return 1;
+}
+
+LUA_API void luaJIT_hostprof_stop(lua_State *L)
+{
+  if (profile_state.hcb)
+    luaJIT_profile_stop(L);
+}
+
+LUA_API int luaJIT_hostprof_active(void)
+{
+  return profile_state.hcb != NULL;
 }
 
 /* Native stack dump: "name@short_src:linedefined" per frame, ';'-separated, top first. fmt ignored. */

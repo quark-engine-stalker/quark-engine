@@ -515,8 +515,9 @@ BOOL CResourceManager::_lua_HasShader(LPCSTR s_shader)
 #endif
 }
 
-Shader* CResourceManager::_lua_Create(LPCSTR d_shader, LPCSTR s_textures)
+ref_shader CResourceManager::_lua_Create(LPCSTR d_shader, LPCSTR s_textures)
 {
+	PROF_EVENT();
 	xrCriticalSectionGuard scripting_guard(scriptingGuard);
 	xrCriticalSectionGuard graph_guard(shaderGraphGuard);
 	CBlender_Compile C;
@@ -609,7 +610,7 @@ Shader* CResourceManager::_lua_Create(LPCSTR d_shader, LPCSTR s_textures)
 
 	// Search equal in shaders array
 	for (u32 it = 0; it < v_shaders.size(); it++)
-		if (S.equal(v_shaders[it])) return v_shaders[it];
+		if (S.equal(v_shaders[it]) && v_shaders[it]->pin_alive()) return ref_shader(v_shaders[it], false);
 
 	// Create _new_ entry
 	Shader* N = xr_new<Shader>(S);
@@ -618,7 +619,7 @@ Shader* CResourceManager::_lua_Create(LPCSTR d_shader, LPCSTR s_textures)
 	return N;
 }
 
-ShaderElement* CBlender_Compile::_lua_Compile(LPCSTR namesp, LPCSTR name)
+ref_selement CBlender_Compile::_lua_Compile(LPCSTR namesp, LPCSTR name)
 {
 	ShaderElement E;
 	SH = &E;
@@ -635,6 +636,5 @@ ShaderElement* CBlender_Compile::_lua_Compile(LPCSTR namesp, LPCSTR name)
 	adopt_compiler ac = adopt_compiler(this, bFirstPass);
 	element(ac, t_0, t_1, t_d);
 	r_End();
-	ShaderElement* _r = dxRenderDeviceRender::Instance().Resources->_CreateElement(E);
-	return _r;
+	return dxRenderDeviceRender::Instance().Resources->_CreateElement(E);
 }

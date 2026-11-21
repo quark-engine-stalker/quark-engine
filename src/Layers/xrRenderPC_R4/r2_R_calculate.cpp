@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "../../xrEngine/customhud.h"
+#include "../../xrEngine/frame_stats.h"
 
 float g_fSCREEN;
 
@@ -28,6 +29,7 @@ void CRender::Calculate()
 	r_ssaHZBvsTEX = _sqr(ps_r__ssaHZBvsTEX / 3) / g_fSCREEN;
 	r_dtex_range = ps_r2_df_parallax_range * g_fSCREEN / (1024.f * 768.f);
 
+	SFrameDetailParts parts(fsRendCalc, "camera sector and portals");
 	{
 
 		// Detect camera-sector
@@ -62,12 +64,12 @@ void CRender::Calculate()
 	}
 
 	{
-
+		parts.next("lights update");
 		Lights.Update();
 	}
 
 	{
-
+		parts.next("lights at the camera");
 		// Check if we touch some light even trough portal
 		lstRenderables.clear();
 		g_SpatialSpace->q_sphere(lstRenderables, 0, STYPE_LIGHTSOURCE, Device.vCameraPosition, EPS_L);

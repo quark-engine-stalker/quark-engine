@@ -9,6 +9,7 @@ IC bool SortLights(light* i, light* j)
 
 void CRenderTarget::phase_blur()
 {
+	PIX_EVENT(phase_blur);
 	const ref_shader& blurShader = pp_source_is_generic() ? s_blur_pp : s_blur;
 	//Get common data
 	u32 Offset = 0;
@@ -159,6 +160,7 @@ void CRenderTarget::phase_blur()
 
 void CRenderTarget::phase_ssfx_ssr()
 {
+	PIX_EVENT(phase_ssfx_ssr);
 	//Constants
 	u32 Offset = 0;
 	u32 C = color_rgba(0, 0, 0, 255);
@@ -394,6 +396,7 @@ void CRenderTarget::phase_ssfx_volumetric_blur()
 
 void CRenderTarget::phase_ssfx_water_blur()
 {
+	PIX_EVENT(phase_ssfx_water_blur);
 	//Constants
 	u32 Offset = 0;
 	u32 C = color_rgba(0, 0, 0, 255);
@@ -485,6 +488,7 @@ void CRenderTarget::phase_ssfx_water_blur()
 
 void CRenderTarget::phase_ssfx_water_waves()
 {
+	PIX_EVENT(phase_ssfx_water_waves);
 	//Constants
 	u32 Offset = 0;
 	u32 C = color_rgba(0, 0, 0, 255);
@@ -879,6 +883,7 @@ void CRenderTarget::phase_ssfx_sss_ext(light_Package& LP)
 
 void CRenderTarget::phase_ssfx_fog_scattering()
 {
+	PIX_EVENT(phase_ssfx_fog_scattering);
 	u32 Offset = 0;
 	Fvector2 p0, p1;
 
@@ -948,6 +953,7 @@ void CRenderTarget::phase_ssfx_fog_scattering()
 
 void CRenderTarget::phase_ssfx_motion_blur()
 {
+	PIX_EVENT(phase_ssfx_motion_blur);
 	u32 Offset = 0;
 	Fvector2 p0, p1;
 

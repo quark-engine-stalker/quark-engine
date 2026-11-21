@@ -65,6 +65,7 @@ void dxRenderDeviceRender::Reset(HWND hWnd, u32& dwWidth, u32& dwHeight, float& 
 	Memory.mem_compact();
 
 	HW.Reset(hWnd);
+	low_latency::reset_pacing();
 	m_lastPresentResult = S_OK;
 
 	dwWidth = HW.m_ChainDesc.Width;
@@ -346,7 +347,7 @@ void dxRenderDeviceRender::Clear()
 
 void DoAsyncScreenshot();
 
-bool dxRenderDeviceRender::LatencyFrameBegin(int fps_limit)
+IRenderDeviceRender::latency_frame_limit dxRenderDeviceRender::LatencyFrameBegin(int fps_limit)
 {
 	return low_latency::frame_begin(fps_limit);
 }
@@ -406,7 +407,7 @@ void dxRenderDeviceRender::End()
             const HRESULT previousResult = m_lastPresentResult;
             low_latency::present_begin();
             m_lastPresentResult = HW.m_pSwapChain->Present(present_interval, present_flags);
-            low_latency::present_end();
+            low_latency::present_end(m_lastPresentResult == S_OK);
             if (FAILED(m_lastPresentResult) && m_lastPresentResult != previousResult)
                 EngineErrorLogger::ReportRenderFailure(m_lastPresentResult,
                     HW.pDevice ? HW.pDevice->GetDeviceRemovedReason() : m_lastPresentResult,

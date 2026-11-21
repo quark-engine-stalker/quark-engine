@@ -62,9 +62,10 @@ struct prefetch_event
 	models_set hud_models; // a weapon spawned to the actor: take callbacks of the mods ask for its HUD model at once
     u16 id;
     bool hasAlifeObject;
+    bool owned; // has a parent: waits in spawn_events_owned, behind the objects without one
 };
 using prefetch_event_queue = xr_vector<prefetch_event>;
-using spawn_events_data_map = xr_unordered_flat_map<u16, prefetch_event>;
+using spawn_events_data_map = xr_unordered_flat_map<u16, bool>; // id -> hasAlifeObject
 
 class CLevel :
 	public IGame_Level,
@@ -262,24 +263,19 @@ public:
 //AVO: used by SPAWN_ANTIFREEZE (by alpet)
 #ifdef SPAWN_ANTIFREEZE
 public:
-	NET_Queue_Event* spawn_events = nullptr;
+	NET_Queue_Event* spawn_events = nullptr;       // prefetched spawns of objects without a parent, spawned first
+	NET_Queue_Event* spawn_events_owned = nullptr; // prefetched spawns of items with a parent
     spawn_events_data_map* spawn_events_data = nullptr;
 	prefetch_event_queue* prefetch_events = nullptr;
 	models_set* prefetched_models = nullptr;
 	xrSRWLock prefetch_lock;
 	xr_jobs::task_group prefetch_job_group;
 	volatile LONG prefetch_job_scheduled = FALSE;
-    bool PostponedSpawn(u16 id);
 	void ProcessSpawnEvents();
 	static void ProcessPrefetchEvents(void* args);
-	void SortSpawnEventsQueue();
 private:
 	volatile LONG closeSignal = FALSE;
-	int GetSpawnEventPriority(const NET_Event& e) const;
-	bool PostponedSpawnFind(u16 id, const NET_Event& E) const;
-	bool PostponedSpawnFind(u16 id, NET_Packet& P) const;
-	bool SpawnEventCompare(const NET_Event& a, const NET_Event& b) const;
-#endif	
+#endif
 
 public:
 	//-AVO

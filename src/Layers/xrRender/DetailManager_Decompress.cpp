@@ -79,11 +79,13 @@ static inline u32 hash2(u32 x, u32 y)
 }
 
 //#define		DBG_SWITCHOFF_RANDOMIZE
-void CDetailManager::cache_Decompress(Slot* S)
+void CDetailManager::cache_Decompress(Slot* S, xrXRC& xrc)
 {
 	VERIFY(S);
 	Slot& D = *S;
 	D.type = stReady;
+	D.grass_cover = 0.f;
+	D.grass_ground.set(0.f, 0.f, 0.f);
 	if (D.empty) return;
 
 	DetailSlot& DS = QueryDB(D.sx, D.sz);
@@ -107,6 +109,37 @@ void CDetailManager::cache_Decompress(Slot* S)
 #endif
 
 	if (0 == triCount) return;
+
+#ifndef _EDITOR
+	// The triangles a grass ray can stand on, once per slot: passable materials out and an XZ box (1 cm wider) per
+	// triangle. A dense slot casts thousands of rays; each tests only the triangles under it, in the same order as all of
+	// them before, so the same hits give the same heights and normals.
+	struct GroundTri
+	{
+		Fvector v[3];
+		float min_x, max_x, min_z, max_z;
+	};
+	xr_vector<GroundTri> ground_tris;
+	ground_tris.reserve(triCount);
+	for (u32 tid = 0; tid < triCount; tid++)
+	{
+		const CDB::TRI& T = tris[xrc.r_begin()[tid].id];
+		if (GMLib.GetMaterialByIdx(T.material)->Flags.test(SGameMtl::flPassable))
+			continue;
+		GroundTri G;
+		G.v[0] = verts[T.verts[0]];
+		G.v[1] = verts[T.verts[1]];
+		G.v[2] = verts[T.verts[2]];
+		constexpr float margin = .01f;
+		G.min_x = _min(_min(G.v[0].x, G.v[1].x), G.v[2].x) - margin;
+		G.max_x = _max(_max(G.v[0].x, G.v[1].x), G.v[2].x) + margin;
+		G.min_z = _min(_min(G.v[0].z, G.v[1].z), G.v[2].z) - margin;
+		G.max_z = _max(_max(G.v[0].z, G.v[1].z), G.v[2].z) + margin;
+		ground_tris.push_back(G);
+	}
+	float cover = 0.f;
+	Fvector ground_sum = {0.f, 0.f, 0.f};
+#endif
 
 	// Build shading table
 	float alpha255 [dm_obj_in_slot][4];
@@ -200,9 +233,24 @@ void CDetailManager::cache_Decompress(Slot* S)
 			Fvector3 terrain_normal;
 
 			float r_u, r_v, r_range;
+#ifndef _EDITOR
+			for (GroundTri& G : ground_tris)
+			{
+				if (Item_P.x < G.min_x || Item_P.x > G.max_x || Item_P.z < G.min_z || Item_P.z > G.max_z)
+					continue;
+				if (CDB::TestRayTri(Item_P, dir, G.v, r_u, r_v, r_range,TRUE))
+				{
+					if (r_range >= 0)
+					{
+						float y_test = Item_P.y - r_range;
+						if (y_test > y) y = y_test;
+						terrain_normal.mknormal(G.v[0], G.v[1], G.v[2]);
+					}
+				}
+			}
+#else
 			for (u32 tid = 0; tid < triCount; tid++)
 			{
-#ifdef _EDITOR
 				Fvector verts[3];
 				SBoxPickInfo& I=pinf[tid];
 				for (int k=0; k<(int)I.inf.size(); k++){
@@ -218,24 +266,8 @@ RDEVICE.Statistic->TEST0.End		();
 						}
 					}
 				}
-#else
-				CDB::TRI& T = tris[xrc.r_begin()[tid].id];
-				SGameMtl* mtl = GMLib.GetMaterialByIdx(T.material);
-				if (mtl->Flags.test(SGameMtl::flPassable))
-					continue;
-
-				Fvector Tv[3] = {verts[T.verts[0]], verts[T.verts[1]], verts[T.verts[2]]};
-				if (CDB::TestRayTri(Item_P, dir, Tv, r_u, r_v, r_range,TRUE))
-				{
-					if (r_range >= 0)
-					{
-						float y_test = Item_P.y - r_range;
-						if (y_test > y) y = y_test;
-						terrain_normal.mknormal(Tv[0], Tv[1], Tv[2]);
-					}
-				}
-#endif
 			}
+#endif
 
 			// Slope Limit
 			float DotP = terrain_normal.dotproduct(dir);
@@ -325,17 +357,28 @@ RDEVICE.Statistic->TEST0.End		();
 				if (Dobj->m_Flags.is(DO_NO_WAVING)) Item.vis_ID = 0;
 				else
 				{
-					if (::Random.randI(0, 3) == 0) Item.vis_ID = 2; // Second wave
+					// A third of the waving instances on the second wave, a fixed choice per instance (was the global random:
+					// it raced once slots were decompressed on several threads)
+					if (detail_lod_hash(D.sx, D.sz, index + dm_obj_in_slot, u32(D.G[index].items.size())) < 1.f / 3.f) Item.vis_ID = 2; // Second wave
 					else Item.vis_ID = 1; // First wave
 				}
 			}
 #else
 			Item.vis_ID = 0;
 #endif
+			Item.lod_rank = u16(detail_lod_hash(D.sx, D.sz, index, u32(D.G[index].items.size())) * 65536.f);
+#ifndef _EDITOR
+			cover += _sqr(Item.scale * Dobj->bv_sphere.R);
+			ground_sum.add(terrain_normal);
+#endif
 			// Save it
 			D.G[index].items.push_back(Item);
 		}
 	}
+#ifndef _EDITOR
+	D.grass_cover = cover;
+	D.grass_ground = ground_sum;
+#endif
 
 	// Update bounds to more tight and real ones
 	D.vis.clear();

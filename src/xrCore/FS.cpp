@@ -457,7 +457,7 @@ void IReader::r(void* p, int cnt)
     if (fast_dynamic_cast<CVirtualFileReader*>(this)) bShow = TRUE;
     if (bShow)
     {
-        FS.dwOpenCounter++;
+        FS.dwOpenCounter.fetch_add(1, std::memory_order_relaxed);
     }
 #endif
 };

@@ -1,5 +1,4 @@
 #include "stdafx.h"
-#include "upscaler.h"
 #include "../../xrCore/profiler.h"
 #include "../../xrEngine/frame_stats.h"
 #include "../../xrEngine/irenderable.h"
@@ -320,6 +319,7 @@ bool CRender::build_cached_shadow(ShadowFace& face, bool& svis_open)
 			if (C.static_casters)
 			{
 				SFrameScope stats_draw_scope(fsLightSmapDraw);
+				SFrameDetailParts part(fsLightSmapDraw, "static casters into the cache", &RCache.stat.calls);
 				Target->phase_smap_cache(L);
 				RCache.set_xform_view(L->X.S.view);
 				RCache.set_xform_project(L->X.S.project);
@@ -583,6 +583,7 @@ void CRender::render_lights(light_Package& LP)
 			bool bSpecial = mapNormalPasses[1][0].size() || mapMatrixPasses[1][0].size() || mapSorted.size();
 			{
 				SFrameScope stats_draw_scope(fsLightSmapDraw);
+				SFrameDetailParts part(fsLightSmapDraw, "map setup", &RCache.stat.calls);
 				const u32 stats_calls_before = RCache.stat.calls;
 				const u32 stats_polys_before = RCache.stat.polys;
 
@@ -605,11 +606,12 @@ void CRender::render_lights(light_Package& LP)
 						RCache.set_xform_project(L->X.S.project);
 					}
 					{
-
+						part.next("level and objects");
 						r_dsgraph_render_graph(0);
 					}
 					if (Details && check_grass_shadow(L, ViewBase))
 					{
+						part.next("grass");
 
 						Details->fade_distance = -1; // Use light position to calc "fade"
 						Details->light_position.set(L->position);
@@ -618,6 +620,7 @@ void CRender::render_lights(light_Package& LP)
 					L->X.S.transluent = FALSE;
 					if (bSpecial)
 					{
+						part.next("translucent objects");
 						L->X.S.transluent = TRUE;
 						Target->phase_smap_spot_tsh(L);
 						PIX_EVENT(SHADOWED_LIGHTS_RENDER_GRAPH);
@@ -648,6 +651,7 @@ void CRender::render_lights(light_Package& LP)
 
 		PIX_EVENT(UNSHADOWED_LIGHTS);
 		SFrameScope stats_accum_scope(fsLightAccum);
+		SFrameDetailParts accum_parts(fsLightAccum, "point lights");
 
 		//		switch-to-accumulator
 		Target->phase_accumulator();
@@ -670,6 +674,7 @@ void CRender::render_lights(light_Package& LP)
 			}
 		}
 
+		accum_parts.next("spot lights");
 		PIX_EVENT(SPOT_LIGHTS);
 
 		//		if (has_spot_unshadowed)	-> 	accum spot unshadowed
@@ -688,6 +693,7 @@ void CRender::render_lights(light_Package& LP)
 			}
 		}
 
+		accum_parts.next("lights with shadows");
 		PIX_EVENT(SPOT_LIGHTS_ACCUM_VOLUMETRIC);
 
 		//		if (was_spot_shadowed)		->	accum spot shadowed
@@ -703,21 +709,7 @@ void CRender::render_lights(light_Package& LP)
 				render_indirect(L_spot_s[it]);
 
 				if (RImplementation.o.advancedpp && ps_r2_ls_flags.is(R2FLAG_VOLUMETRIC_LIGHTS))
-				{
-					// Current Resolution
-					float w = float(upscaler::width());
-					float h = float(upscaler::height());
-
-					// Adjust resolution
-					if (RImplementation.o.ssfx_volumetric)
-						Target->set_viewport_size(HW.pContext, w / 8, h / 8);
-
 					Target->accum_volumetric(L_spot_s[it]);
-
-					// Restore resolution
-					if (RImplementation.o.ssfx_volumetric)
-						Target->set_viewport_size(HW.pContext, w, h);
-				}
 			}
 
 		}
@@ -725,6 +717,7 @@ void CRender::render_lights(light_Package& LP)
 
 	PIX_EVENT(POINT_LIGHTS_ACCUM);
 	SFrameScope stats_accum_tail_scope(fsLightAccum);
+	SFrameDetailParts accum_parts(fsLightAccum, "point lights");
 	// Point lighting (unshadowed, if left)
 	if (!LP.v_point.empty())
 	{
@@ -743,6 +736,7 @@ void CRender::render_lights(light_Package& LP)
 		Lvec.clear();
 	}
 
+	accum_parts.next("spot lights");
 	PIX_EVENT(SPOT_LIGHTS_ACCUM);
 	// Spot lighting (unshadowed, if left)
 	if (!LP.v_spot.empty())
@@ -763,6 +757,7 @@ void CRender::render_lights(light_Package& LP)
 		Lvec.clear();
 	}
 
+	accum_parts.next(nullptr);
 	// restore world projection if necessary
 	for (const HudLightState& state : m_hudLightStateScratch)
 	{

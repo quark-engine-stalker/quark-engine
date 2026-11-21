@@ -254,6 +254,8 @@
     <ClCompile Include="imgui_helper.cpp" />
     <ClCompile Include="mt_panel.cpp" />
     <ClCompile Include="mt_threads.cpp" />
+    <ClCompile Include="mt_mods.cpp" />
+    <ClCompile Include="mods_info.cpp" />
     <ClCompile Include="interp.cpp" />
     <ClCompile Include="IRenderable.cpp" />
     <ClCompile Include="ISheduled.cpp" />

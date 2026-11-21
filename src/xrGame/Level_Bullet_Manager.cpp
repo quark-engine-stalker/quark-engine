@@ -52,6 +52,19 @@ const ::luabind::functor<void>* bullet_update_callback()
 	return callback_cache.get(ai().script_engine());
 }
 
+// CBulletOnUpdate is always defined by callbacks_gameobject and only forwards to
+// bullet_on_update, which usually has no listeners. Without the axr_main query
+// (older gamedata) every bullet keeps calling it.
+bool bullet_update_hook_active()
+{
+	if (!bullet_update_callback())
+		return false;
+
+	static cached_script_functor<bool> listeners_cache("axr_main.callback_has_listeners");
+	const ::luabind::functor<bool>* has_listeners = listeners_cache.get(ai().script_engine());
+	return !has_listeners || (*has_listeners)("bullet_on_update");
+}
+
 const ::luabind::functor<void>* bullet_impact_callback()
 {
 	static cached_script_functor<void> callback_cache("_G.CBulletOnImpact");
@@ -470,7 +483,7 @@ void CBulletManager::UpdateWorkload()
 	// The per-update hook can mutate every clear-flight bullet, so its presence
 	// requires the exact legacy serial path. ObjectHit is different: every possible
 	// collision already falls back before that callback can run.
-	const bool has_update_hook = bullet_update_callback() != nullptr;
+	const bool has_update_hook = bullet_update_hook_active();
 
 	collide::rq_result dummy;
 	const u32 bullet_count = m_Bullets.size();
@@ -484,8 +497,7 @@ void CBulletManager::UpdateWorkload()
 		for (u32 index = bullet_count; index > 0; --index)
 		{
 			SBullet& bullet = m_Bullets[index - 1];
-			// Preserve the legacy callback lookup semantics on the complete serial path.
-			if (process_bullet(rq_storage, bullet, time_delta, true))
+			if (process_bullet(rq_storage, bullet, time_delta, has_update_hook))
 				continue;
 
 			R_ASSERT(index - 1 <= u16(-1));
@@ -536,8 +548,8 @@ void CBulletManager::UpdateWorkload()
 		{
 			++fallback_count;
 			SBullet& bullet = m_Bullets[bullet_index];
-			// Fallback is the original path, including per-substep Lua functor lookup.
-			if (process_bullet(rq_storage, bullet, time_delta, true))
+			// Fallback is the original path; the update hook is known to be off here.
+			if (process_bullet(rq_storage, bullet, time_delta, false))
 				continue;
 
 			R_ASSERT(bullet_index <= u16(-1));

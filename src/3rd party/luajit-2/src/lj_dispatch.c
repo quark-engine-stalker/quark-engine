@@ -648,11 +648,10 @@ void LJ_FASTCALL lj_dispatch_ins(lua_State *L, const BCIns *pc)
   slots = cur_topslot(pt, pc, cframe_multres_n(cf));
   L->top = L->base + slots;  /* Fix top. */
 #if LJ_HASPROFILE
+  /* The instruction still goes to the recorder below: a trace that missed it would be compiled wrong. */
   if (g->hookmask & HOOK_PROFILE) {
     lj_profile_interpreter(L);
     L->top = L->base + slots;
-    ERRNO_RESTORE
-    return;
   }
 #endif
 #if LJ_HASJIT

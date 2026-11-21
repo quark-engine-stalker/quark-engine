@@ -383,6 +383,7 @@ void CRenderTarget::phase_bloom()
 
 void CRenderTarget::phase_ssfx_bloom()
 {
+	PIX_EVENT(phase_ssfx_bloom);
 	//Constants
 	u32 Offset = 0;
 	u32 C = color_rgba(0, 0, 0, 0);

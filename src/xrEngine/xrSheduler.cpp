@@ -3,6 +3,7 @@
 #include "xrSheduler.h"
 #include "xr_object.h"
 #include "frame_stats.h"
+#include "../xrCore/mt_tasks.h"
 #include "Feel_Vision.h"
 #include "../xrCore/profiler.h"
 #include "../xrCore/engine_error_logger.h"
@@ -190,6 +191,7 @@ u16 CSheduler::UpdateClassCost(u32 class_index, u32 actual_cost_us, u32 slow_thr
 
 	ClassCostStats& stats = m_class_costs[class_index];
 	stats.total_us += actual_cost_us;
+	stats.main_us += mt_tasks::current_thread_slot() == 0 ? actual_cost_us : 0;
 	++stats.calls;
 	if (actual_cost_us > stats.max_us)
 		stats.max_us = actual_cost_us;
@@ -216,9 +218,24 @@ void CSheduler::ResetClassCosts()
 	for (ClassCostStats& stats : m_class_costs)
 	{
 		stats.total_us = 0;
+		stats.main_us = 0;
 		stats.calls = 0;
 		stats.max_us = 0;
 	}
+}
+
+u32 CSheduler::CopyClassCosts(ClassCostTotal* out, const u32 capacity)
+{
+	xrSRWLockGuard guard(m_class_cost_lock);
+	u32 count = 0;
+	for (const ClassCostStats& stats : m_class_costs)
+	{
+		if (count == capacity)
+			break;
+		out[count++] = {stats.name.c_str() ? stats.name.c_str() : "?", stats.clsid, stats.total_us, stats.main_us,
+			stats.calls};
+	}
+	return count;
 }
 
 void CSheduler::DumpClassCosts(const u32 top, const double seconds, SFrameReportSink& sink)

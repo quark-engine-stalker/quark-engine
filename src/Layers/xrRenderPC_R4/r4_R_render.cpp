@@ -467,8 +467,10 @@ void CRender::Render()
 	if (o.sunstatic) bSUN = FALSE;
 	// Msg						("sstatic: %s, sun: %s",o.sunstatic?;"true":"false", bSUN?"true":"false");
 
+	SFrameDetailParts scene_parts(fsRenderScene, nullptr); // between the stages
 	{
 		SFrameScope stats_scope(fsRendMain);
+		SFrameDetailParts parts(fsRendMain, "occlusion map (HOM)");
 
 		// HOM
 		ViewBase.CreateFromMatrix(Device.mFullTransform, FRUSTUM_P_LRTB + FRUSTUM_P_FAR);
@@ -484,6 +486,7 @@ void CRender::Render()
 
 		PIX_EVENT(DEFER_Z_FILL);
 		SFrameScope stats_zfill_scope(fsRendMain);
+		SFrameDetailParts parts(fsRendMain, "depth prefill", &RCache.stat.calls);
 		Device.Statistic->RenderCALC.Begin();
 		float z_distance = ps_r2_zfill;
 		Fmatrix m_zfill, m_project;
@@ -504,13 +507,16 @@ void CRender::Render()
 		RCache.set_ColorWriteEnable(FALSE);
 		r_dsgraph_render_graph(0);
 		RCache.set_ColorWriteEnable();
+		parts.next(nullptr);
 		stats_zfill_scope.stop();
 	}
 	else
 	{
+		scene_parts.next("scene preparation");
 		Target->phase_scene_prepare();
 	}
 
+	scene_parts.next("scene preparation");
 	{
 
 		//*******
@@ -540,8 +546,10 @@ void CRender::Render()
 
 	//******* Main calc - DEFERRER RENDERER
 	// Main calc
+	scene_parts.next(nullptr);
 	{
 		SFrameScope stats_scope(fsRendMain);
+		SFrameDetailParts parts(fsRendMain, "visible objects and sorting");
 
 		Device.Statistic->RenderCALC.Begin();
 		r_pmask(true, false, true); // enable priority "0",+ capture wmarks
@@ -553,8 +561,15 @@ void CRender::Render()
 		r_pmask(true, false); // disable priority "1"
 		Device.Statistic->RenderCALC.End();
 	}
+	scene_parts.next("wallmarks on models: preparation");
 	if (Wallmarks)
 		Wallmarks->PrepareSkeletonWallmarks();
+	// The sun's cascades and portal traversals now, the walk of their static casters on a worker while the scene
+	// is drawn (render_sun_cascades() joins it).
+	scene_parts.next("sun cascades start");
+	if (bSUN && !ps_r2_ls_flags_ext.is(R2FLAGEXT_SUN_OLD))
+		start_sun_cascades();
+	scene_parts.next("motion vectors and terrain prepass");
 
 	/*if (RImplementation.o.ssfx_core) // SSS23: DEPRECATED
 	{
@@ -597,7 +612,9 @@ void CRender::Render()
 	if (ps_r2_ls_flags.test(R2FLAG_EXP_SPLIT_SCENE)) split_the_scene_to_minimize_wait = TRUE;
 
 	//******* Main render :: PART-0	-- first
+	scene_parts.next(nullptr);
 	SFrameScope stats_geom_scope(fsRendGeom);
+	SFrameDetailParts geom_parts(fsRendGeom, "scene start", &RCache.stat.calls);
 	if (!split_the_scene_to_minimize_wait)
 	{
 
@@ -608,29 +625,30 @@ void CRender::Render()
 			Target->phase_scene_begin();
 		}
 		{
-
+			geom_parts.next("HUD: weapon and hands");
 			r_dsgraph_render_hud();
 		}
 		{
-
+			geom_parts.next("level and objects");
 			r_dsgraph_render_graph(0);
 		}
 		{
-
+			geom_parts.next("distant models (LOD)");
 			r_dsgraph_render_lods(true, true);
 		}
 		if (Details)
 		{
-
+			PIX_EVENT(DEFER_DETAILS);
+			geom_parts.next("grass");
 			Details->Render();
 		}
 		if (ps_r2_ls_flags.test(R2FLAG_TERRAIN_PREPASS))
 		{
-
+			geom_parts.next("terrain");
 			r_dsgraph_render_landscape(1, true);
 		}
 		{
-
+			geom_parts.next("scene end");
 			Target->phase_scene_end();
 		}
 	}
@@ -645,6 +663,7 @@ void CRender::Render()
 		}
 		{
 
+			geom_parts.next("level and objects");
 			r_dsgraph_render_graph(0);
 		}
 		{
@@ -652,6 +671,7 @@ void CRender::Render()
 			Target->disable_aniso();
 		}
 	}
+	geom_parts.next(nullptr);
 	stats_geom_scope.stop();
 
 	//  Redotix99: for 3D Shader Based Scopes 	
@@ -682,6 +702,7 @@ void CRender::Render()
 		stats.l_shadowed = LP.v_shadowed.size();
 		stats.l_unshadowed = LP.v_point.size() + LP.v_spot.size();
 		stats.l_total = stats.l_shadowed + stats.l_unshadowed;
+		g_frame_stats.count(fcLightsTested, stats.l_total);
 
 		// perform tests
 		count = _max(count, LP.v_point.size());
@@ -721,6 +742,8 @@ void CRender::Render()
 	{
 
 		PIX_EVENT(DEFER_PART1_SPLIT);
+		SFrameScope stats_geom_part1_scope(fsRendGeom); // the second half of the geometry pass
+		geom_parts.next("scene start");
 		// skybox can be drawn here
 
 		if (0)
@@ -744,14 +767,25 @@ void CRender::Render()
 
 		// level
 		Target->phase_scene_begin();
+		geom_parts.next("HUD: weapon and hands");
 		r_dsgraph_render_hud();
+		geom_parts.next("distant models (LOD)");
 		r_dsgraph_render_lods(true, true);
-		if (Details) Details->Render();
+		if (Details)
+		{
+			PIX_EVENT(DEFER_DETAILS);
+			geom_parts.next("grass");
+			Details->Render();
+		}
+		geom_parts.next("terrain");
 		if (ps_r2_ls_flags.test(R2FLAG_TERRAIN_PREPASS)) r_dsgraph_render_landscape(1, true);
+		geom_parts.next("scene end");
 		Target->phase_scene_end();
+		geom_parts.next(nullptr);
 	}
 
 	// Wall marks
+	scene_parts.next("wallmarks (bullet holes, blood)");
 	if (Wallmarks)
 	{
 
@@ -762,6 +796,7 @@ void CRender::Render()
 	}
 
 	// Update incremental shadowmap-visibility solver
+	scene_parts.next("shadow visibility queries");
 	{
 
 		PIX_EVENT(DEFER_FLUSH_OCCLUSION);
@@ -790,6 +825,7 @@ void CRender::Render()
 	}
 
 	//	TODO: DX10: Implement DX10 rain.
+	scene_parts.next("wet surfaces");
 	if (ps_r2_ls_flags.test(R3FLAG_DYN_WET_SURF))
 	{
 
@@ -797,6 +833,7 @@ void CRender::Render()
 		render_rain();
 	}
 
+	scene_parts.next("contact shadows (SSS)");
 	{
 		// Save previus and current matrices
 		{
@@ -849,6 +886,7 @@ void CRender::Render()
 		}
 	}
 
+	scene_parts.next(nullptr);
 	// Directional light - fucking sun
 	if (bSUN) //bSUN && Device.dwFrame & 1 --Delayed sun update. Worth to check it in future
 	{
@@ -864,12 +902,14 @@ void CRender::Render()
 			render_sun();
 			render_sun_filtered();
 		}
+		SFrameDetailParts parts(fsRendSun, "direct light blend");
 		Target->accum_direct_blend();
 	}
 
 	{
 
 		PIX_EVENT(DEFER_SELF_ILLUM);
+		SFrameDetailParts parts(fsRenderScene, "glowing surfaces", &RCache.stat.calls);
 		Target->phase_accumulator();
 		// Render emissive geometry, stencil - write 0x0 at pixel pos
 		RCache.set_xform_project(Device.mProject);
@@ -890,6 +930,7 @@ void CRender::Render()
 	if (RImplementation.o.ssfx_bloom)
 	{
 		PIX_EVENT(SSFX_BLOOM_EMISSIVE);
+		SFrameDetailParts parts(fsRenderScene, "glowing surfaces", &RCache.stat.calls);
 		// Render Emissive on `rt_ssfx_bloom_emissive`
 		FLOAT ColorRGBA[4] = { 0,0,0,0 };
 		HW.pContext->ClearRenderTargetView(Target->rt_ssfx_bloom_emissive->pRT, ColorRGBA);
@@ -918,6 +959,7 @@ void CRender::Render()
 	if (RImplementation.o.ssfx_volumetric)
 	{
 		PIX_EVENT(SSFX_VOLUMETRIC_BLUR);
+		SFrameDetailParts parts(fsRenderScene, "volumetric light blur");
 		Target->phase_ssfx_volumetric_blur();
 	}
 
@@ -927,6 +969,7 @@ void CRender::Render()
 		PIX_EVENT(DEFER_LIGHT_COMBINE);
 		SFrameScope stats_scope(fsRendCombine);
 		Target->phase_combine();
+		upscaler::scene_finish();
 	}
 
 	if (Details)

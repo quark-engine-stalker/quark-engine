@@ -61,6 +61,12 @@ namespace luabind { namespace detail
 	}
 
 	thread_local unsigned int g_lua_to_cpp_profile_scope_depth = 0;
+	const lua_call_observer* g_lua_call_observer = nullptr;
+
+	void set_lua_call_observer(const lua_call_observer* observer)
+	{
+		g_lua_call_observer = observer;
+	}
 
 	void set_pcall_gate(void (*gate)(lua_State* L))
 	{
@@ -155,6 +161,7 @@ namespace luabind { namespace detail
 		int result;
 		{
 			const lua_call_scope scope;
+			const observed_lua_call observed(L);
 			result = lua_pcall(L, nargs, nresults, en);
 		}
 		if ( en )
@@ -177,6 +184,7 @@ namespace luabind { namespace detail
 		int result;
 		{
 			const lua_call_scope scope;
+			const observed_lua_call observed(L);
 			result = lua_resume(L, nargs);
 		}
 		if (profile_end)

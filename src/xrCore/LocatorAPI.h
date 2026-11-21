@@ -12,6 +12,7 @@
 #pragma warning(pop)
 
 #include "LocatorAPI_defs.h"
+#include <memory>
 
 class XRCORE_API CStreamReader;
 
@@ -33,12 +34,13 @@ public:
 	struct archive
 	{
 		shared_str path;
-		void *hSrcFile, *hSrcMap;
+		void* hSrcFile;
+		std::shared_ptr<void> mapping;
 		u32 size;
 		CInifile* header;
 		u32 vfs_idx;
 
-		archive() : hSrcFile(NULL), hSrcMap(NULL), header(NULL), size(0), vfs_idx(u32(-1))
+		archive() : hSrcFile(NULL), size(0), header(NULL), vfs_idx(u32(-1))
 		{
 		}
 
@@ -75,26 +77,28 @@ private:
 	void check_pathes();
 
 	files_set m_files;
-	BOOL bNoRecurse;
+	xrSRWLock m_files_lock;
 
 	// Runtime filename lookup cache. m_files remains the source of truth; these
-	// tables only memoize immutable set-element addresses while the FS index is stable.
+	// tables only memoize set-element addresses. Take the index lock before the cache lock.
 	xr_unordered_flat_map<shared_str, const file*> m_file_lookup_cache;
 	xr_unordered_flat_set<shared_str> m_file_negative_cache;
 	xrSRWLock m_file_lookup_cache_lock;
-	void clear_file_lookup_cache();
-	void erase_negative_file_lookup(LPCSTR name);
-	const file* file_find_cached(LPCSTR name);
+	void clear_file_lookup_cache_unlocked();
+	void erase_negative_file_lookup_unlocked(LPCSTR name);
+	const file* file_find_cached_unlocked(LPCSTR name);
 
 	xrCriticalSection m_auth_lock;
 	u64 m_auth_code;
 
 	void Register(LPCSTR name, u32 vfs, u32 crc, u32 ptr, u32 size_real, u32 size_compressed, u32 modif);
+	void register_file_unlocked(LPCSTR name, u32 vfs, u32 crc, u32 ptr, u32 size_real, u32 size_compressed, u32 modif);
+	void load_archive_unlocked(archive& A, LPCSTR entrypoint);
 	void ProcessArchive(LPCSTR path);
-	void ProcessOne(LPCSTR path, const _finddata_t& entry);
-	bool Recurse(LPCSTR path);
+	void ProcessOne(LPCSTR path, const _finddata_t& entry, BOOL recurse);
+	bool Recurse(LPCSTR path, BOOL recurse);
 
-	files_it file_find_it(LPCSTR n);
+	files_it file_find_it_unlocked(LPCSTR n);
 public:
 	enum
 	{
@@ -113,7 +117,7 @@ public:
 
 	Flags32 m_Flags;
 	u32 dwAllocGranularity;
-	u32 dwOpenCounter;
+	xr_atomic_u32 dwOpenCounter{0};
 
 private:
 	void check_cached_files(LPSTR fname, const u32& fname_size, const file& desc, LPCSTR& source_name);
@@ -123,15 +127,23 @@ private:
 	template <typename T>
 	void file_from_cache(T*& R, LPSTR fname, const u32& fname_size, const file& desc, LPCSTR& source_name);
 
-	void file_from_archive(IReader*& R, LPCSTR fname, const file& desc);
-	void file_from_archive(CStreamReader*& R, LPCSTR fname, const file& desc);
+	struct file_open_data
+	{
+		file desc;
+		std::shared_ptr<void> mapping;
+		shared_str archive_path;
+		u32 archive_size = 0;
+	};
+
+	void file_from_archive(IReader*& R, LPCSTR fname, const file_open_data& data);
+	void file_from_archive(CStreamReader*& R, LPCSTR fname, const file_open_data& data);
 
 	void copy_file_to_build(IWriter* W, IReader* r);
 	void copy_file_to_build(IWriter* W, CStreamReader* r);
 	template <typename T>
 	void copy_file_to_build(T*& R, LPCSTR source_name);
 
-	bool check_for_file(LPCSTR path, LPCSTR _fname, string_path& fname, const file*& desc);
+	bool check_for_file(LPCSTR path, LPCSTR _fname, string_path& fname, file_open_data& data);
 
 	template <typename T>
 	IC T* r_open_impl(LPCSTR path, LPCSTR _fname);
@@ -160,6 +172,7 @@ public:
 	void w_close(IWriter*& S);
 	bool write_file_atomic(LPCSTR file_name, const void* prefix, u32 prefix_size, const void* data, u32 data_size);
 
+	// Legacy script metadata is borrowed until the next index mutation.
 	const file* exist(LPCSTR N);
 	const file* exist(LPCSTR path, LPCSTR name);
 	const file* exist(string_path& fn, LPCSTR path, LPCSTR name);

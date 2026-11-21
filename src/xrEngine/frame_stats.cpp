@@ -22,11 +22,16 @@ const SFrameStageInfo stage_info[fsStageCount] =
 	{"frame body", 0, fsFrame},
 	{"update (seqFrame)", 1, fsFrame},
 	{"events/net/spawn", 2, fsUpdate},
+	{"network messages", 3, fsUpdEvents},
+	{"game events", 3, fsUpdEvents},
+	{"postponed spawns", 3, fsUpdEvents},
 	{"objects UpdateCL", 2, fsUpdate},
 	{"hud", 2, fsUpdate},
 	{"scheduler (main thr)", 2, fsUpdate},
 	{"level scripts", 2, fsUpdate},
 	{"physics commander", 2, fsUpdate},
+	{"its own calls", 3, fsUpdPhysics},
+	{"calls of scripts", 3, fsUpdPhysics},
 	{"render prep (skeleton)", 1, fsFrame},
 	{"lua gc (pre)", 1, fsFrame},
 	{"jobs submit", 1, fsFrame},
@@ -93,6 +98,44 @@ u32 sort_classes(const SFrameClassStat* table, SFrameClassStat* sorted)
 }
 
 const SFrameStageInfo& frame_stage_info(const u32 stage) { return stage_info[stage]; }
+
+ENGINE_API bool g_frame_detail_on = false;
+namespace
+{
+SFrameDetail frame_details[256];
+u32 frame_detail_count = 0;
+}
+
+void frame_detail_note(const u32 stage, const char* name, const u64 ticks, const u64 draws)
+{
+	for (u32 index = 0; index < frame_detail_count; ++index)
+	{
+		SFrameDetail& entry = frame_details[index];
+		if (entry.stage == stage && !strncmp(entry.name, name, sizeof(entry.name) - 1))
+		{
+			entry.ticks += ticks;
+			entry.draws += draws;
+			++entry.calls;
+			return;
+		}
+	}
+	if (frame_detail_count == sizeof(frame_details) / sizeof(frame_details[0]))
+		return;
+	SFrameDetail& entry = frame_details[frame_detail_count++];
+	entry.stage = stage;
+	strncpy_s(entry.name, name, _TRUNCATE);
+	entry.ticks = ticks;
+	entry.calls = 1;
+	entry.draws = draws;
+}
+
+u32 frame_detail_take(SFrameDetail* out, const u32 capacity)
+{
+	const u32 count = _min(frame_detail_count, capacity);
+	memcpy(out, frame_details, count * sizeof(SFrameDetail));
+	frame_detail_count = 0;
+	return count;
+}
 
 void SFrameReportSink::line(const char* format, ...)
 {
@@ -259,8 +302,9 @@ void SFrameStats::report(const u32 top, SFrameReportSink& sink) const
 	// Remainders ("other") are printed explicitly so that the list adds up to 100%.
 	{
 		u64 update_children = 0;
-		for (u32 child = fsUpdEvents; child <= fsUpdPhysics; ++child)
-			update_children += sum[child];
+		for (u32 child = fsUpdEvents; child <= fsPhScripts; ++child)
+			if (stage_info[child].depth == 2)
+				update_children += sum[child];
 		const double update_other = ticks_to_ms(sum[fsUpdate] > update_children ? sum[fsUpdate] - update_children : 0) / frame_count;
 
 		u64 frame_children = 0;
@@ -311,10 +355,12 @@ void SFrameStats::report(const u32 top, SFrameReportSink& sink) const
 			"shadow cache miss: particles/skinned/translucent",
 			"shadow cache miss: HUD light or no free slot",
 			"sun cascades rendered",
+			"  ... far cascade reused from the previous frame",
 			"sun shadow draw calls",
 			"sun shadow polygons",
 			"constant buffer uploads",
 			"constant buffer bytes uploaded",
+			"light sources tested for visibility",
 		};
 		sink.line("[frame_stats] renderer counters (per frame): %-44s %10s %10s", "counter", "avg", "max");
 		for (u32 index = 0; index < fcCounterCount; ++index)

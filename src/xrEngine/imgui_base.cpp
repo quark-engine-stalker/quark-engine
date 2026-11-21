@@ -4,6 +4,7 @@
 #include <imgui/IconsFontAwesome6.h>
 #include "device.h"
 #include "IGame_Persistent.h"
+#include "frame_stats.h"
 #include "resource.h"
 
 bool LoadPngResourceRGBA(int resource_id, xr_vector<u32>& pixels, u32& width, u32& height); // x_ray.cpp
@@ -61,8 +62,8 @@ namespace xr_imgui
 
     void ide::OnDeviceDestroy()
     {
-        m_logo = nullptr; // the render releases its textures
-        m_logo_tried = false;
+        for (panel_texture& image : m_panel_images)
+            image = {}; // the render releases its textures
         m_render->OnDeviceDestroy();
         RenderFactory->DestroyImGuiRender(m_render);
         m_render = nullptr;
@@ -110,13 +111,28 @@ namespace xr_imgui
         IconConfig.OversampleH = 2;
         io.Fonts->AddFontFromMemoryCompressedTTF(ttf_compressed_icons, ttf_compressed_size, xrImGuiFontSize, &IconConfig, icons_ranges);
 
-        // Quark-MT: the title and the numbers. After the icons, they merge into the font added before them.
-        ImFontConfig BigConfig;
-        xr_strcpy(BigConfig.Name, sizeof(BigConfig.Name), "$big");
-        BigConfig.OversampleH = 2;
-        ttf_compressed = GetCustomCompressedFontDataTTF(&ttf_compressed_size);
-        if (ImFont* bigFont = io.Fonts->AddFontFromMemoryCompressedTTF(ttf_compressed, ttf_compressed_size, 26.f, &BigConfig))
-            ImFonts.emplace(mk_pair("$big", bigFont));
+        // QUARK-PANEL's own fonts, resources of the executable (OFL, quark_panel_fonts_OFL.txt): Play for its text, Days
+        // One for the big numbers, the tabs and the group titles. After the icons, they merge into the font added before
+        // them. Other ImGui windows (the mods' too) keep $default.
+        const auto panel_font = [&](int resource, float size, LPCSTR name)
+        {
+            const HMODULE module = GetModuleHandle(nullptr);
+            const HRSRC found = FindResource(module, MAKEINTRESOURCE(resource), RT_RCDATA);
+            const HGLOBAL loaded = found ? LoadResource(module, found) : nullptr;
+            void* data = loaded ? LockResource(loaded) : nullptr; // lives as long as the process
+            if (!data)
+                return;
+            ImFontConfig config;
+            xr_strcpy(config.Name, sizeof(config.Name), name);
+            config.FontDataOwnedByAtlas = false;
+            config.OversampleH = 2;
+            if (ImFont* font = io.Fonts->AddFontFromMemoryTTF(data, int(SizeofResource(module, found)), size, &config,
+                io.Fonts->GetGlyphRangesCyrillic()))
+                ImFonts.emplace(mk_pair(name, font));
+        };
+        panel_font(IDR_PANEL_FONT_TTF, xrImGuiFontSize, "$panel");
+        panel_font(IDR_PANEL_DISPLAY_TTF, 15.f, "$panel_head");
+        panel_font(IDR_PANEL_DISPLAY_TTF, 26.f, "$big");
 
         // load fonts from gamedata/textures/fonts/
         string_path fontPath;
@@ -198,6 +214,7 @@ namespace xr_imgui
 
     void ide::OnRender()
     {
+        SFrameDetailParts parts(fsRenderScene, "ImGui windows (QUARK-PANEL, mods)");
         ImGui::Render();
         m_render->Render(ImGui::GetDrawData());
 
@@ -290,18 +307,20 @@ namespace xr_imgui
         m_shown ? EnableInput(true) : Show(true);
     }
 
-    void* ide::PanelLogo(u32& width, u32& height)
+    void* ide::PanelImage(panel_image which, u32& width, u32& height)
     {
-        if (!m_logo_tried && m_render)
+        panel_texture& image = m_panel_images[which];
+        if (!image.tried && m_render)
         {
-            m_logo_tried = true;
+            image.tried = true;
             xr_vector<u32> pixels;
-            if (LoadPngResourceRGBA(IDR_PANEL_LOGO_PNG, pixels, m_logo_width, m_logo_height))
-                m_logo = m_render->CreateTexture(pixels.data(), m_logo_width, m_logo_height);
+            if (LoadPngResourceRGBA(which == panel_title ? IDR_PANEL_TITLE_PNG : IDR_PANEL_LOGO_PNG, pixels, image.width,
+                image.height))
+                image.texture = m_render->CreateTexture(pixels.data(), image.width, image.height);
         }
-        width = m_logo_width;
-        height = m_logo_height;
-        return m_logo;
+        width = image.width;
+        height = image.height;
+        return image.texture;
     }
 
     ImFont* ide::GetFont(LPCSTR name)

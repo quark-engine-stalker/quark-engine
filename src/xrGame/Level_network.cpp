@@ -88,6 +88,7 @@ void CLevel::remove_objects()
 		xrSRWLockGuard g(prefetch_lock);
 		prefetch_events->clear();
 		spawn_events->queue.clear();
+		spawn_events_owned->queue.clear();
 		spawn_events_data->clear();
 	}
 	_InterlockedExchange(&closeSignal, FALSE);

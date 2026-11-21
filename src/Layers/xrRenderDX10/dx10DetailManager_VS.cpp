@@ -198,7 +198,7 @@ __declspec(noinline) CDetailManager::PackedDetailKey* CDetailManager::prepare_up
 }
 
 __declspec(noinline) bool CDetailManager::cached_slot_upload(const VisibleSlotItems& visible,
-	PackedDetailKey& frame_key, u32 variant, float slot_scale,
+	PackedDetailKey& frame_key, u32 variant, float slot_scale, u32 keep_rank,
 	const Fvector4*& transforms, const Fvector4*& extra, u32& count)
 {
 	// prepare_upload_keys validates FP control once after shader setup, before
@@ -227,7 +227,7 @@ __declspec(noinline) bool CDetailManager::cached_slot_upload(const VisibleSlotIt
 			continue;
 		PackedDetailSlot& entry = m_detail_upload_slots[index];
 		if (entry.source == &items && entry.source_generation == slot.grass_upload_source_generation &&
-			memcmp(&entry.scale, &slot_scale, sizeof(float)) == 0)
+			memcmp(&entry.scale, &slot_scale, sizeof(float)) == 0 && entry.keep_rank == keep_rank)
 		{
 			entry.last_used_frame = frame;
 			transforms = m_detail_upload_xforms.data() + entry.offset * 4;
@@ -253,7 +253,7 @@ __declspec(noinline) bool CDetailManager::cached_slot_upload(const VisibleSlotIt
 			}
 			VERIFY(index < m_detail_upload_slots.size());
 			PackedDetailSlot& entry = m_detail_upload_slots[index];
-			const bool same_scale = memcmp(&entry.scale, &slot_scale, sizeof(float)) == 0;
+			const bool same_scale = memcmp(&entry.scale, &slot_scale, sizeof(float)) == 0 && entry.keep_rank == keep_rank;
 			if (entry.source_generation == slot.grass_upload_source_generation &&
 				same_scale)
 			{
@@ -317,7 +317,7 @@ __declspec(noinline) bool CDetailManager::cached_slot_upload(const VisibleSlotIt
 	for (const SlotItem* item : items)
 	{
 		VERIFY(item->alpha_target != 0);
-		if (item->alpha <= 0.f)
+		if (item->alpha <= 0.f || item->lod_rank >= keep_rank)
 			continue;
 		const float scale = item->scale * slot_scale;
 		if (scale <= 0.f)
@@ -328,7 +328,7 @@ __declspec(noinline) bool CDetailManager::cached_slot_upload(const VisibleSlotIt
 		++packed_count;
 	}
 	const PackedDetailSlot entry = {&items, slot.grass_upload_source_generation,
-		slot_scale, offset, capacity, packed_count, frame};
+		slot_scale, keep_rank, offset, capacity, packed_count, frame};
 	if (replace_index != u32(-1))
 		m_detail_upload_slots[replace_index] = entry;
 	else
@@ -446,36 +446,51 @@ void CDetailManager::hw_Render()
 	// variants without rebuilding the same CPU state.
 	RCache.set_Geometry(hw_Geom);
 	const DetailFrameState& state = m_frame_state;
-	hw_Render_dump(state.animated_consts, state.wave[0], state.wind[0],
-		state.previous_wave[0], state.previous_wind[0], 1, 0,
-		state.current_benders, state.previous_benders, state.bender_count);
-	hw_Render_dump(state.animated_consts, state.wave[1], state.wind[1],
-		state.previous_wave[1], state.previous_wind[1], 2, 0,
-		state.current_benders, state.previous_benders, state.bender_count);
+	// The main pass goes front to back across models (see near_distance), the shadow passes draw the lists as they are
+	const bool main_pass = RImplementation.phase == RImplementation.PHASE_NORMAL && fade_distance > -1.f;
+	for (u32 band = main_pass ? 0 : all_bands; band < all_bands + (main_pass ? 0 : 1); ++band)
+	{
+		if (main_pass && band == all_bands - 1 && !m_grass_tiles.empty())
+		{
+			query_grass_tiles(); // against the depth of everything drawn so far, the nearer grass included
+			RCache.set_Geometry(hw_Geom);
+		}
+		hw_Render_dump(state.animated_consts, state.wave[0], state.wind[0],
+			state.previous_wave[0], state.previous_wind[0], 1, 0,
+			state.current_benders, state.previous_benders, state.bender_count, band);
+		hw_Render_dump(state.animated_consts, state.wave[1], state.wind[1],
+			state.previous_wave[1], state.previous_wind[1], 2, 0,
+			state.current_benders, state.previous_benders, state.bender_count, band);
+	}
+	if (main_pass)
+	{
+		m_near.clear_not_free(); // drawn: the lists of a frame are drawn once
+		m_near_runs.clear_not_free();
+	}
 	hw_Render_dump(state.still_consts, state.wave[1], state.wind[1],
 		state.previous_wave[1], state.previous_wind[1], 0, 1,
-		state.current_benders, state.previous_benders, state.bender_count);
+		state.current_benders, state.previous_benders, state.bender_count, all_bands);
 }
 
 
 void CDetailManager::hw_Render_dump(const Fvector4& consts, const Fvector4& wave, const Fvector4& wind,
 	const Fvector4& prev_wave, const Fvector4& prev_wind, u32 var_id, u32 lod_id,
-	const Fvector4* current_benders, const Fvector4* previous_benders, u32 bender_count)
+	const Fvector4* current_benders, const Fvector4* previous_benders, u32 bender_count, u32 band)
 {
 	PROF_EVENT();
 	const bool reuse_upload = fade_distance > -1.f;
 	if (reuse_upload)
 		hw_Render_dump_impl<true>(consts, wave, wind, prev_wave, prev_wind, var_id, lod_id,
-			current_benders, previous_benders, bender_count);
+			current_benders, previous_benders, bender_count, band);
 	else
 		hw_Render_dump_impl<false>(consts, wave, wind, prev_wave, prev_wind, var_id, lod_id,
-			current_benders, previous_benders, bender_count);
+			current_benders, previous_benders, bender_count, band);
 }
 
 template <bool packed_upload>
 void CDetailManager::hw_Render_dump_impl(const Fvector4& consts, const Fvector4& wave, const Fvector4& wind,
 	const Fvector4& prev_wave, const Fvector4& prev_wind, u32 var_id, u32 lod_id,
-	const Fvector4* current_benders, const Fvector4* previous_benders, u32 bender_count)
+	const Fvector4* current_benders, const Fvector4* previous_benders, u32 bender_count, u32 band)
 {
 	// One guarded initialization instead of thirteen TLS guard checks per call.
 	static DetailConstantNames constant_names;
@@ -509,16 +524,58 @@ void CDetailManager::hw_Render_dump_impl(const Fvector4& consts, const Fvector4&
 	const u32 object_count = objects.size();
 	// The rows MT_CALC packs for this frame fit a pass without per-slot fade: no lamp or cascade filter and every
 	// slot nearer than the fade distance (scale * 1.f). The FP control of the packing thread must be ours.
-	const bool use_main_pack = !use_light_fade && !use_sun_cascade_filter && m_main_pack_frame == RDEVICE.dwFrame &&
-		(_mm_getcsr() & ~0x3fu) == m_main_pack_fp_control;
+	// The chunks follow the bands of the main pass
+	const bool use_main_pack = RImplementation.phase == RImplementation.PHASE_NORMAL && !use_light_fade &&
+		!use_sun_cascade_filter && m_main_pack_frame == RDEVICE.dwFrame && (_mm_getcsr() & ~0x3fu) == m_main_pack_fp_control;
+	const bool near_band = band < near_bands;
+	const bool near_runs = near_band && m_near_runs.size() == near_bands * 3 * object_count + 1;
+	// The pass empties a list once it has drawn the whole of it
+	const bool list_done = band >= all_bands - 1;
 	u32 slow_instances = 0; // written from the scattered instances, neither packed nor in the upload cache
+	// Variant 0 and the far band of the main pass go tile by tile under the predicates query_grass_tiles issued
+	const bool tiled = RImplementation.phase == RImplementation.PHASE_NORMAL && !use_light_fade &&
+		band == (var_id ? all_bands - 1 : all_bands) && !m_grass_tiles.empty();
+	u32 current_tile = 0;
+	bool in_tile = false; // every key value is a tile: (-1, -1) is 0xffffffff
+	ID3D11Predicate* current_predicate = nullptr;
+	// Distance and light fading are slot-wide values. The same slot can contribute several model parts and all three
+	// detail variants, so calculate the coefficient once per render pass and reuse it.
+	auto slot_render_scale = [&](Slot& slot)
+	{
+		float slot_fade;
+		if (slot.grass_render_fade_generation == render_fade_generation)
+		{
+			slot_fade = slot.grass_render_fade;
+		}
+		else
+		{
+			slot_fade = 1.f;
+			if (use_light_fade)
+				slot_fade -= slot.vis.sphere.P.distance_to_xz_sqr(render_light_position) * 0.005f;
+			else if (slot.distance > render_fade_distance)
+				slot_fade -= (slot.distance - render_fade_distance) * 0.005f;
+
+			slot.grass_render_fade = slot_fade;
+			slot.grass_render_fade_generation = render_fade_generation;
+		}
+		return slot.visibility_scale * slot_fade;
+	};
 
 	// Iterate
 	for (u32 O = 0; O < object_count; O++)
 	{
 		CDetail& Object = *objects[O];
 		xr_vector<VisibleSlotItems>& vis = list[O];
-		const u32 first_chunk = use_main_pack ? m_main_pack_first[var_id][O] : 0;
+		u32 range_begin = 0, range_end = 0; // of m_near in a near band, of vis otherwise
+		if (near_runs)
+		{
+			const u32 run = (band * 3 + var_id) * object_count + O;
+			range_begin = m_near_runs[run];
+			range_end = m_near_runs[run + 1];
+		}
+		else if (!near_band)
+			band_range(vis, band, range_begin, range_end);
+		const u32 first_chunk = use_main_pack && !near_band ? m_main_pack_first[band_pack_index(band, var_id, O)] : 0;
 		const bool model_in_sun_cascade = !use_sun_cascade_filter ||
 			(O < m_grass_sun_object_masks[var_id].size() &&
 			 (m_grass_sun_object_masks[var_id][O] & sun_cascade_bit));
@@ -541,9 +598,11 @@ void CDetailManager::hw_Render_dump_impl(const Fvector4& consts, const Fvector4&
 				}
 			}
 
-			if (has_spot_candidate)
+			if (has_spot_candidate && (range_begin < range_end || use_sun_cascade_filter))
 			{
-				ref_selement& detail_element = Object.shader->E[lod_id];
+				// The shadow maps take only the depth: the material whose pixel shaders run only their alpha test
+				ref_selement& detail_element = (RImplementation.phase == RImplementation.PHASE_SMAP && Object.shader_depth ?
+					Object.shader_depth : Object.shader)->E[lod_id];
 				for (u32 iPass = 0; iPass < detail_element->passes.size(); ++iPass)
 				{
 					SPass& detail_pass = *detail_element->passes[iPass];
@@ -619,22 +678,77 @@ void CDetailManager::hw_Render_dump_impl(const Fvector4& consts, const Fvector4&
 					bool batch_storage_needs_reacquire = true;
 
 					u32 dwBatch = 0;
+					// A batch maps its constant storage only once an instance survives the CPU-side rejection; a full one
+					// is drawn and the next one maps again
+					auto acquire_batch = [&]()
+					{
+						void* extra_data;
+						RCache.get_ConstantDirect(c_extra_data, extra_data_bytes, &extra_data, 0, 0);
+						c_ExData = static_cast<Fvector4*>(extra_data);
+						VERIFY(c_ExData);
+						void* array_data;
+						RCache.get_ConstantDirect(c_array, array_bytes, &array_data, 0, 0);
+						c_storage = static_cast<Fvector4*>(array_data);
+						VERIFY(c_storage);
+						batch_storage_needs_reacquire = false;
+					};
+					auto submit_batch = [&]()
+					{
+						render_detail_batch(Object, dwBatch, vOffset, iOffset);
+						dwBatch = 0;
+						batch_storage_needs_reacquire = true;
+					};
+					// A batch holds the instances of one predicate: split where the predicate changes
+					auto enter_tile = [&](const Slot& slot)
+					{
+						const u32 key = grass_tile_key(slot);
+						if (in_tile && key == current_tile)
+							return;
+						current_tile = key;
+						in_tile = true;
+						ID3D11Predicate* const predicate = grass_tile_predicate(key);
+						if (predicate == current_predicate)
+							return;
+						if (dwBatch)
+							submit_batch();
+						HW.pContext->SetPredication(predicate, FALSE);
+						current_predicate = predicate;
+					};
 					u32 upload_key_count = 0;
 					PackedDetailKey* upload_keys = nullptr;
 					bool upload_fp_matches = false;
 					bool upload_keys_prepared = false; // by the first chunk this pass writes itself
 
+					// A near band: its instances one by one, as sort_near_instances ordered them
+					for (u32 position = near_band ? range_begin : range_end; position < range_end; ++position)
+					{
+						const NearInstance& instance = m_near[position];
+						if (instance.item->alpha <= 0.f)
+							continue;
+						const float scale = instance.item->scale * slot_render_scale(*instance.slot);
+						if (scale <= 0.f)
+							continue;
+						if (batch_storage_needs_reacquire)
+							acquire_batch();
+						pack_detail_instance(*instance.item, scale, &c_storage[dwBatch * 4], c_ExData ? &c_ExData[dwBatch] : nullptr);
+						if (++dwBatch == batch_size)
+							submit_batch();
+					}
 					// A sun cascade walks only its own slots, PrepareSunShadowCascades lists them in the order of vis
 					const xr_vector<u32>* const cascade_slots = use_sun_cascade_filter ?
 						&m_grass_sun_slots[m_grass_sun_cascade_index][var_id][O] : nullptr;
-					const u32 walk_count = static_cast<u32>(cascade_slots ? cascade_slots->size() : vis.size());
+					const u32 walk_begin = cascade_slots || near_band ? 0 : range_begin;
+					const u32 walk_count = cascade_slots ? static_cast<u32>(cascade_slots->size()) : near_band ? 0 : range_end;
 					// The main pass goes chunk by chunk: a chunk a lane has packed is copied, the others are written here;
 					// the lanes stop at the claimed chunk
-					const u32 segment = use_main_pack ? main_pack_chunk : _max(walk_count, 1u);
-					for (u32 segment_begin = 0, chunk = first_chunk; segment_begin < walk_count;
-						segment_begin += segment, ++chunk)
+					u32 segment_end = walk_begin;
+					for (u32 segment_begin = walk_begin, chunk = first_chunk; segment_begin < walk_count;
+						segment_begin = segment_end, ++chunk)
 					{
-					const u32 segment_end = _min(segment_begin + segment, walk_count);
+					// A chunk covers the entries MT_CALC gave it (the tiled ones end at tile edges)
+					segment_end = use_main_pack ? _min(m_main_pack[chunk].end, walk_count) : walk_count;
+					VERIFY(!use_main_pack || m_main_pack[chunk].begin == segment_begin);
+					segment_end = _max(segment_end, segment_begin + 1);
 					if (use_main_pack)
 					{
 						InterlockedExchange(&m_main_pack_claim, static_cast<LONG>(chunk));
@@ -642,23 +756,15 @@ void CDetailManager::hw_Render_dump_impl(const Fvector4& consts, const Fvector4&
 						if (InterlockedCompareExchange(&pack.ready, 0, 0) == static_cast<LONG>(RDEVICE.dwFrame) &&
 							pack.farthest <= render_fade_distance)
 						{
+						if (tiled)
+							enter_tile(*vis[segment_begin].slot);
 						const Fvector4* const packed_rows = pack.rows.data();
 						const Fvector4* const packed_extra = pack.extra.data();
 						u32 copied = 0;
 						while (copied < pack.count)
 						{
 							if (batch_storage_needs_reacquire)
-							{
-								void* extra_data;
-								RCache.get_ConstantDirect(c_extra_data, extra_data_bytes, &extra_data, 0, 0);
-								c_ExData = static_cast<Fvector4*>(extra_data);
-								VERIFY(c_ExData);
-								void* array_data;
-								RCache.get_ConstantDirect(c_array, array_bytes, &array_data, 0, 0);
-								c_storage = static_cast<Fvector4*>(array_data);
-								VERIFY(c_storage);
-								batch_storage_needs_reacquire = false;
-							}
+								acquire_batch();
 							const u32 take = _min(pack.count - copied, batch_size - dwBatch);
 							copy_detail_rows(c_storage + dwBatch * 4, packed_rows + copied * 4, take * 4);
 							if (c_ExData)
@@ -666,11 +772,7 @@ void CDetailManager::hw_Render_dump_impl(const Fvector4& consts, const Fvector4&
 							copied += take;
 							dwBatch += take;
 							if (dwBatch == batch_size)
-							{
-								render_detail_batch(Object, dwBatch, vOffset, iOffset);
-								dwBatch = 0;
-								batch_storage_needs_reacquire = true;
-							}
+								submit_batch();
 						}
 						continue; // the chunk's instances were in its rows
 						}
@@ -693,29 +795,14 @@ void CDetailManager::hw_Render_dump_impl(const Fvector4& consts, const Fvector4&
 						Slot& slot = *visible.slot;
 						if (use_light_fade && slot.grass_spot_candidate_generation != spot_candidate_generation)
 							continue;
+						if (tiled)
+							enter_tile(slot);
 
-						// Distance and light fading are slot-wide values. The same slot can
-						// contribute several model parts and all three detail variants, so
-						// calculate the coefficient once per render pass and reuse it.
-						float slot_fade;
-						if (slot.grass_render_fade_generation == render_fade_generation)
-						{
-							slot_fade = slot.grass_render_fade;
-						}
-						else
-						{
-							slot_fade = 1.f;
-							if (use_light_fade)
-								slot_fade -= slot.vis.sphere.P.distance_to_xz_sqr(render_light_position) * 0.005f;
-							else if (slot.distance > render_fade_distance)
-								slot_fade -= (slot.distance - render_fade_distance) * 0.005f;
-
-							slot.grass_render_fade = slot_fade;
-							slot.grass_render_fade_generation = render_fade_generation;
-						}
-						const float slot_scale = slot.visibility_scale * slot_fade;
+						const float slot_scale = slot_render_scale(slot);
 					if (slot_scale <= 0.f)
 						continue;
+					// A sun cascade draws the slot's instances below its lod_rank limit (PrepareSunShadowCascades)
+					const u32 keep_rank = use_sun_cascade_filter ? slot.grass_sun_keep : 65536u;
 
 					const size_t item_count = items.size();
 					if (!item_count)
@@ -729,24 +816,14 @@ void CDetailManager::hw_Render_dump_impl(const Fvector4& consts, const Fvector4&
 						const Fvector4* cached_transforms;
 						const Fvector4* cached_extra;
 						u32 cached_count;
-						if (cached_slot_upload(visible, upload_keys[position], var_id, slot_scale,
+						if (cached_slot_upload(visible, upload_keys[position], var_id, slot_scale, keep_rank,
 							cached_transforms, cached_extra, cached_count))
 						{
 							u32 copied = 0;
 							while (copied < cached_count)
 							{
 								if (batch_storage_needs_reacquire)
-								{
-									void* extra_data;
-									RCache.get_ConstantDirect(c_extra_data, extra_data_bytes, &extra_data, 0, 0);
-									c_ExData = static_cast<Fvector4*>(extra_data);
-									VERIFY(c_ExData);
-									void* array_data;
-									RCache.get_ConstantDirect(c_array, array_bytes, &array_data, 0, 0);
-									c_storage = static_cast<Fvector4*>(array_data);
-									VERIFY(c_storage);
-									batch_storage_needs_reacquire = false;
-								}
+									acquire_batch();
 								const u32 take = _min(cached_count - copied, batch_size - dwBatch);
 								copy_detail_rows(c_storage + dwBatch * 4,
 									cached_transforms + copied * 4, take * 4);
@@ -755,11 +832,7 @@ void CDetailManager::hw_Render_dump_impl(const Fvector4& consts, const Fvector4&
 								copied += take;
 								dwBatch += take;
 								if (dwBatch == batch_size)
-								{
-									render_detail_batch(Object, dwBatch, vOffset, iOffset);
-									dwBatch = 0;
-									batch_storage_needs_reacquire = true;
-								}
+									submit_batch();
 							}
 							continue;
 						}
@@ -790,7 +863,7 @@ void CDetailManager::hw_Render_dump_impl(const Fvector4& consts, const Fvector4&
 
 						// Alpha lives with the transform/normal data. Reject fully faded
 						// instances before touching scale on the following cache line.
-						if (Instance.alpha <= 0.f)
+						if (Instance.alpha <= 0.f || Instance.lod_rank >= keep_rank)
 							continue;
 
 						const float scale = Instance.scale * slot_scale;
@@ -801,64 +874,24 @@ void CDetailManager::hw_Render_dump_impl(const Fvector4& consts, const Fvector4&
 						// marking the next batch until an instance really survives culling;
 						// otherwise an exact final batch caused a redundant GPU upload later.
 						if (batch_storage_needs_reacquire)
-						{
-							void* extra_data;
-							RCache.get_ConstantDirect(c_extra_data, extra_data_bytes, &extra_data, 0, 0);
-							c_ExData = static_cast<Fvector4*>(extra_data);
-							VERIFY(c_ExData);
-							void* array_data;
-							RCache.get_ConstantDirect(c_array, array_bytes, &array_data, 0, 0);
-							c_storage = static_cast<Fvector4*>(array_data);
-							VERIFY(c_storage);
-							batch_storage_needs_reacquire = false;
-						}
+							acquire_batch();
 
-						// The transform is already stored in the layout consumed by the
-						// shader. SIMD scales xyz while preserving translation in w.
-						const __m128 scale_xyz = _mm_blend_ps(_mm_set1_ps(scale), _mm_set1_ps(1.f), 0x8);
-						_mm_store_ps(&c_storage[base + 0].x,
-							_mm_mul_ps(_mm_load_ps(&Instance.xform[0].x), scale_xyz));
-						_mm_store_ps(&c_storage[base + 1].x,
-							_mm_mul_ps(_mm_load_ps(&Instance.xform[1].x), scale_xyz));
-						_mm_store_ps(&c_storage[base + 2].x,
-							_mm_mul_ps(_mm_load_ps(&Instance.xform[2].x), scale_xyz));
-						//RCache.set_ca(&*constArray, base+0, M._11*scale,	M._21*scale,	M._31*scale,	M._41	);
-						//RCache.set_ca(&*constArray, base+1, M._12*scale,	M._22*scale,	M._32*scale,	M._42	);
-						//RCache.set_ca(&*constArray, base+2, M._13*scale,	M._23*scale,	M._33*scale,	M._43	);
-
-						// Build color
-						// R2 only needs hemisphere
-						const __m128 color = _mm_blend_ps(_mm_set1_ps(Instance.c_sun),
-							_mm_set1_ps(Instance.c_hemi), 0x8);
-						_mm_store_ps(&c_storage[base + 3].x, color);
-
-						if (c_ExData)
-							_mm_store_ps(&c_ExData[dwBatch].x, _mm_load_ps(&Instance.normal.x));
-
-						//RCache.set_ca(&*constArray, base+3, s,				s,				s,				h		);
+						pack_detail_instance(Instance, scale, &c_storage[base], c_ExData ? &c_ExData[dwBatch] : nullptr);
 						++slow_instances;
 						dwBatch ++;
 						if (dwBatch == batch_size)
-						{
-							render_detail_batch(Object, dwBatch, vOffset, iOffset);
-
-							// restart
-							dwBatch = 0;
-							batch_storage_needs_reacquire = true;
-						}
+							submit_batch();
 					}
 					}
 					} // chunks
 					// flush if nessecary
 					if (dwBatch)
-					{
 						render_detail_batch(Object, dwBatch, vOffset, iOffset);
-					}
 				}
 			}
 			// Clean up
 			// KD: we must not clear vis on r2 since we want details shadows
-			if (ps_ssfx_grass_shadows.x <= 0)
+			if (ps_ssfx_grass_shadows.x <= 0 && list_done)
 			{
 				if (!psDeviceFlags2.test(rsGrassShadow) || ((ps_r2_ls_flags.test(R2FLAG_SUN_DETAILS) && (RImplementation.PHASE_SMAP ==
 					RImplementation.phase)) // phase smap with shadows
@@ -867,14 +900,14 @@ void CDetailManager::hw_Render_dump_impl(const Fvector4& consts, const Fvector4&
 					|| (!ps_r2_ls_flags.test(R2FLAG_SUN_DETAILS) && (RImplementation.PHASE_NORMAL == RImplementation.phase))
 					)) // phase normal without shadows
 				{
-					// A packing lane may still read a chunk of this list: it sees the claim at its next slot
-					const LONG chunks_end = static_cast<LONG>(first_chunk +
-						(vis.size() + main_pack_chunk - 1) / main_pack_chunk);
+					// A packing lane may still read a chunk of this list: the pass has claimed all of them, so the lane sees the
+					// claim at its next slot. The lanes reading later chunks read other lists.
+					const LONG claimed = m_main_pack_claim;
 					for (u32 lane = 0; use_main_pack && lane < main_pack_lanes; ++lane)
 						for (u32 spin = 0; ; ++spin)
 						{
 							const LONG reading = m_main_pack_current[lane];
-							if (reading < static_cast<LONG>(first_chunk) || reading >= chunks_end)
+							if (reading < 0 || reading > claimed)
 								break;
 							spin < 256 ? YieldProcessor() : static_cast<void>(SwitchToThread());
 						}
@@ -885,6 +918,80 @@ void CDetailManager::hw_Render_dump_impl(const Fvector4& consts, const Fvector4&
 		vOffset += batch_size * Object.number_vertices;
 		iOffset += batch_size * Object.number_indices;
 	}
+	if (current_predicate)
+		HW.pContext->SetPredication(nullptr, FALSE);
 	if (use_main_pack)
 		m_main_slow_instances += slow_instances; // MT_CALC sizes the next frame's packing by it
+}
+
+// One occlusion predicate per tile: its box, grown by what the vertex shader may move a blade (wind, benders, the
+// push up the slope), drawn with the depth test only. Tiles at the camera get none: a box cut by the near plane could
+// hide what is in it.
+void CDetailManager::query_grass_tiles()
+{
+	constexpr float margin = 2.5f;
+	constexpr u32 box_vertices = 36;
+	constexpr u32 min_indices = 16384; // ~2 us of far grass vertex work: a smaller tile costs less drawn than predicated
+	const u32 count = _min(static_cast<u32>(m_grass_tiles.size()), 4096u); // 1.7 MB of the 4 MB dynamic buffer
+	for (GrassTile& tile : m_grass_tiles)
+		tile.predicate = nullptr;
+	const u32 pool = m_grass_tile_pool ^= 1;
+	xr_vector<ID3D11Predicate*>& predicates = m_grass_tile_predicates[pool];
+	while (predicates.size() < count)
+	{
+		D3D11_QUERY_DESC desc = {D3D11_QUERY_OCCLUSION_PREDICATE, 0};
+		ID3D11Predicate* predicate = nullptr;
+		if (FAILED(HW.pDevice->CreatePredicate(&desc, &predicate)) || !predicate)
+			return;
+		predicates.push_back(predicate);
+	}
+	// Fbox::getpoint corners: 0-3 the bottom (min y) ring, 4-7 the top ring above them
+	static const u8 corners[box_vertices] = {0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4,
+		3, 2, 6, 3, 6, 7, 0, 3, 7, 0, 7, 4, 1, 2, 6, 1, 6, 5};
+	u32 base = 0;
+	Fvector* vertices = static_cast<Fvector*>(RCache.Vertex.Lock(count * box_vertices, m_grass_tile_geom->vb_stride, base));
+	for (u32 i = 0; i < count; ++i)
+	{
+		Fbox box = m_grass_tiles[i].box;
+		box.grow(margin);
+		for (u32 v = 0; v < box_vertices; ++v)
+			box.getpoint(corners[v], *vertices++);
+	}
+	RCache.Vertex.Unlock(count * box_vertices, m_grass_tile_geom->vb_stride);
+
+	RCache.set_Shader(RImplementation.Target->s_occq); // the depth test, no depth write
+	RCache.set_ColorWriteEnable(FALSE);
+	RCache.set_Stencil(FALSE);
+	RCache.set_CullMode(CULL_NONE);
+	RCache.set_Geometry(m_grass_tile_geom);
+	const Fvector& eye = Device.vCameraPosition;
+	const xr_unordered_map<u32, GrassTileQuery>& last = m_grass_tile_queries[pool ^ 1];
+	xr_unordered_map<u32, GrassTileQuery>& issued = m_grass_tile_queries[pool];
+	issued.clear();
+	for (u32 i = 0; i < count; ++i)
+	{
+		GrassTile& tile = m_grass_tiles[i];
+		if (tile.indices < min_indices)
+			continue;
+		Fbox near_box = tile.box;
+		near_box.grow(margin + 2.f);
+		if (near_box.contains(eye))
+			continue;
+		bool visible = false; // hidden or not known: predicated
+		const auto it = last.find(tile.key);
+		if (it != last.end())
+		{
+			BOOL seen = FALSE;
+			visible = HW.pContext->GetData(it->second.predicate, &seen, sizeof(seen), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK ?
+				seen != FALSE : it->second.visible;
+		}
+		ID3D11Predicate* const predicate = predicates[i];
+		HW.pContext->Begin(predicate);
+		RCache.Render(D3DPT_TRIANGLELIST, base + i * box_vertices, 12);
+		HW.pContext->End(predicate);
+		issued.insert({tile.key, GrassTileQuery{predicate, visible}});
+		if (!visible)
+			tile.predicate = predicate;
+	}
+	RCache.set_ColorWriteEnable();
 }

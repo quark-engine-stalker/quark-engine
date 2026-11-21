@@ -61,6 +61,7 @@ private:
 	float m_min_sound_threshold;
 	float m_sound_threshold;
 	float m_self_sound_factor;
+	bool m_decay_without_elapsed = false;
 
 private:
 	float m_weapon_factor;

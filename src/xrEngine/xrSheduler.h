@@ -46,6 +46,7 @@ private:
 		u32 calls;
 		u32 max_us;
 		u64 clsid;
+		u64 main_us; // of total_us on the main thread
 	};
 
 private:
@@ -127,6 +128,15 @@ public:
 	// Diagnostics for `frame_stats`: shedule_Update() cost per class id and per section
 	// since the last reset. Needs scheduler_class_prediction 1 (default).
 	void DumpClassCosts(u32 top, double seconds, SFrameReportSink& sink);
+	// QUARK-PANEL: a section's totals since the last reset
+	struct ClassCostTotal
+	{
+		const char* name;
+		u64 clsid;
+		u64 total_us, main_us;
+		u32 calls;
+	};
+	u32 CopyClassCosts(ClassCostTotal* out, u32 capacity);
 	void ResetClassCosts();
 };
 

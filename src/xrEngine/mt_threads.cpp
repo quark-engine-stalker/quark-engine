@@ -1,8 +1,11 @@
 ﻿#include "stdafx.h"
 #include "imgui_base.h"
+#include <imgui_internal.h>
 #include "device.h"
 #include "mt_panel.h"
 #include "frame_stats.h"
+#include "xrSheduler.h"
+#include "Engine.h"
 #include <tlhelp32.h>
 #include <powrprof.h>
 #include <intrin.h>
@@ -313,6 +316,8 @@ bool was_open = false;
 // The frame of the main thread from g_frame_stats, per frame of the last second
 float stage_ms[fsStageCount] = {};
 u64 stage_previous[fsStageCount] = {};
+float counter_avg[fcCounterCount] = {}; // renderer counters, a frame
+u64 counter_previous[fcCounterCount] = {};
 u64 frames_previous = 0;
 SFrameClassStat updatecl_previous[SFrameStats::class_slots] = {};
 struct class_time
@@ -320,8 +325,139 @@ struct class_time
 	CLASS_ID clsid;
 	float ms, calls;
 };
-class_time classes[8] = {};
+class_time classes[16] = {};
 u32 class_count = 0;
+
+// The detailed view (the "Detailed information" box): what the items of a thread are made of, per frame of the last
+// second. Measured only while the box is on and the window open (frame_stats deep, frame_detail_note).
+bool detailed = false;
+bool measuring = false, deep_before = false;
+struct part
+{
+	char name[64]; // a copy: the scheduler's sections go with the level, the window may still show them
+	CLASS_ID clsid;
+	float ms, main_ms; // a frame; main_ms: of it on the main thread
+	float calls; // a frame
+};
+
+part make_part(const char* name, CLASS_ID clsid, float ms, float main_ms, float calls)
+{
+	part p;
+	strncpy_s(p.name, name ? name : "?", _TRUNCATE);
+	p.clsid = clsid;
+	p.ms = ms;
+	p.main_ms = main_ms;
+	p.calls = calls;
+	return p;
+}
+constexpr u32 max_sections = 1024;
+part client_parts[SFrameStats::client_slots];
+u32 client_part_count = 0;
+u64 client_ticks_before[SFrameStats::client_slots] = {};
+const void* client_type_before[SFrameStats::client_slots] = {};
+CSheduler::ClassCostTotal section_totals[max_sections];
+u64 section_total_before[max_sections], section_main_before[max_sections];
+u32 sections_before = 0;
+part sections[max_sections]; // scheduler sections, the costliest first
+u32 section_count = 0;
+part section_classes[64]; // the same by class
+u32 section_class_count = 0;
+SFrameDetail detail_raw[256];
+part spawns[64]; // sections the postponed spawns made
+u32 spawn_count = 0;
+struct stage_part
+{
+	u32 stage;
+	char name[64];
+	float ms, draws; // a frame
+};
+stage_part details[256]; // the named parts of the other stages (the renderer's passes), in the order noted
+u32 detail_count = 0;
+
+bool heavier(const part& a, const part& b) { return a.ms > b.ms; }
+
+// "class CLevel" -> "CLevel"
+const char* client_name(const char* name)
+{
+	if (!name)
+		return "?";
+	if (!strncmp(name, "class ", 6))
+		return name + 6;
+	if (!strncmp(name, "struct ", 7))
+		return name + 7;
+	return name;
+}
+
+// The parts the detailed view shows, per frame of the last second
+void take_parts(bool valid, double frames, double tick_ms)
+{
+	const SFrameStats& stats = g_frame_stats;
+	client_part_count = 0;
+	for (u32 index = 0; index < stats.client_count; ++index)
+	{
+		const SFrameClientStat& c = stats.clients[index];
+		const bool same = client_type_before[index] == c.type && c.ticks >= client_ticks_before[index];
+		const u64 ticks = c.ticks - (same ? client_ticks_before[index] : 0);
+		client_type_before[index] = c.type;
+		client_ticks_before[index] = c.ticks;
+		if (valid && measuring && ticks)
+			client_parts[client_part_count++] = make_part(client_name(c.name), 0, float(double(ticks) * tick_ms / frames), 0.f, 0.f);
+	}
+	std::sort(client_parts, client_parts + client_part_count, heavier);
+
+	const u32 count = Engine.Sheduler.CopyClassCosts(section_totals, max_sections);
+	if (count < sections_before) // reset by frame_stats
+		sections_before = 0;
+	section_count = section_class_count = 0;
+	for (u32 index = 0; index < count; ++index)
+	{
+		const CSheduler::ClassCostTotal& s = section_totals[index];
+		const bool known = index < sections_before && s.total_us >= section_total_before[index];
+		const u64 total = s.total_us - (known ? section_total_before[index] : 0);
+		const u64 main = s.main_us - (known ? section_main_before[index] : 0);
+		section_total_before[index] = s.total_us;
+		section_main_before[index] = s.main_us;
+		if (!valid || !measuring || !total)
+			continue;
+		const part entry = make_part(s.name, CLASS_ID(s.clsid), float(double(total) / 1000.0 / frames),
+			float(double(main) / 1000.0 / frames), 0.f);
+		sections[section_count++] = entry;
+		u32 at = 0;
+		while (at < section_class_count && section_classes[at].clsid != entry.clsid)
+			++at;
+		if (at == section_class_count)
+		{
+			if (at == sizeof(section_classes) / sizeof(section_classes[0]))
+				continue;
+			section_classes[section_class_count++] = make_part("", entry.clsid, 0.f, 0.f, 0.f);
+		}
+		section_classes[at].ms += entry.ms;
+		section_classes[at].main_ms += entry.main_ms;
+		section_classes[at].calls += 1.f; // sections in it
+	}
+	sections_before = count;
+	std::sort(sections, sections + section_count, heavier);
+	std::sort(section_classes, section_classes + section_class_count, heavier);
+
+	const u32 taken = frame_detail_take(detail_raw, 256);
+	spawn_count = detail_count = 0;
+	for (u32 index = 0; valid && measuring && index < taken; ++index)
+	{
+		const SFrameDetail& d = detail_raw[index];
+		const float ms = float(double(d.ticks) * tick_ms / frames);
+		if (d.stage != fsUpdSpawn)
+		{
+			stage_part& p = details[detail_count++];
+			p.stage = d.stage;
+			strncpy_s(p.name, d.name, _TRUNCATE);
+			p.ms = ms;
+			p.draws = float(double(d.draws) / frames);
+		}
+		else if (spawn_count < 64)
+			spawns[spawn_count++] = make_part(d.name, 0, ms, 0.f, float(double(d.calls) / frames));
+	}
+	std::sort(spawns, spawns + spawn_count, heavier);
+}
 
 DWORD expanded = 0; // the thread opened in the THREADS tab
 // The lines of the opened thread stay once they were shown, so a refresh does not move what is below them
@@ -378,6 +514,12 @@ void take_frame_stats(bool publish)
 			float(double(stats.sum[stage] - stage_previous[stage]) * tick_ms / double(frames)) : 0.f;
 		stage_previous[stage] = stats.sum[stage];
 	}
+	for (u32 counter = 0; counter < fcCounterCount; ++counter)
+	{
+		counter_avg[counter] = valid && stats.counter_sum[counter] >= counter_previous[counter] ?
+			float(double(stats.counter_sum[counter] - counter_previous[counter]) / double(frames)) : 0.f;
+		counter_previous[counter] = stats.counter_sum[counter];
+	}
 	class_count = 0;
 	for (u32 slot = 0; slot < SFrameStats::class_slots; ++slot)
 	{
@@ -390,17 +532,18 @@ void take_frame_stats(bool publish)
 			continue;
 		const class_time entry = {now.clsid, float(double(ticks) * tick_ms / double(frames)),
 			float(double(calls) / double(frames))};
-		// the 8 costliest, sorted
-		if (class_count < 8)
+		// the 16 costliest, sorted
+		if (class_count < 16)
 			classes[class_count++] = entry;
-		else if (entry.ms > classes[7].ms)
-			classes[7] = entry;
+		else if (entry.ms > classes[15].ms)
+			classes[15] = entry;
 		else
 			continue;
 		for (u32 at = class_count - 1; at > 0 && classes[at].ms > classes[at - 1].ms; --at)
 			std::swap(classes[at], classes[at - 1]);
 	}
 	memcpy(updatecl_previous, stats.updatecl, sizeof(updatecl_previous));
+	take_parts(valid, double(frames), tick_ms);
 	frames_previous = stats.frames;
 }
 
@@ -432,15 +575,60 @@ bool engine_thread(const sampled_thread& thread) { return thread.name[0] && thre
 
 double tsc_hz() { return shown.tsc_hz > 0.0 ? shown.tsc_hz : double(_max(CPU::clk_per_second, u64(1))); }
 
-// Threads sorted by cycles, the busiest first
+// The rows of the threads table (indices into shown.threads): the main thread and the pool in their order, then the
+// other threads, the engine's named ones first, in a steady order (steady_order). A thread outside the pool is listed
+// once it takes 0.1 % of a processor and stays while it lives: rows never come and go with its load.
 u32 sorted[max_threads];
-u32 sort_threads()
+u32 sorted_count = 0;
+steady_order<DWORD, max_threads> others;
+u32 refreshes = 0; // seconds published by threads_frame
+u32 ordered = ~0u, settled = ~0u; // the refresh the rows were built for, and settled for
+bool list_hovered = false; // the mouse was over the table in the last frame: nothing moves
+
+int index_of(DWORD tid)
 {
 	for (u32 index = 0; index < shown.thread_count; ++index)
-		sorted[index] = index;
-	std::sort(sorted, sorted + shown.thread_count,
-		[](u32 a, u32 b) { return shown.threads[a].cycles > shown.threads[b].cycles; });
-	return shown.thread_count;
+		if (shown.threads[index].tid == tid)
+			return int(index);
+	return -1;
+}
+
+void order_threads(double hz)
+{
+	const bool settle = settled != refreshes && !list_hovered;
+	if (ordered == refreshes && !settle)
+		return;
+	ordered = refreshes;
+	others.drop([](DWORD tid) { return index_of(tid) < 0; });
+	for (u32 index = 0; index < shown.thread_count; ++index)
+	{
+		const sampled_thread& thread = shown.threads[index];
+		if (slot_of(thread.tid) < 0 && (double(thread.cycles) / hz >= 0.001 || thread.tid == expanded))
+			others.add(thread.tid);
+	}
+	if (settle)
+	{
+		settled = refreshes;
+		others.settle([hz](DWORD tid)
+		{
+			const int index = index_of(tid);
+			return index < 0 ? 0.f : float(double(shown.threads[index].cycles) / hz);
+		}, 0.005f);
+	}
+	sorted_count = 0;
+	for (u32 slot = 0; slot < used_slots(); ++slot)
+	{
+		const int index = index_of(DWORD(mt_tasks::thread_counters[slot].tid));
+		if (index >= 0)
+			sorted[sorted_count++] = u32(index);
+	}
+	for (int part = 0; part < 2; ++part)
+		for (u32 at = 0; at < others.count; ++at)
+		{
+			const int index = index_of(others.keys[at]);
+			if (index >= 0 && engine_thread(shown.threads[index]) == (part == 0))
+				sorted[sorted_count++] = u32(index);
+		}
 }
 
 void wrapped_tooltip(const char* text)
@@ -511,6 +699,7 @@ void cores_grid()
 	const ImU32 ink_u = ImGui::GetColorU32(ink), muted_u = ImGui::GetColorU32(muted), stroke_u = ImGui::GetColorU32(stroke),
 		accent_u = ImGui::GetColorU32(accent), on_accent_u = ImGui::GetColorU32(on_accent);
 	const u32 main_lp = u32(pool[0].core); // where the main thread of the game is now
+	const ImGuiID cells_id = ImGui::GetID("cores");
 	const char* tooltip_text = nullptr;
 	string512 tooltip;
 
@@ -577,6 +766,7 @@ void cores_grid()
 			const ImVec2 cell(cells_x + cell_w * float(hw.thread), cells_y);
 			const ImVec2 cell_end(cell.x + cell_w, cell.y + cell_h);
 			const float busy = shown.core_busy[lp];
+			const float fill = glide(ImGui::GetIDWithSeed(int(lp), cells_id), busy);
 			const bool main = lp == main_lp;
 			const u32 jobs = lp < 64 ? core_jobs[lp] : 0;
 			draw->AddRect(cell, cell_end, main ? accent_u : stroke_u, 0.f, 0, main ? 2.f : 1.f);
@@ -587,7 +777,7 @@ void cores_grid()
 			// the load fills the cell from the left, under the text of the second line
 			const float bar_top = cell.y + line + 6.f;
 			draw->AddRectFilled(ImVec2(cell.x + text_pad, bar_top),
-				ImVec2(cell.x + text_pad + (cell_w - 2.f * text_pad) * busy, bar_top + 4.f), accent_u);
+				ImVec2(cell.x + text_pad + (cell_w - 2.f * text_pad) * fill, bar_top + 4.f), accent_u);
 			if (main)
 				xr_strcpy(text, "MAIN-THREAD");
 			else if (jobs >= 10000)
@@ -625,6 +815,15 @@ void processor_name(string64& out, u32 lp, bool thread = false)
 
 void threads_frame(bool open)
 {
+	// the detailed view measures while it is shown
+	if ((open && detailed) != measuring)
+	{
+		measuring = !measuring;
+		if (measuring)
+			deep_before = g_frame_stats.deep;
+		g_frame_stats.deep = measuring || deep_before;
+		g_frame_detail_on = measuring;
+	}
 	if (!open)
 	{
 		was_open = false;
@@ -664,17 +863,21 @@ void threads_frame(bool open)
 	AcquireSRWLockShared(&sample_lock);
 	shown = published;
 	ReleaseSRWLockShared(&sample_lock);
+	++refreshes;
 }
 
 float process_cores() { return float(double(shown.cycles) / tsc_hz()); }
+
+float frame_stage_ms(u32 stage) { return stage < fsStageCount ? stage_ms[stage] : 0.f; }
 
 namespace
 {
 const char* stage_name(u32 stage)
 {
 	static const char* const russian[fsStageCount] = {u8"тело кадра", u8"обновление (seqFrame)",
-		u8"события, сеть, спавн", u8"объекты (UpdateCL)", u8"HUD", u8"планировщик (главный поток)", u8"скрипты уровня",
-		u8"командир физики", u8"подготовка рендера (скелеты)", u8"сборка Lua (до рендера)", u8"запуск задач",
+		u8"события, сеть, спавн", u8"сетевые сообщения", u8"события игры", u8"отложенный спавн", u8"объекты (UpdateCL)",
+		u8"HUD", u8"планировщик (главный поток)", u8"скрипты уровня", u8"командир физики", u8"его собственные вызовы",
+		u8"вызовы от скриптов", u8"подготовка рендера (скелеты)", u8"сборка Lua (до рендера)", u8"запуск задач",
 		u8"начало рендера", u8"рендер сцены", u8"расчёт (отсечение)", u8"основной расчёт (HOM)", u8"проход геометрии",
 		u8"видимость ламп", u8"каскады солнца", u8"сбор и подготовка", u8"отправка теней", u8"рисование теней",
 		u8"накопление", u8"лампы и карты теней", u8"настройка, сортировка, упаковка", u8"обход порталов",
@@ -686,7 +889,9 @@ const char* stage_name(u32 stage)
 void heading(const char* text)
 {
 	ImGui::Spacing();
+	ImGui::PushFont(head_font());
 	ImGui::TextUnformatted(text);
+	ImGui::PopFont();
 }
 
 // A line of the opened thread: indented name, ms a frame, share of the frame
@@ -703,13 +908,319 @@ void detail_line(const char* name, u32 depth, float ms, float frame_ms, const ch
 	ImGui::TableSetColumnIndex(1);
 	ImGui::Text("%6.2f", ms);
 	ImGui::TableSetColumnIndex(2);
-	bar(frame_ms > 0.f ? ms / frame_ms : 0.f, 120.f, ImGui::GetTextLineHeight() - 6.f);
+	bar(frame_ms > 0.f ? ms / frame_ms : 0.f, 120.f, ImGui::GetTextLineHeight() - 6.f, ImGui::GetID(name));
 	ImGui::SameLine();
 	ImGui::Text("%3.0f%%", frame_ms > 0.f ? ms * 100.f / frame_ms : 0.f);
 	if (extra)
 	{
 		ImGui::TableSetColumnIndex(3);
 		ImGui::TextDisabled("%s", extra);
+	}
+}
+
+// A line of the detailed view that opens to its parts: "+ name" / "- name", open or not kept by ImGui
+bool detail_node(const char* name, u32 depth, float ms, float frame_ms, const char* extra = nullptr)
+{
+	// Its own id: GetID(name) holds the gliding fill of the line's bar (a float read as "open" otherwise)
+	ImGui::PushID(name);
+	bool* open = ImGui::GetStateStorage()->GetBoolRef(ImGui::GetID("open"), false);
+	ImGui::PopID();
+	ImGui::TableNextRow();
+	if (row_hidden(ImGui::GetTextLineHeight()))
+		return *open;
+	ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 14.f * float(depth));
+	string128 label;
+	xr_sprintf(label, "%s %s##node", *open ? "-" : "+", name);
+	ImGui::PushID(name);
+	if (ImGui::Selectable(label, false, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap))
+		*open = !*open;
+	ImGui::PopID();
+	ImGui::TableSetColumnIndex(1);
+	ImGui::Text("%6.2f", ms);
+	ImGui::TableSetColumnIndex(2);
+	bar(frame_ms > 0.f ? ms / frame_ms : 0.f, 120.f, ImGui::GetTextLineHeight() - 6.f, ImGui::GetID(name));
+	ImGui::SameLine();
+	ImGui::Text("%3.0f%%", frame_ms > 0.f ? ms * 100.f / frame_ms : 0.f);
+	if (extra)
+	{
+		ImGui::TableSetColumnIndex(3);
+		ImGui::TextDisabled("%s", extra);
+	}
+	return *open;
+}
+
+// The time of an opened line its parts do not cover: the list adds up
+void remainder_line(u32 depth, float parent_ms, float parts_ms, float frame_ms)
+{
+	if (parent_ms - parts_ms >= 0.005f)
+		detail_line(L("other (not marked)", u8"прочее (не размечено)"), depth, parent_ms - parts_ms, frame_ms);
+}
+
+// A grey line under an opened item that has no parts of its own here
+void note_line(u32 depth, const char* text)
+{
+	ImGui::TableNextRow();
+	if (row_hidden(ImGui::GetTextLineHeight()))
+		return;
+	ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 14.f * float(depth));
+	ImGui::TextDisabled("%s", text);
+}
+
+// A part the engine noted (in English) in the panel's language
+const char* part_name(const char* name)
+{
+	static const char* const names[][2] = {{"frame jobs start", u8"запуск задач кадра"},
+		{"skeletons", u8"скелеты (ожидание воркеров)"}, {"after the poses", u8"после построения поз"},
+		{"low latency pacing", u8"низкая задержка: ожидание"}, {"device begin", u8"начало кадра видеокарты"},
+		{"3D PDA", u8"3D-КПК"}, {"bullets and tracers", u8"пули и трассеры"},
+		{"second viewport (3D scope)", u8"второй вид (3D-прицел)"}, {"waiting for the game logic", u8"ожидание логики игры"},
+		{"interface (HUD, inventory, PDA)", u8"интерфейс (HUD, инвентарь, КПК)"},
+		{"ImGui windows (QUARK-PANEL, mods)", u8"окна ImGui (QUARK-PANEL, моды)"}, {"console", u8"консоль"},
+		{"wallmarks on models: preparation", u8"следы на моделях: подготовка"},
+		{"scene preparation", u8"подготовка сцены"}, {"wallmarks (bullet holes, blood)", u8"следы (пули, кровь)"},
+		{"shadow visibility queries", u8"запросы видимости теней"}, {"wet surfaces", u8"мокрые поверхности"},
+		{"contact shadows (SSS)", u8"контактные тени (SSS)"}, {"sun cascades start", u8"запуск каскадов солнца"},
+		{"motion vectors and terrain prepass", u8"векторы движения, предпроход земли"},
+		{"glowing surfaces", u8"светящиеся поверхности"}, {"volumetric light blur", u8"размытие объёмного света"},
+		{"occlusion map (HOM)", u8"карта перекрытий (HOM)"}, {"depth prefill", u8"предзаполнение глубины"},
+		{"visible objects and sorting", u8"видимые объекты и сортировка"}, {"scene start", u8"начало сцены"},
+		{"HUD: weapon and hands", u8"HUD: оружие и руки"}, {"level and objects", u8"уровень и объекты"},
+		{"distant models (LOD)", u8"дальние модели (LOD)"}, {"grass", u8"трава"}, {"terrain", u8"земля"},
+		{"scene end", u8"конец сцены"}, {"camera sector and portals", u8"сектор камеры и порталы"},
+		{"lights update", u8"обновление ламп"}, {"lights at the camera", u8"лампы у камеры"},
+		{"direct light blend", u8"смешивание прямого света"}, {"cascades start", u8"запуск каскадов"},
+		{"grass for the shadows", u8"трава для теней"}, {"waiting for the casters (worker)", u8"ожидание теней от воркера"},
+		{"near cascade", u8"ближний каскад"}, {"middle cascade", u8"средний каскад"}, {"far cascade", u8"дальний каскад"},
+		{"static casters into the cache", u8"статика в кэш теней"}, {"map setup", u8"подготовка карты"},
+		{"translucent objects", u8"полупрозрачные объекты"}, {"point lights", u8"точечные лампы"},
+		{"spot lights", u8"прожекторы"}, {"lights with shadows", u8"лампы с тенями"},
+		{"ambient occlusion", u8"затенение (AO)"}, {"indirect light", u8"непрямой свет (IL)"},
+		{"scene image (light combine)", u8"сведение света в картинку"}, {"sky and clouds", u8"небо и облака"},
+		{"reflections (SSR)", u8"отражения (SSR)"}, {"water", u8"вода"}, {"rain", u8"дождь"},
+		{"transparent objects (forward)", u8"прозрачные объекты"}, {"volumetric light", u8"объёмный свет"},
+		{"bloom", u8"свечение (bloom)"}, {"distortion", u8"искажения (жар, аномалии)"},
+		{"upscaler (DLSS/FSR)", u8"апскейлер (DLSS/FSR)"}, {"sun shafts", u8"солнечные лучи"},
+		{"fog scattering", u8"рассеяние в тумане"}, {"motion blur", u8"размытие движения"}, {"3D scopes", u8"3D-прицелы"},
+		{"blur for bloom", u8"размытие для свечения"}, {"depth of field", u8"глубина резкости"},
+		{"colour grading (LUT)", u8"цветокоррекция (LUT)"}, {"gas mask", u8"противогаз"},
+		{"night and heat vision", u8"ночное и тепловое зрение"}, {"anti-aliasing", u8"сглаживание"},
+		{"final image", u8"итоговая картинка"}, {"lens flares", u8"блики линзы"}};
+	for (const auto& n : names)
+		if (!strcmp(n[0], name))
+			return L(n[0], n[1]);
+	return name;
+}
+
+// A grey line with a count a frame (draw calls, lights...) under an opened item
+void count_line(u32 depth, const char* label, float value)
+{
+	ImGui::TableNextRow();
+	if (row_hidden(ImGui::GetTextLineHeight()))
+		return;
+	ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 14.f * float(depth));
+	ImGui::TextDisabled("%s", label);
+	ImGui::TableSetColumnIndex(1);
+	ImGui::TextDisabled(value < 10.f && value != floorf(value) ? "%6.1f" : "%6.0f", value);
+}
+
+// What the renderer's counters say about a stage, and what a stage without parts is
+void stage_notes(u32 stage, u32 depth)
+{
+	const float* c = counter_avg;
+	switch (stage)
+	{
+	case fsLuaGcPre:
+	case fsLuaGcPost:
+		note_line(depth, L("garbage by mod: the MODS-INFO tab", u8"мусор по модам - во вкладке MODS-INFO"));
+		break;
+	case fsRenderScene:
+		count_line(depth, L("constant uploads to the video card", u8"загрузок констант в видеокарту"), c[fcCBufferUploads]);
+		count_line(depth, L("their size, KB", u8"их объём, КБ"), c[fcCBufferBytes] / 1024.f);
+		break;
+	case fsRendLightVis:
+		count_line(depth, L("lights tested", u8"проверено ламп"), c[fcLightsTested]);
+		break;
+	case fsRendSun:
+		count_line(depth, L("cascades", u8"каскадов"), c[fcSunCascades]);
+		count_line(depth, L("far one taken from the last frame", u8"дальний взят из прошлого кадра"), c[fcSunFarReused]);
+		break;
+	case fsSunDraw:
+		count_line(depth, L("draw calls", u8"вызовов отрисовки"), c[fcSunCalls]);
+		count_line(depth, L("triangles, thousand", u8"треугольников, тыс."), c[fcSunPolys] / 1000.f);
+		break;
+	case fsRendLights:
+		count_line(depth, L("shadowed light faces", u8"граней ламп с тенью"), c[fcLightFacesIn]);
+		count_line(depth, L("of them visible", u8"из них видимых"), c[fcLightFacesVisible]);
+		break;
+	case fsLightSetup:
+		count_line(depth, L("shadow atlas pages", u8"страниц атласа теней"), c[fcLightAtlasPages]);
+		break;
+	case fsLightTraverse:
+		count_line(depth, L("shadow maps with objects", u8"карт теней с объектами"), c[fcLightMaps]);
+		count_line(depth, L("empty ones (dropped)", u8"пустых (пропущены)"), c[fcLightEmpty]);
+		break;
+	case fsLightSmapDraw:
+		count_line(depth, L("draw calls", u8"вызовов отрисовки"), c[fcLightSmapCalls]);
+		count_line(depth, L("triangles, thousand", u8"треугольников, тыс."), c[fcLightSmapPolys] / 1000.f);
+		count_line(depth, L("static casters from the cache", u8"статика взята из кэша"), c[fcLightCacheReused]);
+		count_line(depth, L("static casters redrawn", u8"статика перерисована"), c[fcLightCacheRendered]);
+		break;
+	case fsLightAccum:
+		count_line(depth, L("lights with shadows", u8"ламп с тенями"), c[fcLightAccumShadow]);
+		count_line(depth, L("point lights without shadows", u8"точечных без теней"), c[fcLightAccumPoint]);
+		count_line(depth, L("spot lights without shadows", u8"прожекторов без теней"), c[fcLightAccumSpot]);
+		break;
+	case fsRenderPresent:
+		note_line(depth, L("waits for the video card or VSync", u8"ждёт видеокарту или VSync"));
+		note_line(depth, L("a lot here: the video card is the limit", u8"много здесь - упор в видеокарту"));
+		break;
+	case fsJobsWait:
+		note_line(depth, L("the game logic runs on a worker: its row", u8"логика игры идёт на воркере: см. его строку"));
+		break;
+	case fsFrameWait:
+		note_line(depth, L("pause, menu or the frame limit", u8"пауза, меню или лимит кадров"));
+		break;
+	default:
+		break;
+	}
+}
+
+// The scheduler's classes and their sections, the main thread's part or the workers': what they cover
+float scheduler_parts(u32 depth, bool main, float frame_ms)
+{
+	float covered = 0.f;
+	for (u32 index = 0; index < section_class_count; ++index)
+	{
+		const part& c = section_classes[index];
+		const float ms = main ? c.main_ms : c.ms - c.main_ms;
+		if (ms < 0.005f)
+			continue;
+		covered += ms;
+		string64 name; // UTF-8: the Russian text takes two bytes a letter
+		if (c.clsid)
+			CLSID2TEXT(c.clsid, name);
+		else
+			xr_strcpy(name, L("not objects", u8"не объекты")); // particles, vision, restrictor managers...
+		string64 id, extra;
+		xr_sprintf(id, "%s %s", name, main ? "main" : "workers");
+		xr_sprintf(extra, L("%.0f sections", u8"секций: %.0f"), c.calls);
+		ImGui::PushID(id);
+		const bool open = detail_node(name, depth, ms, frame_ms, extra);
+		ImGui::PopID();
+		if (!open)
+			continue;
+		u32 shown = 0;
+		for (u32 at = 0; at < section_count && shown < 12; ++at)
+		{
+			const part& s = sections[at];
+			const float section_ms = main ? s.main_ms : s.ms - s.main_ms;
+			if (s.clsid != c.clsid || section_ms < 0.005f)
+				continue;
+			detail_line(s.name, depth + 1, section_ms, frame_ms);
+			++shown;
+		}
+	}
+	return covered;
+}
+
+// What a stage of the main thread is made of, in the detailed view
+bool stage_has_parts(u32 stage)
+{
+	return stage == fsUpdate || stage == fsUpdEvents || stage == fsUpdObjects || stage == fsUpdScheduler ||
+		stage == fsUpdScript || stage == fsUpdPhysics || stage == fsRenderPrep || stage == fsLuaGcPre ||
+		(stage >= fsRenderBegin && stage <= fsRenderPresent) || stage == fsJobsWait || stage == fsLuaGcPost ||
+		stage == fsFrameWait;
+}
+
+void stage_parts(u32 stage, u32 depth, float frame_ms)
+{
+	switch (stage)
+	{
+	case fsUpdate:
+		note_line(depth, L("by seqFrame client, with its stages:", u8"по подписчикам кадра, с их этапами:"));
+		for (u32 index = 0; index < client_part_count; ++index)
+			if (client_parts[index].ms >= 0.005f)
+				detail_line(client_parts[index].name, depth, client_parts[index].ms, frame_ms);
+		break;
+	case fsUpdEvents:
+	{
+		float covered = 0.f;
+		for (u32 part_stage : {fsUpdNet, fsUpdGameEvents, fsUpdSpawn})
+		{
+			covered += stage_ms[part_stage];
+			if (part_stage != fsUpdSpawn || !spawn_count)
+			{
+				detail_line(stage_name(part_stage), depth, stage_ms[part_stage], frame_ms);
+				continue;
+			}
+			if (!detail_node(stage_name(part_stage), depth, stage_ms[part_stage], frame_ms))
+				continue;
+			float spawned = 0.f;
+			for (u32 index = 0; index < spawn_count; ++index)
+			{
+				string64 extra;
+				xr_sprintf(extra, L("%.2f spawns a frame", u8"%.2f спавнов за кадр"), spawns[index].calls);
+				detail_line(spawns[index].name, depth + 1, spawns[index].ms, frame_ms, extra);
+				spawned += spawns[index].ms;
+			}
+			remainder_line(depth + 1, stage_ms[part_stage], spawned, frame_ms);
+		}
+		remainder_line(depth, stage_ms[fsUpdEvents], covered, frame_ms);
+		break;
+	}
+	case fsUpdObjects:
+	{
+		float covered = 0.f;
+		for (u32 index = 0; index < class_count; ++index)
+		{
+			string16 name;
+			CLSID2TEXT(classes[index].clsid, name);
+			string64 calls;
+			xr_sprintf(calls, L("%.0f objects a frame", u8"%.0f объектов за кадр"), classes[index].calls);
+			detail_line(name, depth, classes[index].ms, frame_ms, calls);
+			covered += classes[index].ms;
+		}
+		remainder_line(depth, stage_ms[fsUpdObjects], covered, frame_ms);
+		break;
+	}
+	case fsUpdScheduler:
+		remainder_line(depth, stage_ms[fsUpdScheduler], scheduler_parts(depth, true, frame_ms), frame_ms);
+		break;
+	case fsUpdScript:
+		note_line(depth, L("by mod: the MODS-INFO tab", u8"по модам - во вкладке MODS-INFO"));
+		break;
+	case fsUpdPhysics:
+		detail_line(stage_name(fsPhCommander), depth, stage_ms[fsPhCommander], frame_ms);
+		detail_line(stage_name(fsPhScripts), depth, stage_ms[fsPhScripts], frame_ms);
+		remainder_line(depth, stage_ms[fsUpdPhysics], stage_ms[fsPhCommander] + stage_ms[fsPhScripts], frame_ms);
+		break;
+	default:
+	{
+		float covered = 0.f;
+		for (u32 index = 0; index < detail_count; ++index)
+		{
+			const stage_part& p = details[index];
+			if (p.stage != stage || (p.ms < 0.005f && p.draws < 0.5f))
+				continue;
+			string64 extra; // UTF-8
+			xr_sprintf(extra, L("%.0f draw calls", u8"вызовов отрисовки: %.0f"), p.draws);
+			detail_line(part_name(p.name), depth, p.ms, frame_ms, p.draws >= 0.5f ? extra : nullptr);
+			covered += p.ms;
+		}
+		stage_notes(stage, depth);
+		// its stages are lines of their own: the rest is what neither they nor the parts cover
+		float children = 0.f;
+		bool has_children = false;
+		for (u32 child = stage + 1; child < fsStageCount; ++child)
+			if (frame_stage_info(child).parent == stage)
+			{
+				children += stage_ms[child];
+				has_children = true;
+			}
+		if (covered > 0.f || has_children)
+			remainder_line(depth, stage_ms[stage] - children, covered, frame_ms);
+		break;
+	}
 	}
 }
 
@@ -754,15 +1265,26 @@ void thread_details(const sampled_thread& thread, int slot, float fps, float fra
 		{
 			for (u32 stage = fsUpdate; stage < fsStageCount; ++stage)
 			{
+				const SFrameStageInfo& info = frame_stage_info(stage);
+				if (info.parent == fsUpdEvents || info.parent == fsUpdPhysics) // their parts: the detailed view
+					continue;
 				if (stage_ms[stage] >= 0.01f)
 					shown_stages |= 1ull << stage;
 				if (!(shown_stages & (1ull << stage)))
 					continue;
-				detail_line(stage_name(stage), frame_stage_info(stage).depth, stage_ms[stage], frame_ms);
+				ImGui::PushID(int(stage)); // "shadow draw" and "accumulate" are under the sun and the lights
+				if (detailed && stage_has_parts(stage))
+				{
+					if (detail_node(stage_name(stage), info.depth, stage_ms[stage], frame_ms))
+						stage_parts(stage, info.depth + 1, frame_ms);
+				}
+				else
+					detail_line(stage_name(stage), info.depth, stage_ms[stage], frame_ms);
+				ImGui::PopID();
 			}
 			ImGui::EndTable();
 		}
-		if (class_count)
+		if (class_count && !detailed) // in the detailed view under objects (UpdateCL)
 		{
 			heading(L("OBJECTS: UpdateCL BY CLASS", u8"ОБЪЕКТЫ: UpdateCL ПО КЛАССАМ"));
 			if (begin_detail_table("classes"))
@@ -809,8 +1331,19 @@ void thread_details(const sampled_thread& thread, int slot, float fps, float fra
 				const float ms = float(double(slot_tasks[slot][task]) * 1000.0 / double(CPU::qpc_freq) / frames);
 				const bool job_part = task == mt_tasks::job_scheduler || task == mt_tasks::job_lua_prelude ||
 					task == mt_tasks::job_frame_mt;
-				detail_line(task_name(task), job_part ? 2 : 1, ms, frame_ms,
-					task == mt_tasks::frame_job ? L("it hosted the game logic", u8"на нём шла логика игры") : nullptr);
+				const char* extra = task == mt_tasks::frame_job ? L("it hosted the game logic", u8"на нём шла логика игры") :
+					nullptr;
+				if (detailed && slot > 0 && (task == mt_tasks::job_scheduler || task == mt_tasks::job_lua_prelude))
+				{
+					if (!detail_node(task_name(task), 2, ms, frame_ms, extra))
+						continue;
+					if (task == mt_tasks::job_scheduler)
+						remainder_line(3, ms, scheduler_parts(3, false, frame_ms), frame_ms);
+					else
+						note_line(3, L("by mod: the MODS-INFO tab", u8"по модам - во вкладке MODS-INFO"));
+				}
+				else
+					detail_line(task_name(task), job_part ? 2 : 1, ms, frame_ms, extra);
 			}
 			ImGui::EndTable();
 		}
@@ -822,28 +1355,30 @@ void thread_details(const sampled_thread& thread, int slot, float fps, float fra
 		ImGui::GetColorU32(accent), 2.f);
 }
 
-bool begin_threads_table(const char* id, bool header)
+// The threads table has no header row: the names of its columns stand on the ENGINE THREADS strip
+bool begin_threads_table(const char* id)
 {
-	if (!ImGui::BeginTable(id, 7, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerH))
+	if (!ImGui::BeginTable(id, 6, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerH))
 		return false;
-	ImGui::TableSetupColumn(L("THREAD", u8"ПОТОК"), ImGuiTableColumnFlags_WidthFixed, 220.f);
-	ImGui::TableSetupColumn(L("CORE", u8"ЯДРО"), ImGuiTableColumnFlags_WidthFixed, 92.f);
-	ImGui::TableSetupColumn(L("CYCLES/FRAME", u8"ТАКТЫ/КАДР"), ImGuiTableColumnFlags_WidthFixed, 116.f);
-	ImGui::TableSetupColumn(L("CYCLES/S", u8"ТАКТЫ/С"), ImGuiTableColumnFlags_WidthFixed, 92.f);
-	ImGui::TableSetupColumn(L("LOAD", u8"НАГРУЗКА"), ImGuiTableColumnFlags_WidthFixed, 84.f);
-	ImGui::TableSetupColumn(L("JOBS/S", u8"ЗАДАЧ/С"), ImGuiTableColumnFlags_WidthFixed, 70.f);
-	ImGui::TableSetupColumn(L("WAIT", u8"ОЖИДАНИЕ"), ImGuiTableColumnFlags_WidthFixed, 80.f);
-	if (!header)
-		return true;
-	ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-	for (int column = 0; column < 7; ++column)
+	ImGui::TableSetupColumn(L("THREAD", u8"ПОТОК"), ImGuiTableColumnFlags_WidthStretch);
+	fixed_column(L("CORE", u8"ЯДРО"), 92.f);
+	fixed_column(L("CYCLES/FRAME", u8"ТАКТЫ/КАДР"), 116.f);
+	fixed_column(L("CYCLES/S", u8"ТАКТЫ/С"), 92.f);
+	fixed_column(L("LOAD", u8"НАГРУЗКА"), 84.f);
+	fixed_column(L("WAIT", u8"ОЖИДАНИЕ"), 80.f);
+	return true;
+}
+
+// The names of the columns on the strip row, each with its help under the mouse
+void column_names()
+{
+	for (int column = 1; column < 6; ++column)
 	{
 		ImGui::TableSetColumnIndex(column);
-		ImGui::TextDisabled("%s", ImGui::TableGetColumnName(column));
+		group_title(ImGui::TableGetColumnName(column));
 		if (ImGui::IsItemHovered())
 		{
-			const char* const help[] = {
-				L("Name of the thread. Click it to see what it does", u8"Имя потока. Нажмите, чтобы увидеть, что он делает"),
+			const char* const help[] = {nullptr,
 				L("Engine threads: the core where the last job ran (for the main thread: where it is now). Others, "
 					"grey: the core Windows prefers for the thread, it may run on any. Hover a cell to see every core of "
 					"the last second", u8"Потоки движка: ядро, где выполнялась последняя задача (у главного потока - где "
@@ -852,27 +1387,35 @@ bool begin_threads_table(const char* id, bool header)
 				L("CPU cycles a frame, millions", u8"Тактов CPU за кадр, миллионов"),
 				L("CPU cycles a second, billions", u8"Тактов CPU в секунду, миллиардов"),
 				L("Share of one processor", u8"Доля одного процессора"),
-				L("Jobs it ran a second", u8"Задач выполнено за секунду"),
 				L("Average time from submit to the start of its jobs, microseconds",
 					u8"Среднее время от постановки до старта его задач, микросекунды")};
 			wrapped_tooltip(help[column]);
 		}
 	}
-	return true;
 }
 } // namespace
 
 void threads_tab(float fps, float frame_ms)
 {
-	ImGui::TextUnformatted(L("CORES", u8"ЯДРА"));
+	group_title(L("CORES", u8"ЯДРА"));
 	ImGui::SameLine();
 	ImGui::TextDisabled("%s", L("a block is a core, its cells are its threads (SMT)",
 		u8"блок - ядро процессора, ячейки в нём - его потоки (SMT)"));
 	cores_grid();
 	ImGui::Spacing();
 
-	ImGui::TextUnformatted(L("THREADS", u8"ПОТОКИ"));
-	ImGui::SameLine();
+	ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2.f, 1.f)); // the box as tall as the text, not a button
+	ImGui::Checkbox(L("Detailed information", u8"Подробная информация"), &detailed);
+	ImGui::PopStyleVar();
+	if (ImGui::IsItemHovered())
+		wrapped_tooltip(L("The items of an opened thread open with + to what they are made of: the seqFrame clients, "
+			"network messages, game events and the sections the spawns made, UpdateCL by class, the scheduler by class and "
+			"section on the main thread and on the workers, the physics commander. Measured only while this box is on.",
+			u8"Пункты открытого потока раскрываются по + до того, из чего они состоят: подписчики кадра (seqFrame), "
+			u8"сетевые сообщения, события игры и секции, которые создавал спавн, UpdateCL по классам, планировщик по "
+			u8"классам и секциям на главном потоке и на воркерах, командир физики. Измеряется, только пока стоит эта "
+			u8"галочка."));
+	ImGui::SameLine(0.f, 24.f);
 	ImGui::TextDisabled(L("%u in the process, %.2f cores busy", u8"%u в процессе, занято %.2f ядра"), shown.thread_count,
 		process_cores());
 
@@ -886,32 +1429,19 @@ void threads_tab(float fps, float frame_ms)
 
 	const double hz = tsc_hz();
 	// Engine threads first: the main thread and the pool in their order, then the engine's named threads; then the
-	// threads of drivers, sound and Windows. In each part the opened thread comes first and the rest the busiest
-	// first: a refresh does not move the opened thread.
-	const u32 count = sort_threads();
-	int key[max_threads];
-	for (u32 index = 0; index < count; ++index)
-	{
-		const sampled_thread& thread = shown.threads[index];
-		const int slot = slot_of(thread.tid);
-		const int opened = thread.tid == expanded ? 0 : 1;
-		key[index] = slot >= 0 ? slot : int(slots) + (engine_thread(thread) ? 0 : 2) + opened;
-	}
-	std::stable_sort(sorted, sorted + count, [&key](u32 a, u32 b) { return key[a] < key[b]; });
-	u32 idle = 0;
+	// threads of drivers, sound and Windows, steady: the opened one opens in place
+	order_threads(hz);
+	const u32 count = sorted_count;
+	const u32 idle = shown.thread_count - count;
 	bool in_engine_part = true;
-	bool open_table = begin_threads_table("threads", true);
+	const ImVec2 table_top = ImGui::GetCursorScreenPos();
+	bool open_table = begin_threads_table("threads");
 	for (u32 order = 0; order < count && open_table; ++order)
 	{
 		const sampled_thread& thread = shown.threads[sorted[order]];
 		const int slot = slot_of(thread.tid);
 		const float load = float(double(thread.cycles) / hz);
 		const bool opened = expanded == thread.tid;
-		if (slot < 0 && load < 0.001f && !opened)
-		{
-			++idle;
-			continue;
-		}
 		const bool engine = slot >= 0 || engine_thread(thread);
 		if (engine != in_engine_part || order == 0)
 		{
@@ -919,10 +1449,9 @@ void threads_tab(float fps, float frame_ms)
 			ImGui::TableNextRow();
 			ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(surface));
 			ImGui::TableSetColumnIndex(0);
-			ImGui::PushStyleColor(ImGuiCol_Text, accent);
-			ImGui::TextUnformatted(engine ? L("ENGINE THREADS", u8"ПОТОКИ ДВИЖКА") :
-				L("OTHER THREADS", u8"ДРУГИЕ ПОТОКИ"));
-			ImGui::PopStyleColor();
+			group_title(engine ? L("ENGINE THREADS", u8"ПОТОКИ ДВИЖКА") : L("OTHER THREADS", u8"ДРУГИЕ ПОТОКИ"));
+			if (order == 0)
+				column_names();
 		}
 		ImGui::TableNextRow();
 		if (!opened && row_hidden(ImGui::GetTextLineHeight()))
@@ -972,15 +1501,13 @@ void threads_tab(float fps, float frame_ms)
 		ImGui::TableSetColumnIndex(3);
 		ImGui::Text("%.2f %s", double(thread.cycles) / 1e9, L("G", u8"млрд"));
 		ImGui::TableSetColumnIndex(4);
-		bar(load, 40.f, ImGui::GetTextLineHeight() - 4.f);
+		bar(load, 40.f, ImGui::GetTextLineHeight() - 4.f, ImGui::GetID(int(thread.tid)));
 		ImGui::SameLine();
 		ImGui::Text("%3.0f%%", load * 100.f);
 		if (slot >= 0)
 		{
 			const pool_thread& counted = pool[slot];
 			ImGui::TableSetColumnIndex(5);
-			ImGui::Text("%u", counted.jobs);
-			ImGui::TableSetColumnIndex(6);
 			if (counted.jobs)
 				ImGui::Text("%.1f %s", double(counted.delay) * 1e6 / double(CPU::qpc_freq) / double(counted.jobs),
 					L("us", u8"мкс"));
@@ -994,11 +1521,13 @@ void threads_tab(float fps, float frame_ms)
 		{
 			ImGui::EndTable();
 			thread_details(thread, slot, fps, frame_ms);
-			open_table = begin_threads_table("threads_after", false);
+			open_table = begin_threads_table("threads_after");
 		}
 	}
 	if (open_table)
 		ImGui::EndTable();
+	list_hovered = ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(table_top,
+		ImVec2(table_top.x + content_width, ImGui::GetCursorScreenPos().y));
 	if (idle)
 		ImGui::TextDisabled(L("and %u threads that took less than 0.1%% of a processor",
 			u8"и ещё %u потоков, занявших меньше 0.1%% процессора"), idle);

@@ -2,14 +2,14 @@
 #include "stream_reader.h"
 
 void CStreamReader::construct(
-	const HANDLE& file_mapping_handle,
+	const std::shared_ptr<void>& mapping,
 	const u32& start_offset,
 	const u32& file_size,
 	const u32& archive_size,
 	const u32& window_size
 )
 {
-	m_file_mapping_handle = file_mapping_handle;
+	m_mapping = mapping;
 	m_start_offset = start_offset;
 	m_file_size = file_size;
 	m_archive_size = archive_size;
@@ -21,6 +21,7 @@ void CStreamReader::construct(
 void CStreamReader::destroy()
 {
 	unmap();
+	m_mapping.reset();
 }
 
 void CStreamReader::map(const u32& new_offset)
@@ -46,7 +47,7 @@ void CStreamReader::map(const u32& new_offset)
 	m_current_window_size = end_offset - start_offset;
 	m_current_map_view_of_file = (u8*)
 		MapViewOfFile(
-			m_file_mapping_handle,
+			m_mapping.get(),
 			FILE_MAP_READ,
 			0,
 			start_offset,
@@ -144,7 +145,7 @@ CStreamReader* CStreamReader::open_chunk(const u32& chunk_id)
 
 	R_ASSERT2(!compressed, "cannot use CStreamReader on compressed chunks");
 	CStreamReader* result = xr_new<CStreamReader>();
-	result->construct(file_mapping_handle(), m_start_offset + tell(), size, m_archive_size, m_window_size);
+	result->construct(m_mapping, m_start_offset + tell(), size, m_archive_size, m_window_size);
 	return (result);
 }
 

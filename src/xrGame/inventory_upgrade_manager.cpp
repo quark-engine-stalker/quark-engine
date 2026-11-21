@@ -366,6 +366,14 @@ void Manager::test_all_upgrades( CInventoryItem& item )
 		bool Manager::upgrade_install(CInventoryItem& item, shared_str const& upgrade_id, bool loading)
 		{
 			Upgrade* upgrade = upgrade_verify(item.m_section_id, upgrade_id);
+			if (!upgrade)
+			{
+				// Named by installed_upgrades of the section or by a save, defined by no upgrade tree (a mod changed it);
+				// the VERIFY above is compiled out, the call below read a null object
+				Msg("! Upgrade <%s> of inventory item [%s] (id = %d) does not exist, not installed",
+				    upgrade_id.c_str(), item.m_section_id.c_str(), item.object_id());
+				return false;
+			}
 			UpgradeStateResult res = upgrade->can_install(item, loading);
 
 			if (res == result_ok)

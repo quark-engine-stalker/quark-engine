@@ -15,11 +15,16 @@ enum EFrameStage : u32
 	fsFrame = 0,    // whole frame body of CRenderDevice::on_idle()
 	fsUpdate,       //   FrameMove(): everything registered in seqFrame
 	fsUpdEvents,    //     level: network receive, game events, spawn events
+	fsUpdNet,       //       network messages (ClientReceive)
+	fsUpdGameEvents,//       game events (ProcessGameEvents)
+	fsUpdSpawn,     //       postponed spawns (ProcessSpawnEvents)
 	fsUpdObjects,   //     CObjectList::Update(): UpdateCL() of all active objects
 	fsUpdHud,       //     HUD OnFrame
 	fsUpdScheduler, //     scheduler phases that run on the main thread
 	fsUpdScript,    //     level script processor
 	fsUpdPhysics,   //     physics commander
+	fsPhCommander,  //       its own calls
+	fsPhScripts,    //       the calls scripts gave it
 	fsRenderPrep,   //   render-preparation batch (skeleton jobs)
 	fsLuaGcPre,     //   Lua GC slice before rendering
 	fsJobsSubmit,   //   frame-parallel jobs submit
@@ -67,10 +72,12 @@ enum EFrameCounter : u32
 	fcLightCacheVolatile,   // ... static casters change by themselves or are translucent
 	fcLightCacheNoSlot,     // ... HUD light or no free cache slot
 	fcSunCascades,       // sun cascades rendered
+	fcSunFarReused,      // ... of them the far one accumulated from the previous frame's map
 	fcSunCalls,          // draw calls submitted into sun shadow maps
 	fcSunPolys,          // polygons submitted into sun shadow maps
 	fcCBufferUploads,    // constant buffer uploads (Map + copy), all passes
 	fcCBufferBytes,      // bytes copied by those uploads
+	fcLightsTested,      // light sources given an occlusion test
 	fcCounterCount
 };
 
@@ -192,6 +199,49 @@ extern ENGINE_API SFrameAB g_frame_ab;
 
 // Optional extra report section supplied by the game module (Lua profiler tables).
 extern ENGINE_API void (*g_frame_stats_extra)(u32 top, SFrameReportSink& sink);
+
+// QUARK-PANEL's detailed view of the main thread: named parts of a stage (the sections a spawn made, the passes of the
+// renderer), timed only while the view is on. Main thread only.
+struct SFrameDetail
+{
+	u32 stage;
+	char name[64]; // a section and the like, copied: a shared_str may go before the panel takes it
+	u64 ticks;
+	u32 calls;
+	u64 draws; // draw calls the part made
+};
+extern ENGINE_API bool g_frame_detail_on;
+ENGINE_API void frame_detail_note(u32 stage, const char* name, u64 ticks, u64 draws = 0);
+// What was noted since the last take, in the order first noted (up to capacity); starts anew
+ENGINE_API u32 frame_detail_take(SFrameDetail* out, u32 capacity);
+
+// Consecutive parts of a stage for the detailed view: next() ends the part running and starts the named one (nullptr:
+// none). draws: the renderer's draw call counter, its growth is the part's draw calls.
+struct SFrameDetailParts
+{
+	const u32 stage;
+	const u32* const draws;
+	const char* name = nullptr;
+	u64 started = 0;
+	u32 draws_before = 0;
+
+	SFrameDetailParts(u32 stage_, const char* first, const u32* draws_ = nullptr) : stage(stage_), draws(draws_)
+	{
+		next(first);
+	}
+	~SFrameDetailParts() { next(nullptr); }
+	void next(const char* name_)
+	{
+		if (started)
+			frame_detail_note(stage, name, CPU::QPC() - started, draws ? *draws - draws_before : 0);
+		name = name_;
+		started = name_ && g_frame_detail_on ? CPU::QPC() : 0;
+		draws_before = draws ? *draws : 0;
+	}
+
+	SFrameDetailParts(const SFrameDetailParts&) = delete;
+	SFrameDetailParts& operator=(const SFrameDetailParts&) = delete;
+};
 
 // Adds the lifetime of the scope to a stage of the current frame. Nested scopes are
 // inclusive: a child's time is also part of its parent's time.

@@ -273,7 +273,7 @@ bool ui_core::is_widescreen()
 
 u8 ui_core::screenmode()
 {
-	if ((float(Device.dwWidth) / float(Device.dwHeight)) > 1.8f)
+	if ((float(Device.dwWidth) / float(Device.dwHeight)) > 2.05f) // halfway between 16:9 and 21:9
 		return u8(2);
 	else if ((float(Device.dwWidth) / float(Device.dwHeight)) > (UI_BASE_WIDTH / UI_BASE_HEIGHT + 0.01f))
 		return u8(1);
@@ -292,42 +292,31 @@ float ui_core::get_current_kx()
 shared_str ui_core::get_xml_name(LPCSTR fn)
 {
 	string_path str;
-	if (screenmode() == u8(0))
+	const char* extension = strext(fn);
+	if (extension && strpbrk(extension, "\\/"))
+		extension = nullptr;
+
+	const int stem_length = extension ? int(extension - fn) : int(xr_strlen(fn));
+	const u8 mode = screenmode();
+	u8 layout = mode;
+	if (layout != 0)
 	{
-		xr_sprintf(str, "%s", fn);
-		if (NULL == strext(fn)) xr_strcat(str, ".xml");
+		string_path full_path;
+		for (; layout != 0; --layout)
+		{
+			const char* suffix = layout == 2 ? "_21.xml" : "_16.xml";
+			xr_sprintf(str, "%.*s%s", stem_length, fn, suffix);
+			if (FS.exist(full_path, "$game_config$", "ui\\", str))
+				break;
+		}
 	}
-	else
-	{
-		string_path str_;
-		if (strext(fn))
-		{
-			xr_strcpy(str, fn);
-			*strext(str) = 0;
-			xr_strcat(str, screenmode() == u8(1) ? "_16.xml" : "_21.xml");
-		}
-		else
-			xr_sprintf(str, screenmode() == u8(1) ? "%s_16" : "%s_21", fn);
 
-		if (NULL == FS.exist(str_, "$game_config$", "ui\\", str))
-		{
-			if (screenmode() == u8(2))
-			{
-				xr_sprintf(str, "%s_16", fn);
-				if (NULL == strext(fn)) xr_strcat(str, "_16.xml");
+	if (layout == 0)
+		xr_sprintf(str, "%s%s", fn, extension ? "" : ".xml");
 
-				if (NULL != FS.exist(str_, "$game_config$", "ui\\", str))
-				{
-					return str;
-				}
-					
-			}
-			xr_sprintf(str, "%s", fn);
-			if (NULL == strext(fn)) xr_strcat(str, ".xml");
-		}
 #ifdef DEBUG
-		Msg("[16-9] get_xml_name for[%s] returns [%s]", fn, str);
-#endif // #ifdef DEBUG
-	}
+	if (mode != 0)
+		Msg("[UI XML] get_xml_name for[%s] returns [%s]", fn, str);
+#endif
 	return str;
 }

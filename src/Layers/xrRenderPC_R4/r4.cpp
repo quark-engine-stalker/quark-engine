@@ -897,6 +897,10 @@ void CRender::reset_end()
 	//R_CHK						(HW.pDevice->CreateQuery(D3DQUERYTYPE_EVENT,&q_sync_point[1]));
 	HWOCC.occq_create(occq_size);
 
+	// The shaders of the targets and of the grass are not skinned. The option a model load leaves behind gave them other
+	// macros and shader cache names: the first vid_restart of a session compiled ~110 shaders again (4.5 of its 4.8 s).
+	const s32 skinning = m_skinning;
+	m_skinning = -1;
 	Target = xr_new<CRenderTarget>();
 
 	//AVO: let's reload details while changed details options on vid_restart
@@ -907,6 +911,7 @@ void CRender::reset_end()
 		Details->Load();
 	}
 	//-AVO
+	m_skinning = skinning;
 
 	FluidManager.SetScreenSize(upscaler::render_width(), upscaler::render_height());
 
@@ -1562,6 +1567,152 @@ public:
 	}
 };
 
+// A depth-only pass of an alpha-tested material (grass in the shadow maps) needs its pixel shader only for the discard.
+// The material's own source is preprocessed, its main renamed and called from an empty main with the same inputs: the
+// compiler drops everything that does not decide the discard, so the depth is bit for bit the material's, for any mod.
+// Empty when the source does not have exactly one main definition: the caller compiles the original.
+static xr_string wrap_depth_only_ps(DWORD const* src, UINT len, D3D_SHADER_MACRO const* defines, ID3DInclude* include,
+	bool const_tables)
+{
+	ID3DBlob* text = nullptr;
+	ID3DBlob* errors = nullptr;
+	const HRESULT hr = D3DPreprocess(src, len, "", defines, include, &text, &errors);
+	_RELEASE(errors);
+	if (FAILED(hr) || !text)
+	{
+		_RELEASE(text);
+		return {};
+	}
+	xr_string s(static_cast<const char*>(text->GetBufferPointer()), text->GetBufferSize());
+	text->Release();
+	while (!s.empty() && !s.back())
+		s.pop_back();
+	auto ident = [](char c) { return isalnum(u8(c)) || c == '_'; };
+	size_t at = xr_string::npos, open = 0, close = 0;
+	for (size_t p = s.find("main"); p != xr_string::npos; p = s.find("main", p + 4))
+	{
+		if ((p && ident(s[p - 1])) || (p + 4 < s.size() && ident(s[p + 4])))
+			continue;
+		size_t q = p + 4;
+		while (q < s.size() && isspace(u8(s[q])))
+			++q;
+		if (q >= s.size() || s[q] != '(')
+			continue;
+		size_t r = q;
+		for (int depth = 0; r < s.size(); ++r)
+			if (s[r] == '(')
+				++depth;
+			else if (s[r] == ')' && !--depth)
+				break;
+		size_t b = r + 1;
+		while (b < s.size() && s[b] != '{' && s[b] != ';')
+			++b;
+		if (b >= s.size() || s[b] != '{')
+			continue; // a declaration
+		if (at != xr_string::npos)
+			return {};
+		at = p, open = q, close = r;
+	}
+	if (at == xr_string::npos)
+		return {};
+
+	// Inputs stay parameters of the new main as they are written (same signature); outputs become locals
+	xr_string inputs, locals, args;
+	const xr_string params = s.substr(open + 1, close - open - 1);
+	size_t from = 0;
+	for (int depth = 0, i = 0; i <= int(params.size()); ++i)
+	{
+		const char c = i < int(params.size()) ? params[i] : ',';
+		if (c == '(' || c == '[')
+			++depth;
+		else if (c == ')' || c == ']')
+			--depth;
+		if (c != ',' || depth)
+			continue;
+		xr_string param = params.substr(from, i - from);
+		from = i + 1;
+		const size_t colon = param.find(':');
+		xr_string decl = colon == xr_string::npos ? param : param.substr(0, colon);
+		while (!decl.empty() && isspace(u8(decl.back())))
+			decl.pop_back();
+		decl.erase(0, decl.find_first_not_of(" \t\r\n"));
+		if (decl.empty() || decl == "void")
+			continue;
+		size_t end = decl.size();
+		if (decl.back() == ']')
+			end = decl.find('[');
+		while (end && isspace(u8(decl[end - 1])))
+			--end;
+		size_t begin = end;
+		while (begin && ident(decl[begin - 1]))
+			--begin;
+		const xr_string name = decl.substr(begin, end - begin);
+		if (name.empty())
+			return {};
+		bool output = false;
+		xr_string type;
+		for (size_t w = 0; w < begin;)
+		{
+			while (w < begin && !ident(decl[w]))
+				++w;
+			size_t e = w;
+			while (e < begin && ident(decl[e]))
+				++e;
+			const xr_string word = decl.substr(w, e - w);
+			if (word == "out" || word == "inout")
+				output = true;
+			else if (!word.empty() && word != "in" && word != "uniform")
+				type += word + " ";
+			w = e;
+		}
+		if (output)
+			locals += "\t" + type + name + decl.substr(end) + ";\n";
+		else
+			inputs += (inputs.empty() ? "" : ", ") + param;
+		args += (args.empty() ? "" : ", ") + name;
+	}
+	s.replace(at, 4, "quark_depth_main");
+	s += "\nvoid main(" + inputs + ")\n{\n" + locals + "\tquark_depth_main(" + args + ");\n}\n";
+	// "static T name[N] = {...}" tables are filled again by every invocation unless they are const
+	for (size_t p = s.find("static"); const_tables && p != xr_string::npos; p = s.find("static", p + 6))
+	{
+		if ((p && ident(s[p - 1])) || (p + 6 < s.size() && ident(s[p + 6])))
+			continue;
+		const size_t semicolon = s.find(';', p);
+		const size_t bracket = s.find('[', p), brace = s.find('{', p), equal = s.find('=', p);
+		size_t w = p + 6;
+		while (w < s.size() && isspace(u8(s[w])))
+			++w;
+		if (!s.compare(w, 5, "const") || semicolon == xr_string::npos || bracket > semicolon || equal > semicolon ||
+			brace > semicolon || s.find('(', p) < equal)
+			continue;
+		s.insert(p + 6, " const");
+	}
+	return s;
+}
+
+// The input signatures of two pixel shaders are the same (the depth-only one links to the material's vertex shaders)
+static bool same_input_signature(ID3DBlob* a, ID3DBlob* b)
+{
+	ID3DShaderReflection* ra = nullptr;
+	ID3DShaderReflection* rb = nullptr;
+	bool same = SUCCEEDED(D3DReflect(a->GetBufferPointer(), a->GetBufferSize(), IID_PPV_ARGS(&ra))) &&
+		SUCCEEDED(D3DReflect(b->GetBufferPointer(), b->GetBufferSize(), IID_PPV_ARGS(&rb)));
+	D3D11_SHADER_DESC da = {}, db = {};
+	same = same && SUCCEEDED(ra->GetDesc(&da)) && SUCCEEDED(rb->GetDesc(&db)) && da.InputParameters == db.InputParameters;
+	for (UINT i = 0; same && i < da.InputParameters; ++i)
+	{
+		D3D11_SIGNATURE_PARAMETER_DESC pa, pb;
+		same = SUCCEEDED(ra->GetInputParameterDesc(i, &pa)) && SUCCEEDED(rb->GetInputParameterDesc(i, &pb)) &&
+			!xr_strcmp(pa.SemanticName, pb.SemanticName) && pa.SemanticIndex == pb.SemanticIndex &&
+			pa.Register == pb.Register && pa.SystemValueType == pb.SystemValueType &&
+			pa.ComponentType == pb.ComponentType && pa.Mask == pb.Mask;
+	}
+	_RELEASE(ra);
+	_RELEASE(rb);
+	return same;
+}
+
 static inline bool match_shader_id(LPCSTR const debug_shader_id, LPCSTR const full_shader_id,
                                    FS_FileSet const& file_set, string_path& result);
 
@@ -1574,6 +1725,8 @@ HRESULT CRender::shader_compile(
 	DWORD Flags,
 	void*& result)
 {
+	PROF_EVENT();
+	PROF_TEXT(name);
 
 	D3D_SHADER_MACRO defines [128];
 	int def_it = 0;
@@ -2357,6 +2510,32 @@ HRESULT CRender::shader_compile(
 				&pShaderBuf,
 				&pErrorBuf
 			);
+		// The depth-only variant (CResourceManager::_CreatePS "@depth"); the material's own shader if it cannot be wrapped
+		// or its inputs would change
+		if (SUCCEEDED(_result) && strstr(name, "@depth"))
+		{
+			xr_string wrapped = wrap_depth_only_ps(pSrcData, SrcDataLen, defines, &Includer, true);
+			LPD3DBLOB pDepthBuf = NULL;
+			LPD3DBLOB pDepthErrors = NULL;
+			if (!wrapped.empty() && FAILED(D3DCompile(wrapped.c_str(), wrapped.size(), "", NULL, NULL, pFunctionName, pTarget,
+				Flags, 0, &pDepthBuf, &pDepthErrors)))
+			{
+				_RELEASE(pDepthErrors);
+				wrapped = wrap_depth_only_ps(pSrcData, SrcDataLen, defines, &Includer, false);
+			}
+			if (!wrapped.empty() && (pDepthBuf || SUCCEEDED(D3DCompile(wrapped.c_str(), wrapped.size(), "", NULL, NULL,
+				pFunctionName, pTarget, Flags, 0, &pDepthBuf, &pDepthErrors))) && same_input_signature(pShaderBuf, pDepthBuf))
+			{
+				pShaderBuf->Release();
+				pShaderBuf = pDepthBuf;
+				pDepthBuf = NULL;
+			}
+			else
+				Msg("! depth-only pixel shader %s: %s, the material's own is used", name,
+					wrapped.empty() ? "no single main" : pDepthErrors ? (LPCSTR)pDepthErrors->GetBufferPointer() : "inputs differ");
+			_RELEASE(pDepthBuf);
+			_RELEASE(pDepthErrors);
+		}
 
 		if (SUCCEEDED(_result))
 		{

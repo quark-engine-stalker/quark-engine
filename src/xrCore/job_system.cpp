@@ -65,12 +65,12 @@ address_wait_api& get_address_wait_api()
     return api;
 }
 
-void wait_for_address_change(volatile LONG* address, LONG expected)
+void wait_for_address_change(volatile LONG* address, LONG expected, DWORD timeout = 1)
 {
     address_wait_api& api = get_address_wait_api();
     if (api.wait)
     {
-        api.wait(address, &expected, sizeof(expected), 1);
+        api.wait(address, &expected, sizeof(expected), timeout);
         return;
     }
 
@@ -106,6 +106,7 @@ struct __declspec(align(64)) priority_queue
 };
 
 class job_system_impl;
+SRWLOCK initialization_lock = SRWLOCK_INIT;
 thread_local bool worker_thread_ = false;
 thread_local u32 worker_dispatch_sequence_ = 0;
 thread_local u32 worker_slot_ = 0;
@@ -280,13 +281,7 @@ public:
         if (scope && !scope->try_acquire(scope_generation))
             return false;
 
-        if (!initialized_ || InterlockedCompareExchange(&accepting_, TRUE, TRUE) == FALSE)
-        {
-            execute_synchronously(function, context, group, scope, scope_generation);
-            return true;
-        }
-
-        if (worker_count_ == 0)
+        if (!try_reserve_jobs(1))
         {
             execute_synchronously(function, context, group, scope, scope_generation);
             return true;
@@ -294,7 +289,6 @@ public:
 
         if (group)
             InterlockedIncrement(&group->pending_);
-        InterlockedIncrement(&outstanding_);
 
         job_record job{function, context, group, scope, scope_generation, job_priority};
         stamp(job);
@@ -338,17 +332,15 @@ public:
             return true;
         }
 
-        if (!initialized_ || InterlockedCompareExchange(&accepting_, TRUE, TRUE) == FALSE ||
-            worker_count_ == 0)
+        const LONG signed_count = static_cast<LONG>(count);
+        if (!try_reserve_jobs(signed_count))
         {
             execute_synchronously_many(function, context, count, group);
             return true;
         }
 
-        const LONG signed_count = static_cast<LONG>(count);
         if (group)
             InterlockedExchangeAdd(&group->pending_, signed_count);
-        InterlockedExchangeAdd(&outstanding_, signed_count);
 
         job_record job{function, context, group, nullptr, 0, job_priority};
         stamp(job);
@@ -418,8 +410,9 @@ public:
             if (worker_thread_ && try_execute_one_fair())
                 continue;
 
-            LONG expected = pending;
-            wait_for_address_change(&group.pending_, expected);
+            // Workers keep checking for newly queued work they can help with.
+            // Other callers only need the wake issued when this group completes.
+            wait_for_address_change(&group.pending_, pending, worker_thread_ ? 1 : INFINITE);
         }
     }
 
@@ -495,6 +488,19 @@ public:
     u32 total_thread_count() const { return total_threads_; }
 
 private:
+    bool try_reserve_jobs(LONG count)
+    {
+        // Shutdown holds the exclusive lock until the workers and semaphore are gone.
+        // Reserve under the lock, then let shutdown drain the work even if the caller has not queued it yet.
+        if (!TryAcquireSRWLockShared(&initialization_lock))
+            return false;
+        const bool queued = worker_count_ != 0 && InterlockedCompareExchange(&accepting_, TRUE, TRUE) != FALSE;
+        if (queued)
+            InterlockedExchangeAdd(&outstanding_, count);
+        ReleaseSRWLockShared(&initialization_lock);
+        return queued;
+    }
+
     static unsigned __stdcall worker_entry(void* parameter)
     {
         worker_startup* startup = static_cast<worker_startup*>(parameter);
@@ -851,7 +857,6 @@ private:
     bool initialized_ = false;
 };
 
-SRWLOCK initialization_lock = SRWLOCK_INIT;
 volatile LONG system_published = FALSE;
 volatile LONG shutdown_requested = FALSE;
 
@@ -864,6 +869,14 @@ job_system_impl& system_storage()
 job_system_impl* get_system()
 {
     return InterlockedCompareExchange(&system_published, TRUE, TRUE) != FALSE ? &system_storage() : nullptr;
+}
+
+job_system_impl* get_or_initialize_system()
+{
+    job_system_impl* system = get_system();
+    if (!system && initialize())
+        system = get_system();
+    return system;
 }
 } // namespace
 
@@ -1029,20 +1042,16 @@ bool submit(job_function function, void* context, task_group* group, priority jo
     if (!function)
         return false;
 
-    job_system_impl* system = get_system();
+    job_system_impl* system = get_or_initialize_system();
     if (!system)
     {
-        if (!initialize())
-        {
-            // Preserve correctness when worker creation is unavailable.
-            if (group)
-                InterlockedIncrement(&group->pending_);
-            function(context);
-            if (group && InterlockedDecrement(&group->pending_) == 0)
-                wake_address_waiters(&group->pending_);
-            return true;
-        }
-        system = get_system();
+        // Shutdown can unpublish the pool just after initialization succeeds.
+        if (group)
+            InterlockedIncrement(&group->pending_);
+        function(context);
+        if (group && InterlockedDecrement(&group->pending_) == 0)
+            wake_address_waiters(&group->pending_);
+        return true;
     }
 
     return system->submit(function, context, group, job_priority, nullptr);
@@ -1056,26 +1065,22 @@ bool submit_many(job_function function, void* context, u32 count, task_group* gr
     if (!function || count > 0x7fffffffu)
         return false;
 
-    job_system_impl* system = get_system();
+    job_system_impl* system = get_or_initialize_system();
     if (!system)
     {
-        if (!initialize())
+        const LONG signed_count = static_cast<LONG>(count);
+        if (group)
+            InterlockedExchangeAdd(&group->pending_, signed_count);
+        for (u32 index = 0; index < count; ++index)
+            function(context);
+        if (group)
         {
-            const LONG signed_count = static_cast<LONG>(count);
-            if (group)
-                InterlockedExchangeAdd(&group->pending_, signed_count);
-            for (u32 index = 0; index < count; ++index)
-                function(context);
-            if (group)
-            {
-                const LONG previous = InterlockedExchangeAdd(&group->pending_, -signed_count);
-                R_ASSERT(previous >= signed_count);
-                if (previous == signed_count)
-                    wake_address_waiters(&group->pending_);
-            }
-            return true;
+            const LONG previous = InterlockedExchangeAdd(&group->pending_, -signed_count);
+            R_ASSERT(previous >= signed_count);
+            if (previous == signed_count)
+                wake_address_waiters(&group->pending_);
         }
-        system = get_system();
+        return true;
     }
 
     return system->submit_many(function, context, count, group, job_priority);
@@ -1106,25 +1111,21 @@ bool submit_scoped(job_function function, void* context, task_scope& scope,
     if (!function)
         return false;
 
-    job_system_impl* system = get_system();
+    job_system_impl* system = get_or_initialize_system();
     if (!system)
     {
-        if (!initialize())
-        {
-            u32 generation = 0;
-            if (!scope.try_acquire(generation))
-                return false;
+        u32 generation = 0;
+        if (!scope.try_acquire(generation))
+            return false;
 
-            if (group)
-                InterlockedIncrement(&group->pending_);
-            if (scope.should_execute(generation))
-                function(context);
-            if (group && InterlockedDecrement(&group->pending_) == 0)
-                wake_address_waiters(&group->pending_);
-            scope.release();
-            return true;
-        }
-        system = get_system();
+        if (group)
+            InterlockedIncrement(&group->pending_);
+        if (scope.should_execute(generation))
+            function(context);
+        if (group && InterlockedDecrement(&group->pending_) == 0)
+            wake_address_waiters(&group->pending_);
+        scope.release();
+        return true;
     }
 
     return system->submit(function, context, group, job_priority, &scope);

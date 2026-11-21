@@ -7,6 +7,7 @@
 ////////////////////////////////////////////////////////////////////////////
 
 #include "pch_script.h"
+#include <cmath>
 #include "sound_memory_manager.h"
 #include "memory_manager.h"
 #include "hit_memory_manager.h"
@@ -72,6 +73,7 @@ void CSoundMemoryManager::reload(LPCSTR section)
 	m_self_sound_factor = READ_IF_EXISTS(pSettings, r_float, section, "self_sound_factor", 0.f);
 	m_sound_decrease_quant = READ_IF_EXISTS(pSettings, r_u32, section, "self_decrease_quant", 250);
 	m_decrease_factor = READ_IF_EXISTS(pSettings, r_float, section, "self_decrease_factor", .95f);
+	m_decay_without_elapsed = m_sound_decrease_quant && m_decrease_factor > 0.f && std::isnormal(m_decrease_factor);
 
 	LPCSTR sound_perceive_section = READ_IF_EXISTS(pSettings, r_string, section, "sound_perceive_section", section);
 	m_weapon_factor = READ_IF_EXISTS(pSettings, r_float, sound_perceive_section, "weapon", 10.f);
@@ -88,17 +90,11 @@ IC void CSoundMemoryManager::update_sound_threshold()
 	VERIFY(_valid(m_min_sound_threshold));
 	VERIFY(!fis_zero(m_decrease_factor));
 	VERIFY(m_sound_decrease_quant);
-	// t = max(t*f^((tc - tl)/tq),min_threshold)
-	m_sound_threshold = _max(
-		m_self_sound_factor *
-		m_sound_threshold *
-		exp(
-			float(Device.dwTimeGlobal - m_last_sound_time) /
-			float(m_sound_decrease_quant) *
-			log(m_decrease_factor)
-		),
-		m_min_sound_threshold
-	);
+	const u32 elapsed = Device.dwTimeGlobal - m_last_sound_time;
+	// Same-tick sounds have a decay multiplier of exactly one.
+	const auto decay = !elapsed && m_decay_without_elapsed ? 1.f :
+		exp(float(elapsed) / float(m_sound_decrease_quant) * log(m_decrease_factor));
+	m_sound_threshold = _max(m_self_sound_factor * m_sound_threshold * decay, m_min_sound_threshold);
 	VERIFY(_valid(m_sound_threshold));
 }
 

@@ -20,11 +20,6 @@ IC CStreamReader& CStreamReader::operator=(const CStreamReader&)
 	return (*this);
 }
 
-IC const HANDLE& CStreamReader::file_mapping_handle() const
-{
-	return (m_file_mapping_handle);
-}
-
 IC void CStreamReader::unmap()
 {
 	UnmapViewOfFile(m_current_map_view_of_file);

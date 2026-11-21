@@ -6,6 +6,7 @@
 #include <nvapi.h>
 #include <FidelityFX/host/ffx_fsr3upscaler.h>
 #include <FidelityFX/host/backends/dx11/ffx_dx11.h>
+#include <FidelityFX/gpu/fsr3upscaler/ffx_fsr3upscaler_resources.h>
 
 #pragma comment(lib, "nvsdk_ngx_d.lib")
 
@@ -18,6 +19,7 @@ namespace
 {
 // NGX, created once per device on the first use
 bool pending = false; // request(): apply() rebuilds the upscaler at the next frame
+bool fallback_pending = false;
 bool gpu_tried = false, ngx_tried = false, ngx_ready = false, dlss_supported = false, dlss_old_driver = false;
 NVSDK_NGX_Parameter* ngx_params = nullptr;
 NVSDK_NGX_Handle* feature = nullptr;
@@ -44,7 +46,6 @@ struct twin
 {
 	ref_rt* scene;
 	ref_rt display;
-	bool copy; // the post-process reads it: nearest copy before the swap
 };
 twin twins[9];
 u32 twin_count = 0;
@@ -52,6 +53,7 @@ bool swapped = false; // the scene targets hold the display surfaces
 
 ref_rt depth; // the scene's depth-stencil at the render size, also read by DLSS
 ref_rt dlss_output; // DLSS writes here when r__dlss_sharpness sharpens it into rt_Generic_0's twin
+ref_rt fsr_opaque, fsr_reactive;
 ID3D11DepthStencilView* base_zb = nullptr; // HW.pBaseZB while the scene draws into depth
 
 ID3D11VertexShader* vs = nullptr;
@@ -65,6 +67,11 @@ ID3D11RasterizerState* raster = nullptr;
 ID3D11SamplerState* linear = nullptr;
 
 const u32 nearest_targets = 5;
+
+bool scaled()
+{
+	return render_w != Device.dwWidth || render_h != Device.dwHeight;
+}
 
 // NVAPI only: instant, the panel asks it every frame
 void gpu_init()
@@ -122,6 +129,21 @@ void ngx_init()
 
 bool new_gpu() { return gpu_arch >= NV_GPU_ARCHITECTURE_AD100; } // FP8 tensor cores: RTX 40 and newer
 
+// The method, model and mode in force. AUTO: RTX 20 and 30 DLSS 4, RTX 40 and newer DLSS 4.5, every other video card
+// (AMD, Intel, a GeForce without DLSS once NGX has said so) FSR 3.1, always at quality.
+void resolve(u32& method, u32& model, u32& m)
+{
+	method = ps_r__upscaler;
+	model = ps_r__dlss_model;
+	m = ps_r__upscaler_mode;
+	if (method != method_auto)
+		return;
+	gpu_init();
+	method = HW.Caps.id_vendor == 0x10DE && (!ngx_tried || dlss_supported) ? method_dlss : method_fsr;
+	model = new_gpu() ? model_dlss45 : model_dlss4;
+	m = mode_quality;
+}
+
 NVSDK_NGX_PerfQuality_Value quality(u32 m)
 {
 	switch (m)
@@ -138,8 +160,6 @@ NVSDK_NGX_PerfQuality_Value quality(u32 m)
 // transformer (K); DLSS 4.5 the second (M, L at ultra performance: NVIDIA's split), fast only with FP8.
 NVSDK_NGX_DLSS_Hint_Render_Preset preset(u32 model, u32 m)
 {
-	if (model == model_auto)
-		model = new_gpu() ? (m >= mode_performance ? model_dlss45 : model_dlss4) : model_dlss3;
 	switch (model)
 	{
 	case model_dlss3: return NVSDK_NGX_DLSS_Hint_Render_Preset_E;
@@ -182,9 +202,11 @@ bool create_passes()
 	static const char rcas_source[] =
 		"Texture2D t0 : register(t0); cbuffer c : register(b0) { float4 con; };"
 		"float luma(float3 c) { return c.b * 0.5 + (c.r * 0.5 + c.g); }"
-		"float4 main(float4 p : SV_Position) : SV_Target { int3 s = int3(p.xy, 0);"
-		"float3 b = t0.Load(s, int2(0, -1)).rgb; float3 d = t0.Load(s, int2(-1, 0)).rgb; float4 e = t0.Load(s);"
-		"float3 f = t0.Load(s, int2(1, 0)).rgb; float3 h = t0.Load(s, int2(0, 1)).rgb;"
+		"float4 main(float4 p : SV_Position) : SV_Target { int2 s = int2(p.xy); int2 edge = int2(con.yz) - 1;"
+		"float3 b = t0.Load(int3(s.x, max(s.y - 1, 0), 0)).rgb;"
+		"float3 d = t0.Load(int3(max(s.x - 1, 0), s.y, 0)).rgb; float4 e = t0.Load(int3(s, 0));"
+		"float3 f = t0.Load(int3(min(s.x + 1, edge.x), s.y, 0)).rgb;"
+		"float3 h = t0.Load(int3(s.x, min(s.y + 1, edge.y), 0)).rgb;"
 		"float3 mn = min(min(b, d), min(f, h)); float3 mx = max(max(b, d), max(f, h));"
 		"float3 hit_min = min(mn, e.rgb) / max(4.0 * mx, 1e-5);"
 		"float3 hit_max = (1.0 - max(mx, e.rgb)) / min(4.0 * mn - 4.0, -1e-5);"
@@ -380,6 +402,7 @@ bool fsr_create(u32 w, u32 h)
 
 bool fsr_dispatch(CRenderTarget& T, CRT& color, CRT& output, bool reset)
 {
+	PIX_EVENT(FSR_upscale);
 	auto resource = [](ID3D11Texture2D* texture, const wchar_t* name, bool written) {
 		return ffxGetResourceDX11(texture, GetFfxResourceDescriptionDX11(texture), name,
 			written ? FFX_RESOURCE_STATE_UNORDERED_ACCESS : FFX_RESOURCE_STATE_COMPUTE_READ);
@@ -411,20 +434,39 @@ bool fsr_dispatch(CRenderTarget& T, CRT& color, CRT& output, bool reset)
 	FfxErrorCode result;
 	try
 	{
-		result = ffxFsr3UpscalerContextDispatch(fsr, &d);
+		FfxFsr3UpscalerGenerateReactiveDescription mask = {};
+		mask.commandList = d.commandList;
+		mask.colorOpaqueOnly = resource(fsr_opaque->pSurface, L"FSR opaque color", false);
+		mask.colorPreUpscale = d.color;
+		mask.outReactive = resource(fsr_reactive->pSurface, L"FSR reactive mask", true);
+		mask.renderSize = d.renderSize;
+		mask.scale = 1.f;
+		mask.cutoffThreshold = 0.2f;
+		mask.binaryValue = 0.9f;
+		mask.flags = FFX_FSR3UPSCALER_AUTOREACTIVEFLAGS_APPLY_THRESHOLD | FFX_FSR3UPSCALER_AUTOREACTIVEFLAGS_USE_COMPONENTS_MAX;
+		if (RImplementation.o.dx11_hdr10)
+			mask.flags |= FFX_FSR3UPSCALER_AUTOREACTIVEFLAGS_APPLY_TONEMAP;
+		result = ffxFsr3UpscalerContextGenerateReactiveMask(fsr, &mask);
+		if (result == FFX_OK)
+		{
+			d.reactive = resource(fsr_reactive->pSurface, L"FSR reactive mask", false);
+			result = ffxFsr3UpscalerContextDispatch(fsr, &d);
+		}
 	}
 	catch (...)
 	{
 		result = FFX_ERROR_BACKEND_API_ERROR;
 	}
-	// the backend leaves its compute bindings: the output becomes a render target next
-	ID3D11UnorderedAccessView* const no_uav[8] = {};
-	ID3D11ShaderResourceView* const no_srv[16] = {};
-	HW.pContext->CSSetUnorderedAccessViews(0, 8, no_uav, nullptr);
-	HW.pContext->CSSetShaderResources(0, 16, no_srv);
-	HW.pContext->CSSetShader(nullptr, nullptr, 0);
+	// The backend unbinds its views after each job, unless an exception interrupted it.
 	if (result != FFX_OK)
-		Msg("! [FSR] dispatch failed: 0x%08X, the frame is stretched", u32(result));
+	{
+		ID3D11UnorderedAccessView* const no_uav[D3D11_1_UAV_SLOT_COUNT] = {};
+		ID3D11ShaderResourceView* const no_srv[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {};
+		HW.pContext->CSSetUnorderedAccessViews(0, _countof(no_uav), no_uav, nullptr);
+		HW.pContext->CSSetShaderResources(0, _countof(no_srv), no_srv);
+		Msg("! [FSR] dispatch failed: 0x%08X, returning to native rendering", u32(result));
+	}
+	HW.pContext->CSSetShader(nullptr, nullptr, 0);
 	return result == FFX_OK;
 }
 
@@ -443,17 +485,33 @@ u32 render_height() { return on ? render_h : Device.dwHeight; }
 bool enabled() { return on; }
 float mip_bias() { return on ? log2f(float(render_w) / float(Device.dwWidth)) : 0.f; }
 
-void request() { pending = true; }
+void request()
+{
+	pending = true;
+	fallback_pending = false;
+}
 
 void apply(CRenderTarget& T)
 {
-	if (!pending)
+	if (!pending && !fallback_pending)
 		return;
 	CTimer timer;
 	timer.Start();
+	const bool was_on = on;
+	const u32 previous_w = render_width(), previous_h = render_height();
 	release();
-	configure();
-	T.resize_scene(render_width(), render_height());
+	if (fallback_pending)
+	{
+		fallback_pending = false;
+		render_w = Device.dwWidth;
+		render_h = Device.dwHeight;
+	}
+	else
+		configure();
+	if (previous_w != render_width() || previous_h != render_height())
+		T.resize_scene(render_width(), render_height());
+	if (was_on || on)
+		T.invalidate_temporal_history();
 	create(T);
 	Msg("* [upscaler] applied in %u ms", timer.GetElapsed_ms());
 }
@@ -461,24 +519,17 @@ void apply(CRenderTarget& T)
 void configure()
 {
 	pending = false; // a device reset builds the targets anew
+	fallback_pending = false;
 	on = false;
 	chosen_preset = 0;
 	render_w = Device.dwWidth;
 	render_h = Device.dwHeight;
 	state = IRenderDeviceRender::upscaler_off;
-	if (ps_r__upscaler == method_off)
+	u32 method, model, m;
+	resolve(method, model, m);
+	if (method == method_off)
 		return;
 
-	if (ps_r__upscaler == method_dlss)
-	{
-		ngx_init();
-		if (!dlss_supported)
-		{
-			state = HW.Caps.id_vendor != 0x10DE ? IRenderDeviceRender::upscaler_no_nvidia :
-				dlss_old_driver ? IRenderDeviceRender::upscaler_old_driver : IRenderDeviceRender::upscaler_no_dlss;
-			return;
-		}
-	}
 	if (!RImplementation.o.ssfx_motionvectors)
 	{
 		state = IRenderDeviceRender::upscaler_no_motion_vectors;
@@ -489,14 +540,33 @@ void configure()
 		state = IRenderDeviceRender::upscaler_msaa;
 		return;
 	}
+	if (!vs && !create_passes())
+	{
+		Msg("! [upscaler] passes could not be created");
+		release_passes();
+		state = IRenderDeviceRender::upscaler_failed;
+		return;
+	}
 
-	if (ps_r__upscaler == method_fsr)
+	if (method == method_dlss)
+	{
+		ngx_init();
+		if (!dlss_supported && ps_r__upscaler == method_auto)
+			resolve(method, model, m); // the GeForce has no DLSS: now AUTO takes FSR
+		else if (!dlss_supported)
+		{
+			state = HW.Caps.id_vendor != 0x10DE ? IRenderDeviceRender::upscaler_no_nvidia :
+				dlss_old_driver ? IRenderDeviceRender::upscaler_old_driver : IRenderDeviceRender::upscaler_no_dlss;
+			return;
+		}
+	}
+	if (method == method_fsr)
 	{
 		u32 w = Device.dwWidth, h = Device.dwHeight;
 		// FSR's quality modes 1..4 are ours; ours 0 is its native AA
-		if (ps_r__upscaler_mode != mode_dlaa)
+		if (m != mode_dlaa)
 			ffxFsr3UpscalerGetRenderResolutionFromQualityMode(&w, &h, Device.dwWidth, Device.dwHeight,
-				FfxFsr3UpscalerQualityMode(ps_r__upscaler_mode));
+				FfxFsr3UpscalerQualityMode(m));
 		// Direct3D 11.1: the luma pyramid pass has 64 UAV slots, the backend binds constant buffer ranges
 		if (HW.FeatureLevel < D3D_FEATURE_LEVEL_11_1 || !w || !h || w > Device.dwWidth || h > Device.dwHeight ||
 			!fsr_create(w, h))
@@ -510,20 +580,20 @@ void configure()
 		render_h = h;
 		on = true;
 		state = IRenderDeviceRender::upscaler_active;
-		Msg("* [FSR] %ux%u -> %ux%u, mode %u", w, h, Device.dwWidth, Device.dwHeight, ps_r__upscaler_mode);
+		Msg("* [FSR] %ux%u -> %ux%u, mode %u", w, h, Device.dwWidth, Device.dwHeight, m);
 		return;
 	}
 
-	const NVSDK_NGX_PerfQuality_Value q = quality(ps_r__upscaler_mode);
+	const NVSDK_NGX_PerfQuality_Value q = quality(m);
 	u32 w = Device.dwWidth, h = Device.dwHeight;
-	if (ps_r__upscaler_mode != mode_dlaa)
+	if (m != mode_dlaa)
 	{
 		unsigned int max_w, max_h, min_w, min_h;
 		float sharpness;
 		if (NVSDK_NGX_FAILED(NGX_DLSS_GET_OPTIMAL_SETTINGS(ngx_params, Device.dwWidth, Device.dwHeight, q, &w, &h, &max_w,
 			&max_h, &min_w, &min_h, &sharpness)) || !w || !h || w > Device.dwWidth || h > Device.dwHeight)
 		{
-			Msg("! [DLSS] no render size for %ux%u, mode %u", Device.dwWidth, Device.dwHeight, ps_r__upscaler_mode);
+			Msg("! [DLSS] no render size for %ux%u, mode %u", Device.dwWidth, Device.dwHeight, m);
 			state = IRenderDeviceRender::upscaler_failed;
 			return;
 		}
@@ -532,9 +602,9 @@ void configure()
 	const char* const hints[] = {NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_DLAA, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality,
 		NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Balanced, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance,
 		NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraPerformance};
-	for (u32 m = mode_dlaa; m <= mode_ultra_performance; ++m)
-		NVSDK_NGX_Parameter_SetUI(ngx_params, hints[m], preset(ps_r__dlss_model, m));
-	chosen_preset = preset(ps_r__dlss_model, ps_r__upscaler_mode);
+	for (u32 k = mode_dlaa; k <= mode_ultra_performance; ++k)
+		NVSDK_NGX_Parameter_SetUI(ngx_params, hints[k], preset(model, k));
+	chosen_preset = preset(model, m);
 
 	NVSDK_NGX_DLSS_Create_Params create = {};
 	create.Feature.InWidth = w;
@@ -561,7 +631,7 @@ void configure()
 	on = true;
 	state = IRenderDeviceRender::upscaler_active;
 	Msg("* [DLSS] %ux%u -> %ux%u, mode %u, preset %c, created in %u ms", w, h, Device.dwWidth, Device.dwHeight,
-		ps_r__upscaler_mode, 'A' + int(chosen_preset) - 1, timer.GetElapsed_ms());
+		m, 'A' + int(chosen_preset) - 1, timer.GetElapsed_ms());
 }
 
 void create(CRenderTarget& T)
@@ -573,15 +643,12 @@ void create(CRenderTarget& T)
 	jitter_index = 0;
 	if (!on)
 		return;
-	if (!create_passes())
-	{
-		Msg("! [upscaler] passes could not be created");
-		release();
-		return;
-	}
 	depth.create("$user$quark_scene_depth", render_w, render_h, D3DFMT_D24S8);
-	if (feature)
-		dlss_output.create("$user$quark_dlss_output", Device.dwWidth, Device.dwHeight, T.rt_Generic_0->fmt, 1, true);
+	if (fsr)
+	{
+		fsr_opaque.create("$user$quark_fsr_opaque", render_w, render_h, T.rt_Generic_0->fmt);
+		fsr_reactive.create("$user$quark_fsr_reactive", render_w, render_h, D3DFMT_L8, 1, true);
+	}
 	SSManager.SetMipLODBias(ps_r__tf_Mipbias + mip_bias());
 
 	// The order of the nearest copies is the order of the targets of the nearest pass
@@ -589,13 +656,13 @@ void create(CRenderTarget& T)
 		&T.rt_ssfx_bloom_emissive};
 	ref_rt* const written[] = {&T.rt_Generic_0, &T.rt_Color, &T.rt_Generic_temp, &T.rt_Generic_2};
 	for (ref_rt* rt : copied)
-		twins[twin_count++] = {rt, ref_rt(), true};
+		twins[twin_count++] = {rt, ref_rt()};
 	for (ref_rt* rt : written)
-		twins[twin_count++] = {rt, ref_rt(), false};
+		twins[twin_count++] = {rt, ref_rt()};
 	for (u32 i = 0; i < twin_count; ++i)
 	{
 		twin& t = twins[i];
-		if (!*t.scene)
+		if (!*t.scene || (!scaled() && t.scene != &T.rt_Generic_0))
 			continue;
 		string256 name;
 		xr_sprintf(name, "%s_quark_display", (*t.scene)->cName.c_str());
@@ -607,13 +674,15 @@ void create(CRenderTarget& T)
 
 void release()
 {
+	scene_finish();
 	swap_twins(false);
 	for (twin& t : twins)
 		t.display.destroy();
 	twin_count = 0;
 	depth.destroy();
 	dlss_output.destroy();
-	release_passes();
+	fsr_opaque.destroy();
+	fsr_reactive.destroy();
 	release_feature();
 	fsr_release();
 	if (on)
@@ -625,6 +694,7 @@ void release()
 void shutdown()
 {
 	release();
+	release_passes();
 	if (ngx_params)
 		NVSDK_NGX_D3D11_DestroyParameters(ngx_params);
 	ngx_params = nullptr;
@@ -645,7 +715,12 @@ void scene_begin()
 	// A 3D scope's view must neither take a jitter sample nor reach the main view's history
 	main_view = !Device.m_SecondViewport.IsSVPFrame();
 	jitter_px = jitter_py = 0.f;
-	if (main_view)
+	if (main_view && fsr)
+	{
+		const int phases = ffxFsr3UpscalerGetJitterPhaseCount(render_w, Device.dwWidth);
+		ffxFsr3UpscalerGetJitterOffset(&jitter_px, &jitter_py, jitter_index++ % phases, phases);
+	}
+	else if (main_view)
 	{
 		// Halton (2, 3), at least 8 phases a pixel of the display (NVIDIA)
 		const float ratio = float(Device.dwWidth) / float(render_w);
@@ -665,12 +740,19 @@ void scene_begin()
 	}
 }
 
-void scene_end(CRenderTarget& T, bool history_reset)
+void capture_opaque(CRenderTarget& T)
+{
+	if (in_scene && main_view && fsr)
+		HW.pContext->CopyResource(fsr_opaque->pSurface, T.rt_Generic_0->pSurface);
+}
+
+void scene_end(CRenderTarget& T, bool history_reset, bool distortion)
 {
 	if (!in_scene)
 		return;
 	in_scene = false;
-	HW.pBaseZB = base_zb;
+	if (scaled())
+		scene_finish();
 
 	D3D11_MAPPED_SUBRESOURCE mapped;
 	if (SUCCEEDED(HW.pContext->Map(cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
@@ -681,27 +763,36 @@ void scene_end(CRenderTarget& T, bool history_reset)
 		HW.pContext->Unmap(cb, 0);
 	}
 
-	// Nearest copies of what the post-process reads, the depth into the display's depth-stencil
-	ID3D11RenderTargetView* rtvs[nearest_targets] = {};
-	ID3D11ShaderResourceView* srvs[nearest_targets + 1] = {};
-	for (u32 i = 0; i < twin_count; ++i)
-		if (twins[i].copy && twins[i].display && (i != 3 || T.need_heat_buffer()))
-		{
-			rtvs[i] = twins[i].display->pRT;
-			srvs[i] = (*twins[i].scene)->pTexture->get_SRView();
-		}
-	srvs[nearest_targets] = depth->pTexture->get_SRView();
-	// Nothing else clears the display's stencil while the scene draws into ours: the 3DSS lens marks 254 in it every
-	// frame and the transparent sight frame (stencil != 254) vanished wherever a lens had ever been
+	// The post-process uses its own stencil marks, for example the 3DSS lens and transparent sight frame.
 	HW.pContext->ClearDepthStencilView(HW.pBaseZB, D3D11_CLEAR_STENCIL, 1.f, 0);
-	draw(rtvs, nearest_targets, HW.pBaseZB, ps_nearest, srvs, nearest_targets + 1, depth_write);
+	if (scaled())
+	{
+		PIX_EVENT(Upscaler_scene_buffers);
+		// In native AA the post-process can use the scene attachments directly.
+		ID3D11RenderTargetView* rtvs[nearest_targets] = {};
+		ID3D11ShaderResourceView* srvs[nearest_targets + 1] = {};
+		const bool copy[nearest_targets] = {true, distortion, true, T.need_heat_buffer(), main_view};
+		for (u32 i = 0; i < nearest_targets; ++i)
+			if (copy[i] && twins[i].display)
+			{
+				rtvs[i] = twins[i].display->pRT;
+				srvs[i] = (*twins[i].scene)->pTexture->get_SRView();
+			}
+		srvs[nearest_targets] = depth->pTexture->get_SRView();
+		draw(rtvs, nearest_targets, HW.pBaseZB, ps_nearest, srvs, nearest_targets + 1, depth_write);
+	}
+	else
+		HW.pContext->OMSetRenderTargets(0, nullptr, nullptr); // the SDK reads the scene's depth as an SRV
 
 	CRT& color = *T.rt_Generic_0;
 	CRT& output = *twins[nearest_targets].display;
 	bool upscaled = false;
 	if (main_view && feature)
 	{
+		PIX_EVENT(DLSS_upscale);
 		const bool sharpen = ps_r__dlss_sharpness > 0.f;
+		if (sharpen && !dlss_output)
+			dlss_output.create("$user$quark_dlss_output", Device.dwWidth, Device.dwHeight, color.fmt, 1, true);
 		NVSDK_NGX_D3D11_DLSS_Eval_Params eval = {};
 		eval.Feature.pInColor = color.pSurface;
 		eval.Feature.pInOutput = sharpen ? dlss_output->pSurface : output.pSurface;
@@ -719,16 +810,14 @@ void scene_end(CRenderTarget& T, bool history_reset)
 		upscaled = NVSDK_NGX_SUCCEED(result);
 		if (!upscaled)
 		{
-			Msg("! [DLSS] evaluation failed: 0x%08X, the frame is stretched", u32(result));
-			release_feature(); // stretched from now on, the panel shows why
-			state = IRenderDeviceRender::upscaler_failed;
+			Msg("! [DLSS] evaluation failed: 0x%08X, returning to native rendering", u32(result));
 		}
 		else if (sharpen)
 		{
 			// as FSR maps its sharpness: 0..1 is 2..0 stops
 			if (SUCCEEDED(HW.pContext->Map(cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
 			{
-				const float con[4] = {exp2f(2.f * ps_r__dlss_sharpness - 2.f), 0.f, 0.f, 0.f};
+				const float con[4] = {exp2f(2.f * ps_r__dlss_sharpness - 2.f), float(Device.dwWidth), float(Device.dwHeight), 0.f};
 				memcpy(mapped.pData, con, sizeof(con));
 				HW.pContext->Unmap(cb, 0);
 			}
@@ -742,14 +831,14 @@ void scene_end(CRenderTarget& T, bool history_reset)
 	{
 		upscaled = fsr_dispatch(T, color, output, reset_history || history_reset);
 		reset_history = false;
-		if (!upscaled)
-		{
-			fsr_release();
-			state = IRenderDeviceRender::upscaler_failed;
-		}
 	}
 	if (!upscaled)
 	{
+		if (main_view)
+		{
+			state = IRenderDeviceRender::upscaler_failed;
+			fallback_pending = true;
+		}
 		ID3D11RenderTargetView* rtv = output.pRT;
 		ID3D11ShaderResourceView* srv = color.pTexture->get_SRView();
 		draw(&rtv, 1, nullptr, ps_linear, &srv, 1, depth_off);
@@ -760,6 +849,15 @@ void scene_end(CRenderTarget& T, bool history_reset)
 	HW.pContext->RSSetViewports(1, &viewport);
 }
 
+void scene_finish()
+{
+	if (base_zb)
+	{
+		HW.pBaseZB = base_zb;
+		base_zb = nullptr;
+	}
+}
+
 void jitter(float& x, float& y)
 {
 	x = in_scene ? 2.f * jitter_px / float(render_w) : 0.f;
@@ -768,10 +866,8 @@ void jitter(float& x, float& y)
 
 void report(IRenderDeviceRender::upscaler_report& out)
 {
-	gpu_init();
 	out.method = ps_r__upscaler;
-	out.mode = ps_r__upscaler_mode;
-	out.model = ps_r__dlss_model;
+	resolve(out.used_method, out.model, out.mode);
 	out.state = state;
 	out.nvidia = HW.Caps.id_vendor == 0x10DE;
 	out.dlss_supported = dlss_supported;
@@ -785,6 +881,6 @@ void report(IRenderDeviceRender::upscaler_report& out)
 	out.display_w = Device.dwWidth;
 	out.display_h = Device.dwHeight;
 	out.preset = on && feature ? char('A' + int(chosen_preset) - 1) : 0;
-	out.sharpness = ps_r__upscaler == method_dlss ? ps_r__dlss_sharpness : ps_r__fsr_sharpness;
+	out.sharpness = out.used_method == method_dlss ? ps_r__dlss_sharpness : ps_r__fsr_sharpness;
 }
 } // namespace upscaler

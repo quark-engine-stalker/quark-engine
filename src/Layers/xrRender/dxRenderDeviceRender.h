@@ -69,7 +69,7 @@ public:
 	virtual void Begin();
 	virtual void Clear();
 	virtual void End();
-	virtual bool LatencyFrameBegin(int fps_limit);
+	virtual latency_frame_limit LatencyFrameBegin(int fps_limit);
 	virtual void LatencyRenderBegin();
 	virtual void LatencyReport(latency_report& report, bool measure);
 	virtual void UpscalerReport(upscaler_report& report);

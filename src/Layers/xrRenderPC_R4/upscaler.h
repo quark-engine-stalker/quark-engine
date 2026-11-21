@@ -8,9 +8,10 @@ class CRenderTarget;
 
 namespace upscaler
 {
-enum method : u32 { method_off, method_dlss, method_fsr };
+// in the order of the console tokens (xrRender_console.cpp), which QUARK-PANEL shows as they are
+enum method : u32 { method_off, method_auto, method_dlss, method_fsr };
 enum mode : u32 { mode_dlaa, mode_quality, mode_balanced, mode_performance, mode_ultra_performance };
-enum model : u32 { model_auto, model_dlss45, model_dlss4, model_dlss3 };
+enum model : u32 { model_dlss45, model_dlss4, model_dlss3 };
 
 // The size of the pass being drawn: the render size inside the scene, the display size elsewhere
 u32 width();
@@ -32,7 +33,9 @@ void release(); // CRenderTarget destructor
 void shutdown(); // the device is destroyed
 
 void scene_begin(); // CRender::Render: the scene's targets, depth and jitter
-void scene_end(CRenderTarget& T, bool history_reset); // phase_combine before the post-process: upscale, display targets
+void capture_opaque(CRenderTarget& T); // FSR color before water and forward rendering
+void scene_end(CRenderTarget& T, bool history_reset, bool distortion); // upscale before the post-process
+void scene_finish(); // restore the base depth after the native-AA post-process
 
 // ssfx_jitter: the sub-pixel offset of the projection in clip space, zero outside the main view's scene
 void jitter(float& x, float& y);

@@ -37,37 +37,43 @@ IC void CScriptSound::PlayAtPos(CScriptGameObject* object, const Fvector& positi
 IC void CScriptSound::SetMinDistance(const float fMinDistance)
 {
 	VERIFY(m_sound._handle());
-	m_sound.set_range(fMinDistance, GetMaxDistance());
+	if (const auto* params = m_sound.get_params())
+		m_sound.set_range(fMinDistance, params->max_distance);
 }
 
 IC void CScriptSound::SetMaxDistance(const float fMaxDistance)
 {
 	VERIFY(m_sound._handle());
-	m_sound.set_range(GetMinDistance(), fMaxDistance);
+	if (const auto* params = m_sound.get_params())
+		m_sound.set_range(params->min_distance, fMaxDistance);
 }
 
 IC const float CScriptSound::GetFrequency() const
 {
 	VERIFY(m_sound._handle());
-	return (m_sound.get_params()->freq);
+	const auto* params = m_sound.get_params();
+	return params ? params->freq : 0.0f;
 }
 
 IC const float CScriptSound::GetMinDistance() const
 {
 	VERIFY(m_sound._handle());
-	return (m_sound.get_params()->min_distance);
+	const auto* params = m_sound.get_params();
+	return params ? params->min_distance : 0.0f;
 }
 
 IC const float CScriptSound::GetMaxDistance() const
 {
 	VERIFY(m_sound._handle());
-	return (m_sound.get_params()->max_distance);
+	const auto* params = m_sound.get_params();
+	return params ? params->max_distance : 0.0f;
 }
 
 IC const float CScriptSound::GetVolume() const
 {
 	VERIFY(m_sound._handle());
-	return (m_sound.get_params()->volume);
+	const auto* params = m_sound.get_params();
+	return params ? params->volume : 0.0f;
 }
 
 IC bool CScriptSound::IsPlaying() const

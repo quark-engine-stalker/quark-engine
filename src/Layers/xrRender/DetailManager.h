@@ -85,6 +85,7 @@ public:
 		float c_sun;
 		u8 vis_ID; // индекс в visibility списке: still, wave 1, wave 2
 		u8 alpha_target; // boolean fade target stored compactly
+		u16 lod_rank; // detail_lod_hash of the instance in 16 bits: a thinned sun shadow pass keeps the lowest ranks
 	};
 
 	DEFINE_VECTOR(SlotItem, SlotItemDataVec, SlotItemDataVecIt);
@@ -133,6 +134,10 @@ public:
 		// leak visibility from an older sun pass.
 		u32 grass_sun_cascade_generation;
 		u32 grass_sun_cascade_mask;
+		u32 grass_sun_keep; // the lod_rank limit of the sun shadow passes this frame (65536: every instance)
+		// Of the decompressed instances: sum of their (scale * model radius)^2 and of their ground normals
+		float grass_cover;
+		Fvector grass_ground;
 		// Reused by the three hardware detail variants and by all model parts
 		// belonging to this slot during one Render() call. This is transient
 		// renderer state and is not part of the on-disk detail format.
@@ -155,6 +160,9 @@ public:
 			grass_spot_candidate_generation = 0;
 			grass_sun_cascade_generation = 0;
 			grass_sun_cascade_mask = 0;
+			grass_sun_keep = 65536;
+			grass_cover = 0.f;
+			grass_ground.set(0.f, 0.f, 0.f);
 			grass_render_fade_generation = 0;
 			grass_render_fade = 1.f;
 			vis.clear();
@@ -222,7 +230,6 @@ public:
 	//CacheSlot1 					cache_level1[dm_cache1_line][dm_cache1_line];
 	//Slot*							cache		[dm_cache_line][dm_cache_line];	// grid-cache itself
 	//svector<Slot*,dm_cache_size>	cache_task;									// non-unpacked slots
-	bool m_cache_full_unpack = false; // a whole-cache task is being unpacked by slices
 	//Slot							cache_pool	[dm_cache_size];				// just memory for slots
 
 #ifdef DETAIL_RADIUS
@@ -250,8 +257,10 @@ public:
 	{
 		Fvector eye;
 		CFrustum view;
-		float fade_limit, fade_start, fade_range, ssa_cheap, alpha_step;
+		float fade_limit, fade_start, fade_range, ssa_cheap, lod_layers, alpha_step;
+		float ssa_min; // smaller grass is not drawn (r__detail_min_size)
 		bool no_scale;
+		bool refresh_all; // ssa_min fell (zoom): every visible slot rebuilds its lists now
 	};
 	// What one row of the level-1 cache adds to m_visibles, in the order the serial walk adds it
 	struct VisibleEntry
@@ -290,7 +299,7 @@ public:
 	static constexpr u32 main_pack_chunk = 64;
 	xr_vector<MainPassPack> m_main_pack; // grows only, the first m_main_pack_chunks are the frame's
 	u32 m_main_pack_chunks = 0;
-	xr_vector<u32> m_main_pack_first[3]; // [variant][object]: the model's first chunk
+	xr_vector<u32> m_main_pack_first; // [band - near_bands][variant][object]: the first chunk of the model in the band
 	u32 m_main_pack_frame = u32(-1);
 	u32 m_main_pack_fp_control = 0;
 	volatile LONG m_main_pack_next = 0; // the next chunk a lane takes, counting down
@@ -302,6 +311,72 @@ public:
 	xr_jobs::task_group m_main_pack_group;
 	static void pack_main_lane(void* manager);
 	void stop_main_pack();
+
+	// The main pass draws front to back across models: alpha-tested grass writes depth only after its pixel shader, so
+	// just the grass already drawn rejects the grass behind it, and every model went from near to far on its own. The
+	// wave instances (variants 1 and 2) of the slots nearer than near_distance go one by one, by their own distance
+	// in near_bands bands (2 sqrt(d)); the farther slots go in far_bands bands of slot distance, each 1.4 times the
+	// last. In each band every model of variant 1, then of variant 2. Variant 0 (small far clumps, still models) and
+	// the shadow passes draw the whole lists, model by model.
+	static constexpr float near_distance = 4.f;
+	static constexpr u32 near_bands = 5;
+	static constexpr u32 far_bands = 7;
+	static constexpr u32 all_bands = near_bands + far_bands; // the band of a whole list
+	static const float far_band_edges[far_bands + 1];
+	struct NearInstance
+	{
+		float distance_sq;
+		Slot* slot;
+		const SlotItem* item;
+	};
+	xr_vector<NearInstance> m_near; // by run, each run by distance
+	xr_vector<u32> m_near_runs; // [band][variant][object] (a run): its first entry of m_near, one more at the end
+	xr_vector<u32> m_near_fill;
+	void sort_near_instances(const Fvector& eye);
+	u32 band_pack_index(u32 band, u32 variant, u32 object) const
+	{
+		return ((band - near_bands) * 3 + variant) * static_cast<u32>(objects.size()) + object;
+	}
+	void band_range(const xr_vector<VisibleSlotItems>& vis, u32 band, u32& begin, u32& end) const;
+
+	// Far grass behind the terrain: variant 0 (the small far clumps) is a pure vertex cost and in a hilly or wooded level
+	// most of it is hidden, as is the far band of the wave variants. The main pass draws those lists tile by tile, each
+	// tile under a GPU predicate: its box drawn against the depth of the frame so far. The GPU skips the draws of a tile
+	// whose box shows no sample; nothing waits for a result, so nothing shows up late.
+	struct GrassTile
+	{
+		u32 key;
+		Fbox box; // of its tiled slots
+		u32 indices; // of its tiled instances: a predicate stalls the GPU's front end, a small tile is cheaper drawn
+		ID3D11Predicate* predicate; // null: drawn without one (seen last time, small, at the camera, past the budget)
+	};
+	// A tile's query of the last pass, read without waiting: a tile the GPU saw is drawn without its predicate (no
+	// stall, its batches merge with the neighbours'); one hidden or new is drawn under it. Only the choice of the
+	// predicate depends on the history, never what is drawn.
+	struct GrassTileQuery
+	{
+		ID3D11Predicate* predicate;
+		bool visible;
+	};
+	static constexpr u32 grass_tile_shift = 3; // 8 x 8 slots, 16 m: 8 m tiles split more batches than they cull more
+	u32 m_grass_tile_shift = 0; // this frame's; 0 = no tiles (no vertex shader path)
+	xr_vector<GrassTile> m_grass_tiles;
+	xr_unordered_map<u32, u32> m_grass_tile_map; // key -> m_grass_tiles
+	xr_vector<ID3D11Predicate*> m_grass_tile_predicates[2]; // pools of alternate passes, grow only
+	u32 m_grass_tile_pool = 0;
+	xr_unordered_map<u32, GrassTileQuery> m_grass_tile_queries[2]; // key -> the query of the last pass, this one
+	ref_geom m_grass_tile_geom;
+	u32 grass_tile_key(const Slot& slot) const
+	{
+		return (u32(slot.sx >> m_grass_tile_shift) & 0xffffu) << 16 | (u32(slot.sz >> m_grass_tile_shift) & 0xffffu);
+	}
+	void build_grass_tiles();
+	void query_grass_tiles();
+	ID3D11Predicate* grass_tile_predicate(u32 key) const
+	{
+		const auto it = m_grass_tile_map.find(key);
+		return it != m_grass_tile_map.end() ? m_grass_tiles[it->second].predicate : nullptr;
+	}
 public:
 #ifdef _EDITOR
 	virtual ObjectList* 			GetSnapList		()=0;
@@ -334,7 +409,7 @@ public:
 	void hw_Render();
 	void hw_Render_dump(const Fvector4& consts, const Fvector4& wave, const Fvector4& wind,
 		const Fvector4& prev_wave, const Fvector4& prev_wind, u32 var_id, u32 lod_id,
-		const Fvector4* current_benders, const Fvector4* previous_benders, u32 bender_count);
+		const Fvector4* current_benders, const Fvector4* previous_benders, u32 bender_count, u32 band);
 
 public:
 	// get unpacked slot
@@ -344,7 +419,8 @@ public:
 	void cache_Update(int sx, int sz, Fvector& view, int limit);
 	void cache_Task(int gx, int gz, Slot* D);
 	Slot* cache_Query(int sx, int sz);
-	void cache_Decompress(Slot* D);
+	// Slots are independent: several threads decompress at once, each with its own collider
+	void cache_Decompress(Slot* D, xrXRC& collider);
 	BOOL cache_Validate();
 	// cache grid to world
 	int cg2w_X(int x) { return cache_cx - dm_size + x; }
@@ -360,7 +436,7 @@ public:
 	// The renderer supplies the already prepared sun caster frustums. Detail
 	// geometry keeps its existing shaders/batching; these methods only provide a
 	// conservative per-slot cascade filter for the sun shadow passes.
-	void PrepareSunShadowCascades(const CFrustum* const* frustums, u32 count);
+	void PrepareSunShadowCascades(const CFrustum* const* frustums, u32 count, const Fvector& sun_direction);
 	void SetSunShadowCascade(u32 cascade_index);
 	void ClearSunShadowCascades();
 
@@ -370,16 +446,13 @@ public:
 	volatile LONG m_frame_rendered;
 
 	void __stdcall MT_CALC();
-	volatile LONG m_render_waits = 0; // the render waits for MT_CALC: a whole-cache unpack cuts its slice short
 	ICF void MT_SYNC()
 	{
 		const u32 calculated_frame = static_cast<u32>(InterlockedCompareExchange(&m_frame_calc, 0, 0));
 		if (calculated_frame == RDEVICE.dwFrame)
 			return;
 
-		InterlockedExchange(&m_render_waits, 1);
 		MT_CALC();
-		InterlockedExchange(&m_render_waits, 0);
 	}
 
 	CDetailManager();
@@ -405,6 +478,7 @@ private:
 		const SlotItemVec* source;
 		u64 source_generation;
 		float scale;
+		u32 keep_rank; // the instances below this lod_rank were packed (65536: all)
 		u32 offset;
 		u32 capacity;
 		u32 count;
@@ -442,15 +516,16 @@ private:
 	template <bool packed_upload>
 	void hw_Render_dump_impl(const Fvector4& consts, const Fvector4& wave, const Fvector4& wind,
 		const Fvector4& prev_wave, const Fvector4& prev_wind, u32 var_id, u32 lod_id,
-		const Fvector4* current_benders, const Fvector4* previous_benders, u32 bender_count);
+		const Fvector4* current_benders, const Fvector4* previous_benders, u32 bender_count, u32 band);
 	PackedDetailKey* prepare_upload_keys(u32 variant, u32 object, u32 visible_count, u32& key_count);
 	bool cached_slot_upload(const VisibleSlotItems& visible, PackedDetailKey& key, u32 variant, float slot_scale,
-		const Fvector4*& transforms, const Fvector4*& extra, u32& count);
+		u32 keep_rank, const Fvector4*& transforms, const Fvector4*& extra, u32& count);
 
 	// Classification settings are checked once per UpdateVisibleM; slots keep
 	// their original staggered refresh cadence when a console setting changes.
 	u64 m_grass_visibility_parameters_generation = 1;
-	float m_grass_visibility_ssa_discard = 0.f;
+	float m_grass_visibility_ssa_min = 0.f;
+	float m_grass_visibility_lod = 0.f;
 	u32 m_grass_visibility_fp_control = 0;
 	bool m_grass_visibility_no_scale = false;
 	DetailFrameState m_frame_state;
@@ -460,6 +535,7 @@ private:
 	u32 m_grass_spot_candidate_generation = 0;
 	static constexpr u32 grass_sun_cascade_capacity = 3;
 	const CFrustum* m_grass_sun_cascade_frustums[grass_sun_cascade_capacity] = {0, 0, 0};
+	Fvector m_grass_sun_direction = {0.f, -1.f, 0.f};
 	u32 m_grass_sun_cascade_count = 0;
 	u32 m_grass_sun_cascade_index = u32(-1);
 	u32 m_grass_sun_cascade_generation = 0;
@@ -476,5 +552,15 @@ private:
 	void prepare_spot_candidates();
 	u32 sun_shadow_mask_for_slot(Slot& slot);
 };
+
+// A fixed value in [0, 1) per instance of a slot: the same instances stay every frame and after a reload
+IC float detail_lod_hash(int sx, int sz, u32 part, u32 item)
+{
+	u32 h = u32(sx) * 0x8da6b343u ^ u32(sz) * 0xd8163841u ^ ((part << 16) + item) * 0xcb1ab31fu;
+	h ^= h >> 15;
+	h *= 0x2c1b3c6du;
+	h ^= h >> 12;
+	return float(h >> 8) * (1.f / 16777216.f);
+}
 
 #endif //DetailManagerH

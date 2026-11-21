@@ -225,24 +225,26 @@ void CHitMemoryManager::update()
 	START_PROFILE("Memory Manager/hits::update")
 		clear_delayed_objects();
 
-		VERIFY(m_hits);
-		const u32 old_memory_count = m_hits->size();
-		m_hits->erase(
-			std::remove_if(
-				m_hits->begin(),
-				m_hits->end(),
-				CRemoveOfflinePredicate()
-			),
-			m_hits->end()
-		);
-		if (m_hits->size() != old_memory_count)
-			m_object_indices.clear();
+		if (m_hits)
+		{
+			const u32 old_memory_count = m_hits->size();
+			m_hits->erase(
+				std::remove_if(
+					m_hits->begin(),
+					m_hits->end(),
+					CRemoveOfflinePredicate()
+				),
+				m_hits->end()
+			);
+			if (m_hits->size() != old_memory_count)
+				m_object_indices.clear();
+		}
 
 #ifdef USE_SELECTED_HIT
 	xr_delete					(m_selected_hit);
 	u32							level_time = 0;
-	HITS::const_iterator		I = m_hits->begin();
-	HITS::const_iterator		E = m_hits->end();
+	HITS::const_iterator		I = objects().begin();
+	HITS::const_iterator		E = objects().end();
 	for ( ; I != E; ++I) {
 		if ((*I).m_level_time > level_time) {
 			xr_delete			(m_selected_hit);

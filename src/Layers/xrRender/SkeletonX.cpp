@@ -290,6 +290,7 @@ void CSkeletonX::_Render_soft(ref_geom& hGeom, u32 vCount, u32 iOffset, u32 pCou
 
 void CSkeletonX::_Load(const char* N, IReader* data, u32& dwVertCount)
 {
+	PROF_EVENT();
 	s_bones_array_const = "sbones_array";
 	s_bones_array_prev_const = "sbones_array_prev";
 	s_wvp_prev_const = "m_wvp_prev";

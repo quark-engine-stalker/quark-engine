@@ -2,6 +2,7 @@
 
 void CRenderTarget::phase_gasmask_drops()
 {
+	PIX_EVENT(phase_gasmask_drops);
 	//Constants
 	u32 Offset = 0;
 	u32 C = color_rgba(0, 0, 0, 255);

@@ -1320,7 +1320,7 @@ void set_weather_value_numric(LPCSTR name, float val)
 	else if (0 == xr_strcmp(name, "bloom_sky_intensity"))
 		E.bloom_sky_intensity = val;
 	else
-		Msg("~xrGame\level_script.cpp (set_weather_value_numric) | [%s] is not a valid numric weather parameter to set", name);
+		Msg("~xrGame\\level_script.cpp (set_weather_value_numric) | [%s] is not a valid numric weather parameter to set", name);
 }
 
 Fvector3 get_weather_value_vector(LPCSTR name)
@@ -1376,7 +1376,7 @@ void set_weather_value_vector(LPCSTR name, float x, float y, float z, float w = 
 	else if (0 == xr_strcmp(name, "hemisphere_color"))
 		E.hemi_color.set(x, y, z, w);
 	else
-		Msg("~xrGame\level_script.cpp (set_weather_value_vector) | [%s] is not a valid vector weather parameter to set", name);
+		Msg("~xrGame\\level_script.cpp (set_weather_value_vector) | [%s] is not a valid vector weather parameter to set", name);
 }
 
 LPCSTR get_weather_value_string(LPCSTR name)
@@ -1435,7 +1435,7 @@ void set_weather_value_string(LPCSTR name, LPCSTR newval)
 		E.env_ambient = environment()->AppendEnvAmb(newval);
 	}
 	else
-		Msg("~xrGame\level_script.cpp (set_weather_value_string) | [%s] is not a valid string weather parameter to set", name);
+		Msg("~xrGame\\level_script.cpp (set_weather_value_string) | [%s] is not a valid string weather parameter to set", name);
 }
 
 void pause_weather(bool b_pause)
@@ -1470,7 +1470,7 @@ void boost_weather_value(LPCSTR name, float value)
 	else if (0 == xr_strcmp(name, "sun_color"))
 		environment()->env_boost.sun_color = value;
 	else
-		Msg("~xrGame\level_script.cpp (boost_weather_value)| [%s] is not a valid weather parameter to boost", name);
+		Msg("~xrGame\\level_script.cpp (boost_weather_value)| [%s] is not a valid weather parameter to boost", name);
 }
 
 void boost_weather_reset()
@@ -1912,7 +1912,7 @@ enum ETraceTarget {
 
 static SPickParam* get_pick(ETraceTarget tt)
 {
-	R_ASSERT(tt >= 0, tt < TT_MAX);
+	R_ASSERT(tt >= 0 && tt < TT_MAX);
 
 	const attachable_hud_item* item = NULL;
 	switch (tt)

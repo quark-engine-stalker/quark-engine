@@ -58,54 +58,45 @@ void CLocatorAPI::auth_runtime(void* params)
     }
 #endif
 
-	bool do_break = false;
-
 #ifdef DEBUG
     bool b_extern_auth = !!strstr(Core.Params, "asdf");
     if (!b_extern_auth)
 #endif // DEBUG
 	{
-		for (files_it it = m_files.begin(); it != m_files.end(); ++it)
+		// r_open() needs the same index lock, so copy names before hashing.
+		xr_vector<xr_string> to_hash;
 		{
-			const file& f = *it;
-
-			// test for skip
-			BOOL bSkip = FALSE;
-			for (u32 s = 0; s < _o->ignore.size(); s++)
+			xrSRWLockGuard guard(m_files_lock, true);
+			for (const file& f : m_files)
 			{
-				if (strstr(f.name, _o->ignore[s].c_str()))
-					bSkip = TRUE;
-			}
+				if (!f.size_real)
+					continue;
 
-			if (bSkip)
-				continue;
-
-			// test for important
-			for (u32 s = 0; s < _o->important.size(); s++)
-			{
-				if ((f.size_real != 0) && strstr(f.name, _o->important[s].c_str()))
+				const auto should_skip = [&f](const shared_str& name)
 				{
-					// crc for file
-					IReader* r = FS.r_open(f.name);
-					if (!r)
-					{
-						do_break = true;
-						break;
-					}
-					u32 crc = crc32(r->pointer(), r->length());
+					return strstr(f.name, name.c_str()) != nullptr;
+				};
+				if (std::any_of(_o->ignore.begin(), _o->ignore.end(), should_skip))
+					continue;
 
-#ifdef DEBUG
-                    if (strstr(Core.Params, "auth_debug"))
-                        Msg("auth %s = 0x%08x", f.name, crc);
-#endif // DEBUG
-
-					FS.r_close(r);
-					m_auth_code ^= u64(crc);
-				}
+				for (const shared_str& name : _o->important)
+					if (strstr(f.name, name.c_str()))
+						to_hash.emplace_back(f.name);
 			}
+		}
 
-			if (do_break)
+		for (const xr_string& name : to_hash)
+		{
+			IReader* r = FS.r_open(name.c_str());
+			if (!r)
 				break;
+			u32 crc = crc32(r->pointer(), r->length());
+#ifdef DEBUG
+            if (strstr(Core.Params, "auth_debug"))
+                Msg("auth %s = 0x%08x", name.c_str(), crc);
+#endif
+			FS.r_close(r);
+			m_auth_code ^= u64(crc);
 		}
 #ifdef DEBUG
         Msg("auth_code = %d", m_auth_code);

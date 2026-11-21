@@ -391,6 +391,9 @@ void CDetailManager::Unload()
 	m_visibles[0].clear();
 	m_visibles[1].clear();
 	m_visibles[2].clear();
+	m_near.clear();
+	m_near_runs.clear();
+	m_near_fill.clear();
 	m_main_pack.clear_and_free();
 	m_main_pack_chunks = 0;
 	m_main_pack_frame = u32(-1);
@@ -400,6 +403,7 @@ void CDetailManager::Unload()
 }
 
 extern ECORE_API float r_ssaDISCARD;
+
 
 // One row of the level-1 cache, its slots in the order of the serial walk; every visible list entry goes to push.
 // A slot belongs to one row only: rows may run on several threads at once.
@@ -412,6 +416,9 @@ void CDetailManager::UpdateVisibleRow(const VisibilityPass& pass, u32 _mz, Push&
 	const float fade_start = pass.fade_start;
 	const float fade_range = pass.fade_range;
 	const float r_ssaCHEAP = pass.ssa_cheap;
+	const float lod_layers = pass.lod_layers;
+	constexpr float lod_near_sq = 15.f * 15.f;
+	constexpr float lod_blade_cover = .3f;
 	const bool no_scale = pass.no_scale;
 	const float alpha_step = pass.alpha_step;
 	{
@@ -461,7 +468,7 @@ void CDetailManager::UpdateVisibleRow(const VisibilityPass& pass, u32 _mz, Push&
 #endif
 				// Add to visibility structures
 				bool upload_changed = false;
-				if (RDEVICE.dwFrame > S.frame)
+				if (RDEVICE.dwFrame > S.frame || pass.refresh_all)
 				{
 					// Calc fade factor	(per slot)
 					float dist_sq = EYE.distance_to_sqr(S.vis.sphere.P);
@@ -493,6 +500,35 @@ void CDetailManager::UpdateVisibleRow(const VisibilityPass& pass, u32 _mz, Push&
 					if (!reuse_visible_lists)
 					{
 						upload_changed = true;
+						// Hidden grass. A low view ray crosses the grass layer over a path of its height / sin(angle to the
+						// ground) and meets density * clump width * path * blade cover clumps on it: hundreds in a dense field,
+						// while some dozens already cover the pixel. Only the share that leaves lod_layers of them on the ray
+						// is drawn (a fixed choice per instance), so the screen keeps the same cover; near the camera (big
+						// clumps, few layers) everything stays.
+						float keep_share = 1.f;
+						if (lod_layers > 0.f && dist_sq > lod_near_sq)
+						{
+							float cover = 0.f; // sum of r^2 of the slot's clumps, as drawn
+							Fvector ground = {0.f, 0.f, 0.f};
+							for (int sp_id = 0; sp_id < dm_obj_in_slot; sp_id++)
+							{
+								const SlotPart& sp = S.G[sp_id];
+								if (sp.id == DetailSlot::ID_Empty) continue;
+								const float R = objects[sp.id]->bv_sphere.R * S.visibility_scale;
+								for (const SlotItem& Item : sp.items)
+								{
+									cover += Item.scale * Item.scale * R * R;
+									ground.add(Item.normal);
+								}
+							}
+							Fvector view;
+							view.sub(S.vis.sphere.P, EYE);
+							const float sin_view = _abs(view.dotproduct(ground)) / _max(view.magnitude() * ground.magnitude(), 1e-6f);
+							// 4 r^2 (width * height) over the slot area of 4 m^2, a share of a clump's square covered by blades
+							const float layers = cover * lod_blade_cover / _max(sin_view, .01f);
+							if (layers > lod_layers)
+								keep_share = lod_layers / layers;
+						}
 						for (int sp_id = 0; sp_id < dm_obj_in_slot; sp_id++)
 						{
 							SlotPart& sp = S.G[sp_id];
@@ -511,7 +547,12 @@ void CDetailManager::UpdateVisibleRow(const VisibilityPass& pass, u32 _mz, Push&
 								SlotItem& Item = sp.items[item_index];
 								float scale = Item.scale * S.visibility_scale;
 								float ssa = no_scale ? scale : scale * scale * Rq_drcp;
-								if (ssa < r_ssaDISCARD)
+								if (ssa < pass.ssa_min)
+								{
+									Item.alpha_target = 0;
+									continue;
+								}
+								if (keep_share < 1.f && detail_lod_hash(S.sx, S.sz, sp_id, item_index) >= keep_share)
 								{
 									Item.alpha_target = 0;
 									continue;
@@ -603,6 +644,65 @@ void CDetailManager::VisibleRowsHelper(void* data)
 	VisibleRowsLane(data);
 }
 
+// Squared slot distances, like Slot::distance
+const float CDetailManager::far_band_edges[far_bands + 1] = {near_distance * near_distance, 5.6f * 5.6f, 7.84f * 7.84f,
+	10.98f * 10.98f, 15.37f * 15.37f, 21.51f * 21.51f, 30.12f * 30.12f, flt_max};
+
+// The entries of a visible list (sorted from near to far) in a far band, or all of them
+void CDetailManager::band_range(const xr_vector<VisibleSlotItems>& vis, u32 band, u32& begin, u32& end) const
+{
+	begin = 0;
+	end = static_cast<u32>(vis.size());
+	if (band == all_bands)
+		return;
+	VERIFY(band >= near_bands && band < all_bands);
+	auto nearer = [](const VisibleSlotItems& visible, float distance) { return visible.slot->distance < distance; };
+	const float* const edge = far_band_edges + (band - near_bands);
+	begin = static_cast<u32>(std::lower_bound(vis.begin(), vis.end(), edge[0], nearer) - vis.begin());
+	end = static_cast<u32>(std::lower_bound(vis.begin() + begin, vis.end(), edge[1], nearer) - vis.begin());
+}
+
+// The wave instances of the near slots in runs of one band, variant and model, each run from near to far
+void CDetailManager::sort_near_instances(const Fvector& eye)
+{
+	PROF_EVENT();
+	// Band b ends at the distance ((b + 1) / 2)^2: squared, ((b + 1) / 2)^4
+	static const float band_ends[near_bands - 1] = {.0625f, 1.f, 5.0625f, 16.f};
+	const u32 object_count = static_cast<u32>(objects.size());
+	const u32 runs = near_bands * 3 * object_count;
+	// Counted, then placed: every instance is visited twice, nothing is moved but the final entries
+	auto walk = [&](auto&& visit)
+	{
+		for (u32 variant = 1; variant < 3; ++variant)
+			for (u32 object = 0; object < object_count; ++object)
+				for (const VisibleSlotItems& visible : m_visibles[variant][object])
+				{
+					if (visible.slot->distance >= far_band_edges[0])
+						break;
+					for (const SlotItem* item : *visible.items)
+					{
+						const float dx = item->xform[0].w - eye.x, dy = item->xform[1].w - eye.y, dz = item->xform[2].w - eye.z;
+						const float distance_sq = dx * dx + dy * dy + dz * dz;
+						u32 band = 0;
+						for (const float end : band_ends)
+							band += distance_sq >= end;
+						visit((band * 3 + variant) * object_count + object, NearInstance{distance_sq, visible.slot, item});
+					}
+				}
+	};
+	m_near_runs.assign(runs + 1, 0);
+	walk([this](u32 run, const NearInstance&) { ++m_near_runs[run + 1]; });
+	for (u32 run = 0; run < runs; ++run)
+		m_near_runs[run + 1] += m_near_runs[run];
+	m_near.resize(m_near_runs[runs]);
+	m_near_fill.assign(m_near_runs.begin(), m_near_runs.end() - 1);
+	walk([this](u32 run, const NearInstance& instance) { m_near[m_near_fill[run]++] = instance; });
+	for (u32 run = 0; run < runs; ++run)
+		std::sort(m_near.begin() + m_near_runs[run], m_near.begin() + m_near_runs[run + 1],
+			[](const NearInstance& a, const NearInstance& b)
+			{ return a.distance_sq != b.distance_sq ? a.distance_sq < b.distance_sq : a.item < b.item; });
+}
+
 void CDetailManager::UpdateVisibleM()
 {
 	VisibilityPass pass;
@@ -613,13 +713,23 @@ void CDetailManager::UpdateVisibleM()
 	pass.fade_range = pass.fade_limit - pass.fade_start;
 	pass.ssa_cheap = 16 * r_ssaDISCARD;
 	pass.no_scale = psDeviceFlags2.test(rsNoScale);
+	pass.lod_layers = ps_r__detail_lod;
 	pass.alpha_step = RDEVICE.fTimeDelta;
+	// r__detail_min_size against the display's focal length in pixels, in half-octave steps rounded up (smaller grass
+	// drawn): zooming in rebuilds the visible slots at once, zooming out lets the lists follow at their pace
+	const float focal = .5f * float(RDEVICE.dwHeight) * RDEVICE.mProject_saved._22;
+	const float focal_step = focal > 1.f ? exp2f(ceilf(log2f(focal) * 2.f) * .5f) : 0.f;
+	pass.ssa_min = pass.no_scale || focal_step <= 0.f ? r_ssaDISCARD :
+		_max(r_ssaDISCARD, _sqr(ps_r__detail_min_size / focal_step));
+	pass.refresh_all = pass.ssa_min < m_grass_visibility_ssa_min;
 	const u32 fp_control = _mm_getcsr() & ~0x3fu;
-	if (memcmp(&m_grass_visibility_ssa_discard, &r_ssaDISCARD, sizeof(float)) != 0 ||
+	if (memcmp(&m_grass_visibility_ssa_min, &pass.ssa_min, sizeof(float)) != 0 ||
+		memcmp(&m_grass_visibility_lod, &ps_r__detail_lod, sizeof(float)) != 0 ||
 		m_grass_visibility_no_scale != pass.no_scale || m_grass_visibility_fp_control != fp_control)
 	{
 		++m_grass_visibility_parameters_generation;
-		m_grass_visibility_ssa_discard = r_ssaDISCARD;
+		m_grass_visibility_ssa_min = pass.ssa_min;
+		m_grass_visibility_lod = ps_r__detail_lod;
 		m_grass_visibility_no_scale = pass.no_scale;
 		m_grass_visibility_fp_control = fp_control;
 	}
@@ -654,7 +764,85 @@ void CDetailManager::UpdateVisibleM()
 			for (const VisibleEntry& entry : entries)
 				m_visibles[entry.variant][entry.object].push_back(entry.item);
 	}
+	// Near slots first: an alpha-tested blade cannot write depth before its pixel shader, but the grass already drawn
+	// still rejects the farther grass behind it. Distance ties keep one fixed order.
+	auto nearer = [](const VisibleSlotItems& a, const VisibleSlotItems& b)
+	{
+		return a.slot->distance != b.slot->distance ? a.slot->distance < b.slot->distance : a.items < b.items;
+	};
+	m_grass_tile_shift = UseVS() ? grass_tile_shift : 0;
+	for (u32 variant = 0; variant < 3; ++variant)
+		for (xr_vector<VisibleSlotItems>& vis : m_visibles[variant])
+		{
+			if (variant || !m_grass_tile_shift)
+				std::sort(vis.begin(), vis.end(), nearer);
+			if (!m_grass_tile_shift)
+				continue;
+			// Variant 0 and the last band of the others go tile by tile (the pass switches the tile predicate between
+			// them), nearer tiles first. The band edges still split the lists: the tail past the last edge is reordered.
+			const auto first = variant ? std::lower_bound(vis.begin(), vis.end(), far_band_edges[far_bands - 1],
+				[](const VisibleSlotItems& visible, float distance) { return visible.slot->distance < distance; }) : vis.begin();
+			const int eye_x = iFloor(pass.eye.x / dm_slot_size + .5f) >> m_grass_tile_shift;
+			const int eye_z = iFloor(pass.eye.z / dm_slot_size + .5f) >> m_grass_tile_shift;
+			std::sort(first, vis.end(), [&](const VisibleSlotItems& a, const VisibleSlotItems& b)
+			{
+				const int ax = (a.slot->sx >> m_grass_tile_shift) - eye_x, az = (a.slot->sz >> m_grass_tile_shift) - eye_z;
+				const int bx = (b.slot->sx >> m_grass_tile_shift) - eye_x, bz = (b.slot->sz >> m_grass_tile_shift) - eye_z;
+				const int ad = ax * ax + az * az, bd = bx * bx + bz * bz;
+				if (ad != bd)
+					return ad < bd;
+				const u32 ak = grass_tile_key(*a.slot), bk = grass_tile_key(*b.slot);
+				return ak != bk ? ak < bk : nearer(a, b);
+			});
+		}
+	build_grass_tiles();
+	if (UseVS())
+		sort_near_instances(pass.eye);
 	RDEVICE.Statistic->RenderDUMP_DT_VIS.End();
+}
+
+// The tiles of variant 0 in the order its lists visit them, each with the box of its slots
+void CDetailManager::build_grass_tiles()
+{
+	m_grass_tiles.clear_not_free();
+	m_grass_tile_map.clear();
+	if (!m_grass_tile_shift)
+		return;
+	for (u32 variant = 0; variant < 3; ++variant)
+	for (u32 object = 0; object < m_visibles[variant].size() && object < objects.size(); ++object)
+	{
+		const xr_vector<VisibleSlotItems>& vis = m_visibles[variant][object];
+		const u32 model_indices = objects[object]->number_indices;
+		u32 last_key = 0, last_tile = u32(-1); // every key value is a tile: (-1, -1) is 0xffffffff
+		u32 begin = 0, end = static_cast<u32>(vis.size());
+		if (variant)
+			band_range(vis, all_bands - 1, begin, end);
+		for (u32 i = begin; i < end; ++i)
+		{
+			const VisibleSlotItems& visible = vis[i];
+			const u32 key = grass_tile_key(*visible.slot);
+			if (key != last_key || last_tile == u32(-1))
+			{
+				last_key = key;
+				const auto it = m_grass_tile_map.find(key);
+				if (it != m_grass_tile_map.end())
+					last_tile = it->second;
+				else
+				{
+					last_tile = static_cast<u32>(m_grass_tiles.size());
+					m_grass_tile_map.emplace(key, last_tile);
+					GrassTile tile;
+					tile.key = key;
+					tile.box.invalidate();
+					tile.indices = 0;
+					tile.predicate = nullptr;
+					m_grass_tiles.push_back(tile);
+				}
+			}
+			m_grass_tiles[last_tile].box.merge(visible.slot->vis.box);
+			m_grass_tiles[last_tile].indices += static_cast<u32>(visible.items->size()) * model_indices;
+		}
+	}
 }
 
 void CDetailManager::prepare_frame_state()
@@ -764,11 +952,12 @@ void CDetailManager::prepare_spot_candidates()
 	}
 }
 
-void CDetailManager::PrepareSunShadowCascades(const CFrustum* const* frustums, u32 count)
+void CDetailManager::PrepareSunShadowCascades(const CFrustum* const* frustums, u32 count, const Fvector& sun_direction)
 {
 	const u32 cascade_count = _min(count, grass_sun_cascade_capacity);
 	m_grass_sun_cascade_count = cascade_count;
 	m_grass_sun_cascade_index = u32(-1);
+	m_grass_sun_direction.normalize_safe(sun_direction);
 
 	for (u32 i = 0; i < grass_sun_cascade_capacity; ++i)
 		m_grass_sun_cascade_frustums[i] = i < cascade_count ? frustums[i] : 0;
@@ -820,6 +1009,20 @@ void CDetailManager::PrepareSunShadowCascades(const CFrustum* const* frustums, u
 			object_masks[object_index] = static_cast<u8>(object_mask);
 		}
 	}
+	// Nearest to the sun first: the coarse depth test then drops more of the farther layers (-8 % of their pixels)
+	for (u32 variant = 0; variant < 3; ++variant)
+		for (u32 cascade = 0; cascade < cascade_count; ++cascade)
+			for (u32 object_index = 0; object_index < m_grass_sun_slots[cascade][variant].size(); ++object_index)
+			{
+				const xr_vector<VisibleSlotItems>& slots = m_visibles[variant][object_index];
+				xr_vector<u32>& list = m_grass_sun_slots[cascade][variant][object_index];
+				std::sort(list.begin(), list.end(), [&](u32 a, u32 b)
+				{
+					const float da = slots[a].slot->vis.sphere.P.dotproduct(m_grass_sun_direction);
+					const float db = slots[b].slot->vis.sphere.P.dotproduct(m_grass_sun_direction);
+					return da != db ? da < db : a < b;
+				});
+			}
 }
 
 void CDetailManager::SetSunShadowCascade(u32 cascade_index)
@@ -851,6 +1054,19 @@ u32 CDetailManager::sun_shadow_mask_for_slot(Slot& slot)
 			mask |= 1u << cascade;
 	}
 
+	// Hidden grass of the shadow maps, as r__detail_lod for the view: a sun ray through a dense field crosses dozens of
+	// clumps, while a few already shade its texel, so the passes keep the share of the instances (a fixed choice by
+	// lod_rank) that leaves r__detail_sun_lod of them on the ray. In 1/256 steps: the packed rows follow the sun slowly.
+	u32 keep = 65536;
+	if (mask && ps_r__detail_sun_lod > 0.f && slot.grass_cover > 0.f)
+	{
+		const float ground = slot.grass_ground.magnitude();
+		const float sin_sun = ground > 0.f ? _abs(slot.grass_ground.dotproduct(m_grass_sun_direction)) / ground : 1.f;
+		const float layers = slot.grass_cover * _sqr(slot.visibility_scale) * .3f / _max(sin_sun, .05f);
+		if (layers > ps_r__detail_sun_lod)
+			keep = _min(65536u, (iCeil(65536.f * ps_r__detail_sun_lod / layers) + 255u) & ~255u);
+	}
+	slot.grass_sun_keep = keep;
 	slot.grass_sun_cascade_mask = mask;
 	slot.grass_sun_cascade_generation = m_grass_sun_cascade_generation;
 	return mask;
@@ -935,6 +1151,10 @@ void __stdcall CDetailManager::MT_CALC()
 #endif
 
 	PROF_EVENT("CDetailManager::MT_CALC");
+	// A device reset leaves the camera at the origin for a frame until the game moves it again: the grass cache jumped
+	// there and back, two whole-cache decompressions per vid_restart
+	if (RDEVICE.vCameraPosition_saved.x == 0.f && RDEVICE.vCameraPosition_saved.y == 0.f && RDEVICE.vCameraPosition_saved.z == 0.f)
+		return;
 	bool pack = false;
 	MT.Enter();
 	const u32 current_frame = RDEVICE.dwFrame;
@@ -961,28 +1181,41 @@ void __stdcall CDetailManager::MT_CALC()
 			pack = UseVS() && xr_jobs::is_worker_thread();
 			if (pack)
 			{
-				// The chunks in the draw order of hw_Render: variants 1, 2, 0, model by model
+				// The chunks in the draw order of the main pass: the far bands of variants 1 and 2 model by model, then the
+				// whole lists of variant 0 (the near instances are written by the pass itself)
 				u32 chunks = 0;
-				for (u32 order = 0; order < 3; ++order)
-				{
-					const u32 variant = (order + 1) % 3;
-					m_main_pack_first[variant].resize(objects.size());
-					for (u32 object = 0; object < objects.size(); ++object)
-					{
-						m_main_pack_first[variant][object] = chunks;
-						const u32 visible = static_cast<u32>(m_visibles[variant][object].size());
-						for (u32 begin = 0; begin < visible; begin += main_pack_chunk, ++chunks)
+				m_main_pack_first.resize((far_bands + 1) * 3 * objects.size());
+				for (u32 band = near_bands; band <= all_bands; ++band)
+					for (u32 variant = band < all_bands ? 1 : 0; variant < (band < all_bands ? 3u : 1u); ++variant)
+						for (u32 object = 0; object < objects.size(); ++object)
 						{
-							if (m_main_pack.size() <= chunks)
-								m_main_pack.resize(chunks + 1);
-							MainPassPack& chunk = m_main_pack[chunks];
-							chunk.variant = variant;
-							chunk.object = object;
-							chunk.begin = begin;
-							chunk.end = _min(begin + main_pack_chunk, visible);
+							m_main_pack_first[band_pack_index(band, variant, object)] = chunks;
+							u32 first, last;
+							band_range(m_visibles[variant][object], band, first, last);
+							const xr_vector<VisibleSlotItems>& vis = m_visibles[variant][object];
+							for (u32 begin = first, end; begin < last; begin = end, ++chunks)
+							{
+								end = _min(begin + main_pack_chunk, last);
+								// A tiled chunk keeps to one tile: the pass switches the tile predicate between chunks
+								if ((variant == 0 || band == all_bands - 1) && m_grass_tile_shift)
+								{
+									const u32 key = grass_tile_key(*vis[begin].slot);
+									for (u32 i = begin + 1; i < end; ++i)
+										if (grass_tile_key(*vis[i].slot) != key)
+										{
+											end = i;
+											break;
+										}
+								}
+								if (m_main_pack.size() <= chunks)
+									m_main_pack.resize(chunks + 1);
+								MainPassPack& chunk = m_main_pack[chunks];
+								chunk.variant = variant;
+								chunk.object = object;
+								chunk.begin = begin;
+								chunk.end = end;
+							}
 						}
-					}
-				}
 				m_main_pack_chunks = chunks;
 				m_main_pack_fp_control = _mm_getcsr() & ~0x3fu;
 				m_main_pack_frame = current_frame;

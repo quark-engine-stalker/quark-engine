@@ -37,6 +37,7 @@ void Fvisual::Release()
 
 void Fvisual::Load(const char* N, IReader* data, u32 dwFlags)
 {
+	PROF_EVENT();
 	dxRender_Visual::Load(N, data, dwFlags);
 
 	D3DVERTEXELEMENT9 dcl [MAX_FVF_DECL_SIZE];

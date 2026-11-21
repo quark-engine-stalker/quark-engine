@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "../../xrEngine/frame_stats.h"
 #include "upscaler.h"
 #include "../../xrEngine/igame_persistent.h"
 #include "../../xrEngine/environment.h"
@@ -64,6 +65,7 @@ void CRenderTarget::phase_combine()
 		t_LUM_dest->surface_set(rt_LUM_pool[gpu_id * 2 + 1]->pSurface);
 	}
 
+	SFrameDetailParts parts(fsRendCombine, "ambient occlusion", &RCache.stat.calls);
 	if (RImplementation.o.ssao_hdao && RImplementation.o.ssao_ultra)
 	{
 		if (ps_r_ssao > 0)
@@ -131,6 +133,7 @@ void CRenderTarget::phase_combine()
 				phase_ssfx_ao(); // [SSFX] - New AO Phase
 			}
 
+			parts.next("indirect light");
 			if (RImplementation.o.ssfx_il && ps_ssfx_il.y > 0)
 			{
 				ssfx_PrevPos_Requiered = true;
@@ -139,6 +142,7 @@ void CRenderTarget::phase_combine()
 		}
 	}
 
+	parts.next("scene image (light combine)");
 	FLOAT ColorRGBA[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 	const bool ssfxSSRActive = RImplementation.o.ssfx_ssr &&
 		(ps_ssfx_ssr_2.z > EPS_S || ps_ssfx_ssr_2.w > EPS_S) &&
@@ -166,6 +170,7 @@ void CRenderTarget::phase_combine()
 	BOOL split_the_scene_to_minimize_wait = FALSE;
 	if (ps_r2_ls_flags.test(R2FLAG_EXP_SPLIT_SCENE)) split_the_scene_to_minimize_wait = TRUE;
 
+	parts.next("sky and clouds");
 	// draw skybox
 	if (1)
 	{
@@ -207,6 +212,7 @@ void CRenderTarget::phase_combine()
 		m_blur_scale.set(scale, -scale).div(12.f);
 	}*/
 
+	parts.next("scene image (light combine)");
 	// Draw full-screen quad textured with our scene image
 	if (!_menu_pp)
 	{
@@ -347,12 +353,15 @@ void CRenderTarget::phase_combine()
 		}
 	}
 
+	parts.next("reflections (SSR)");
 	if (ssfxSSRActive)
 	{
 		ssfx_PrevPos_Requiered = true;
 		phase_ssfx_ssr(); // [SSFX] - New SSR Phase
 	}
+	upscaler::capture_opaque(*this);
 
+	parts.next("water");
 	// [SSFX] - Water SSR rendering
 	if (RImplementation.o.ssfx_water && RImplementation.mapWater.size() > 0 && !Device.m_SecondViewport.IsSVPFrame())
 	{
@@ -402,6 +411,7 @@ void CRenderTarget::phase_combine()
 	RCache.set_xform_world(Fidentity);
 	RImplementation.r_dsgraph_render_water();
 
+	parts.next("rain");
 	{
 		const bool ssfxRainActive = RImplementation.o.ssfx_rain &&
 			g_pGamePersistent->Environment().CurrentEnv &&
@@ -433,6 +443,7 @@ void CRenderTarget::phase_combine()
 			HW.pContext->CopyResource(rt_Generic_temp->pSurface, rt_Generic_0_r->pSurface);
 	}
 
+	parts.next("transparent objects (forward)");
 	// Forward rendering
 	{
 		PIX_EVENT(Forward_rendering);
@@ -455,6 +466,7 @@ void CRenderTarget::phase_combine()
 		if (g_pGamePersistent) g_pGamePersistent->OnRenderPPUI_main(); // PP-UI
 	}
 
+	parts.next("volumetric light");
 	//	Igor: for volumetric lights
 	//	combine light volume here
 	if (RImplementation.o.ssfx_volumetric)
@@ -480,12 +492,14 @@ void CRenderTarget::phase_combine()
 		                                rt_Generic_0_r->pSurface, 0, DXGI_FORMAT_R8G8B8A8_UNORM);
 	}
 
+	parts.next("bloom");
 	// for msaa we need a resolved color buffer - Holger
 	phase_bloom(); // HDR RT invalidated here
 
 	//RImplementation.rmNormal();
 	//u_setrt(rt_Generic_1,0,0,HW.pBaseZB);
 
+	parts.next("distortion");
 	// Distortion filter
 	BOOL bDistort = RImplementation.o.distortion_enabled; // This can be modified
 	{
@@ -531,13 +545,14 @@ void CRenderTarget::phase_combine()
 
 
 
+	parts.next("upscaler (DLSS/FSR)");
 	// The scene is done: the upscaler brings it to the display size, the post-process runs there
 	if (upscaler::enabled())
 	{
 		if (ssfx_PrevPos_Requiered) // rt_Position becomes the display copy
 			HW.pContext->CopyResource(rt_ssfx_prevPos->pSurface, rt_Position->pSurface);
 		ssfx_PrevPos_Requiered = false;
-		upscaler::scene_end(*this, history_reset);
+		upscaler::scene_end(*this, history_reset, bDistort);
 		m_temporal_history_valid = true; // phase_ssfx_taa, which sets it, does not run with the upscaler
 
 		// The HUD's sorted geometry (PDA screen, sight glass and reticles) at the display size, as without the upscaler:
@@ -550,6 +565,7 @@ void CRenderTarget::phase_combine()
 		RImplementation.r_dsgraph_render_hud_sorted();
 	}
 
+	parts.next("sun shafts");
 	// Pre-bloom postprocess chain: sunshafts/fog/motion blur can alternate between Generic_0 and Generic.
 	pp_begin();
 
@@ -559,26 +575,31 @@ void CRenderTarget::phase_combine()
 			phase_sunshafts();
 	}
 
+	parts.next("fog scattering");
 	if (RImplementation.o.ssfx_fog && ps_ssfx_fog_scattering > 0)
 	{
 		phase_ssfx_fog_scattering();
 	}
 
+	parts.next("motion blur");
 	if (RImplementation.o.ssfx_motionblur && ps_ssfx_motionblur.y > 0)
 	{
 		phase_ssfx_motion_blur();
 	}
 
+	parts.next("3D scopes");
 	if (scope_3D_fake_enabled)
 	{
 		phase_3DSSReticle(); // Redotix99: for 3D Shader Based Scopes
 	}
 
+	parts.next("blur for bloom");
 	// Compute blur textures. SSFX bloom consumes r2_RT_blur_2 directly, so this chain cannot
 	// be skipped safely without changing the bloom shader path as well.
 	if (!Device.m_SecondViewport.IsSVPFrame()) // Temp fix for blur buffer and SVP
 		phase_blur();
 
+	parts.next("bloom");
 	//Compute bloom (new)
 	if (RImplementation.o.ssfx_bloom)
 	{
@@ -595,16 +616,19 @@ void CRenderTarget::phase_combine()
 	// Continue the same ping-pong chain. Blur and bloom now accept either current scene source,
 	// so there is no reason to normalize back to rt_Generic_0 here.
 
+	parts.next("depth of field");
 	if (ps_r2_ls_flags.test(R2FLAG_DOF))
 	{
 		phase_dof();
 	}
 
+	parts.next("colour grading (LUT)");
 	const bool lutActive = _abs(ps_ssfx_lut.x) > EPS_S || _abs(ps_ssfx_lut.y) > EPS_S ||
 		_abs(ps_ssfx_lut.z) > EPS_S || _abs(ps_ssfx_lut.w) > EPS_S;
 	if (lutActive)
 		phase_lut();
 
+	parts.next("gas mask");
 	if(ps_r2_mask_control.x > 0)
 	{
 		phase_gasmask_dudv();
@@ -614,6 +638,7 @@ void CRenderTarget::phase_combine()
 		}
 	}
 
+	parts.next("night and heat vision");
 	if(ps_r2_nightvision > 0)
 		phase_nightvision();
 
@@ -622,11 +647,13 @@ void CRenderTarget::phase_combine()
 		phase_heatvision();
 	//--DSR-- HeatVision_end
 
+	parts.next("3D scopes");
 	if (scope_fake_enabled)
 	{
 		phase_fakescope(); //crookr
 	}
 
+	parts.next("anti-aliasing");
     //SMAA
 	if (ps_smaa_quality && !upscaler::enabled()) // DLSS is the anti-aliasing
 	{
@@ -643,6 +670,7 @@ void CRenderTarget::phase_combine()
 	if (ssfx_PrevPos_Requiered)
 		HW.pContext->CopyResource(rt_ssfx_prevPos->pSurface, rt_Position->pSurface);
 
+	parts.next("final image");
 	// PP enabled ?
 	//	Render to RT texture to be able to copy RT even in windowed mode.
 	BOOL PP_Complex = u_need_PP() | (BOOL)RImplementation.m_bMakeAsyncSS | (BOOL)RImplementation.o.dx11_hdr10;
@@ -744,20 +772,12 @@ void CRenderTarget::phase_combine()
 
 
 		// Draw COLOR
-		if (!RImplementation.o.dx10_msaa)
-		{
-			const ref_shader& combineShader = combineSourceGeneric ? s_combine_pp : s_combine;
-			if (ps_r2_ls_flags.test(R2FLAG_AA)) RCache.set_Element(combineShader->E[bDistort ? 3 : 1]);
-				// look at blender_combine.cpp
-			else RCache.set_Element(combineShader->E[bDistort ? 4 : 2]); // look at blender_combine.cpp
-		}
-		else
-		{
-			const ref_shader& combineShader = combineSourceGeneric ? s_combine_msaa_pp[0] : s_combine_msaa[0];
-			if (ps_r2_ls_flags.test(R2FLAG_AA)) RCache.set_Element(combineShader->E[bDistort ? 3 : 1]);
-				// look at blender_combine.cpp
-			else RCache.set_Element(combineShader->E[bDistort ? 4 : 2]); // look at blender_combine.cpp
-		}
+		const ref_shader& combineShader = RImplementation.o.dx10_msaa
+			? (combineSourceGeneric ? s_combine_msaa_pp[0] : s_combine_msaa[0])
+			: (combineSourceGeneric ? s_combine_pp : s_combine);
+		const bool combineAA = !upscaler::enabled() && ps_r2_ls_flags.test(R2FLAG_AA);
+		const u32 combineElement = (bDistort ? 3 : 1) + (combineAA ? 0 : 1);
+		RCache.set_Element(combineShader->E[combineElement]);
 		RCache.set_c("e_barrier", ps_r2_aa_barier.x, ps_r2_aa_barier.y, ps_r2_aa_barier.z, 0);
 		RCache.set_c("e_weights", ps_r2_aa_weight.x, ps_r2_aa_weight.y, ps_r2_aa_weight.z, 0);
 		RCache.set_c("e_kernel", ps_r2_aa_kernel, ps_r2_aa_kernel, ps_r2_aa_kernel, 0);
@@ -817,10 +837,12 @@ void CRenderTarget::phase_combine()
 	}
 
 	//	if FP16-BLEND !not! supported - draw flares here, overwise they are already in the bloom target
+	parts.next("lens flares");
 	/* if (!RImplementation.o.fp16_blend)*/
 	if (ps_r2_anomaly_flags.test(R2_AN_FLAG_FLARES) && ps_r2_heatvision == 0) //--DSR-- HeatVision
 		g_pGamePersistent->Environment().RenderFlares(); // lens-flares
 
+	parts.next("final image");
 	//	PP-if required
 	if (PP_Complex)
 	{

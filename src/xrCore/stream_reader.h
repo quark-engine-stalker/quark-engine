@@ -1,10 +1,12 @@
 #ifndef STREAM_READER_H
 #define STREAM_READER_H
 
+#include <memory>
+
 class XRCORE_API CStreamReader : public IReaderBase<CStreamReader>
 {
 private:
-	HANDLE m_file_mapping_handle;
+	std::shared_ptr<void> m_mapping;
 	u32 m_start_offset;
 	u32 m_file_size;
 	u32 m_archive_size;
@@ -32,7 +34,7 @@ public:
 
 public:
 	virtual void construct(
-		const HANDLE& file_mapping_handle,
+		const std::shared_ptr<void>& mapping,
 		const u32& start_offset,
 		const u32& file_size,
 		const u32& archive_size,
@@ -41,7 +43,6 @@ public:
 	virtual void destroy();
 
 public:
-	IC const HANDLE& file_mapping_handle() const;
 	IC u32 elapsed() const;
 	IC const u32& length() const;
 	IC void seek(const int& offset);

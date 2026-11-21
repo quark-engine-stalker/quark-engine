@@ -785,6 +785,12 @@
     <ClCompile Include="mt_threads.cpp">
       <Filter>Interfaces\ImGui</Filter>
     </ClCompile>
+    <ClCompile Include="mt_mods.cpp">
+      <Filter>Interfaces\ImGui</Filter>
+    </ClCompile>
+    <ClCompile Include="mods_info.cpp">
+      <Filter>Interfaces\ImGui</Filter>
+    </ClCompile>
     <ClCompile Include="imgui_base_input.cpp">
       <Filter>Interfaces\ImGui</Filter>
     </ClCompile>

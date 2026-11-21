@@ -2477,10 +2477,9 @@ public:
 				return;
 			}
 
-			string4096 S;
 			shared_str m_script_name = "console command";
-			xr_sprintf(S, "%s\n", args);
-			int l_iErrorCode = luaL_loadbuffer(ai().script_engine().lua(), S, xr_strlen(S), "@console_command");
+			const xr_string source = xr_string(args) + "\n";
+			int l_iErrorCode = luaL_loadbuffer(ai().script_engine().lua(), source.c_str(), source.size(), "@console_command");
 			if (!l_iErrorCode)
 			{
 				l_iErrorCode = lua_pcall(ai().script_engine().lua(), 0, 0, 0);

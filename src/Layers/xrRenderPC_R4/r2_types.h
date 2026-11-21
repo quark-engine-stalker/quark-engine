@@ -46,6 +46,8 @@
 #define		r2_RT_smap_depth	"$user$smap_depth"		// ---directional
 #define		r2_RT_smap_depth_minmax	"$user$smap_depth_minmax"
 #define		r2_RT_smap_cache	"$user$smap_cache"		// persistent light shadow page
+#define		r2_RT_smap_far		"$user$smap_far"			// the far sun cascade, kept for the next frame
+#define		r2_RT_smap_grass	"$user$smap_grass"		// grass of a sun cascade at r__detail_shadow_scale
 
 #define		r2_material			"$user$material"		// ---
 #define		r2_ds2_fade			"$user$ds2_fade"		// ---

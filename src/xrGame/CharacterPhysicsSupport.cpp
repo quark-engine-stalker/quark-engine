@@ -209,7 +209,13 @@ void CCharacterPhysicsSupport::in_NetSpawn(CSE_Abstract* e)
 		{
 			//pK->LL_GetData( 0 ).shape.flags.set(SBoneShape::sfVisibilityIgnore,TRUE);
 			//pK->LL_GetData( pK->LL_BoneID("bip01") ).shape.flags.set(SBoneShape::sfVisibilityIgnore,TRUE);
-			ka->PlayCycle("waunded_1_idle_0");
+			// A body killed offline has no saved shell: its ragdoll starts from this pose. The sitting wounded idle
+			// could settle sitting or kneeling and fall asleep so; a lying one settles lying.
+			const MotionID lying = ka->ID_Cycle_Safe("wounded_3_idle_0");
+			if (lying.valid())
+				ka->PlayCycle(lying);
+			else
+				ka->PlayCycle("waunded_1_idle_0");
 		}
 		else
 			ka->PlayCycle("death_init");

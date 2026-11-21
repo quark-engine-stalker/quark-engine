@@ -187,6 +187,7 @@ CSkeletonX* CKinematics::LL_GetChild(u32 idx)
 
 void CKinematics::Load(const char* N, IReader* data, u32 dwFlags)
 {
+	PROF_EVENT();
 	//Msg				("skeleton: %s",N);
 	inherited::Load(N, data, dwFlags);
 

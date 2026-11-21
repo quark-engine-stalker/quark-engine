@@ -14,6 +14,18 @@ public:
 	xr_resource() : dwReference(0) {}
 	xr_resource(const xr_resource&) : dwReference(0) {}
 	xr_resource& operator=(const xr_resource&) { return *this; }
+
+	// For a registry lookup: takes a reference unless the count already reached 0. Such an entry is being destroyed
+	// (its destructor waits for the registry lock to unregister it) and must not be handed out again.
+	bool pin_alive()
+	{
+		u32 references = dwReference.load(std::memory_order_relaxed);
+		while (references)
+			if (dwReference.compare_exchange_weak(references, references + 1, std::memory_order_acq_rel,
+				std::memory_order_relaxed))
+				return true;
+		return false;
+	}
 };
 
 class XRCORE_API xr_resource_flagged : public xr_resource

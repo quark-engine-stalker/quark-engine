@@ -28,6 +28,7 @@
 #include "lj_vm.h"
 #if LJ_HASPROFILE
 #include "lj_allocprof.h"
+#include "lj_profile.h"
 #endif
 
 #if LJ_TARGET_WINDOWS
@@ -1491,6 +1492,8 @@ void *lj_mem_realloc(lua_State *L, void *p, MSize osz, MSize nsz)
 #if LJ_HASPROFILE
   if (lj_allocprof_active && nsz > osz)
     lj_allocprof_pending += (uint64_t)(nsz - osz);
+  if (lj_hostprof_alloc_on && nsz > osz)
+    lj_hostprof_alloc(g, (uint64_t)(nsz - osz));
 #endif
   return p;
 }
@@ -1510,6 +1513,8 @@ void * LJ_FASTCALL lj_mem_newgco(lua_State *L, MSize size)
 #if LJ_HASPROFILE
   if (lj_allocprof_active)
     lj_allocprof_pending += (uint64_t)size;
+  if (lj_hostprof_alloc_on)
+    lj_hostprof_alloc(g, (uint64_t)size);
 #endif
   return o;
 }

@@ -2,6 +2,7 @@
 
 void CRenderTarget::phase_dof()
 {
+	PIX_EVENT(phase_dof);
 	//Constants
 	u32 Offset = 0;
 	u32 C = color_rgba(0, 0, 0, 255);

@@ -4,6 +4,7 @@
 #include "stdafx.h"
 #include "XR_IOConsole.h"
 #include "line_editor.h"
+#include "frame_stats.h"
 
 #include "igame_level.h"
 #include "igame_persistent.h"
@@ -275,6 +276,7 @@ void CConsole::OnRender()
 	{
 		return;
 	}
+	SFrameDetailParts parts(fsRenderScene, "console");
 
 	if (psDeviceFlags.test(rsCameraPos) || psDeviceFlags.test(rsStatistic) || Device.Statistic->errors.size())
 		Device.Statistic->Show();

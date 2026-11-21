@@ -141,7 +141,7 @@ u16 CGamePersistent::ResolveModelMaterial(LPCSTR name)
 	return index;
 }
 
-void CGamePersistent::RegisterModel(IRenderVisual* V)
+void CGamePersistent::RegisterModel(IRenderVisual* V, LPCSTR name)
 {
 	// Check types
 	switch (V->getType())
@@ -155,12 +155,24 @@ void CGamePersistent::RegisterModel(IRenderVisual* V)
 			IKinematics* K = smart_cast<IKinematics*>(V);
 			VERIFY(K);
 			int cnt = K->LL_BoneCount();
+			shared_str reported_mtl;
 			for (u16 k = 0; k < cnt; k++)
 			{
 				CBoneData& bd = K->LL_GetData(k);
 				if (*(bd.game_mtl_name))
 				{
 					bd.game_mtl_idx = ResolveModelMaterial(*bd.game_mtl_name);
+					if (bd.game_mtl_idx >= GMLib.CountMaterial())
+					{
+						// GetMaterialIdx checks the name only in DEBUG: past the list it returned the end index and
+						// GetMaterialByIdx read beyond the material vector (a null there crashed the model load)
+						if (reported_mtl != bd.game_mtl_name)
+							Msg("! model [%s] bone [%s]: game material [%s] not found, default_object used",
+								name, bd.name.c_str(), bd.game_mtl_name.c_str());
+						reported_mtl = bd.game_mtl_name;
+						bd.game_mtl_idx = def_idx;
+						continue;
+					}
 					R_ASSERT2(GMLib.GetMaterialByIdx(bd.game_mtl_idx)->Flags.is(SGameMtl::flDynamic),
 					          "Required dynamic game material");
 				}

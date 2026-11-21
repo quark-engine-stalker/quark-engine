@@ -2,6 +2,7 @@
 
 void CRenderTarget::phase_nightvision()
 {
+	PIX_EVENT(phase_nightvision);
 	//Constants
 	u32 Offset = 0;
 	u32 C = color_rgba(0, 0, 0, 255);
@@ -45,6 +46,7 @@ void CRenderTarget::phase_nightvision()
 //crookr
 void CRenderTarget::phase_fakescope()
 {
+	PIX_EVENT(phase_fakescope);
 	//Constants
 	u32 Offset = 0;
 	u32 C = color_rgba(0, 0, 0, 255);
@@ -87,6 +89,7 @@ void CRenderTarget::phase_fakescope()
 //--DSR-- HeatVision_start
 void CRenderTarget::phase_heatvision()
 {
+	PIX_EVENT(phase_heatvision);
 	//Constants
 	u32 Offset = 0;
 	u32 C = color_rgba(0, 0, 0, 255);
@@ -129,6 +132,7 @@ void CRenderTarget::phase_heatvision()
 
 void CRenderTarget::phase_3DSSReticle()
 {
+	PIX_EVENT(phase_3DSSReticle);
 	HW.pContext->CopyResource(rt_Generic_2->pSurface, RImplementation.Target->rt_Position->pSurface);
 
 	const ref_rt& sceneRT = pp_source_is_generic() ? rt_Generic : rt_Generic_0;

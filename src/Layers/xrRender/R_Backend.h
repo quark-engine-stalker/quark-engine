@@ -174,6 +174,7 @@ private:
 
 public:
 	void Invalidate(); // public for the upscaler: its passes and target swaps change the device behind the caches
+	void forget_texture(CTexture* texture); // its surface changed (CRT::swap): the next set_Textures binds it again
 	struct _stats
 	{
 		u32 polys;

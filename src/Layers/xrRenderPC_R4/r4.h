@@ -375,6 +375,25 @@ private:
 	xr_vector<SunDynamicCaster> m_sunDynamicCasters;
 	CSector* m_sunLargestSector = nullptr;
 
+	// The far sun cascade (the largest share of the sun's draws) is drawn every other frame into
+	// Target->rt_smap_far and accumulated from it with the transform it was drawn with in between.
+	struct SunFarCache
+	{
+		Fmatrix xform;
+		Fvector camera, view, sun;
+		float fov, size;
+		u32 frame;
+		bool valid, reset_chain;
+	};
+	SunFarCache m_sunFar = {};
+	bool m_sunFarCache = false; // this frame the far cascade lives in rt_smap_far
+	bool m_sunFarReuse = false; // ... and is not drawn
+	bool m_sunStarted = false; // start_sun_cascades() ran for this frame's sun
+	bool m_sunShafts = false, m_sunLastChain = false; // the far fit chain is reset while sunshafts are drawn
+	bool m_sunGathered = false; // the cascades saw sectors
+	bool m_sunStaticJob = false; // their static walk runs on a worker
+	xr_vector<u16> m_sunFarCrows; // the objects the far cascade drew last time it was drawn
+
 
 	void initialize_resource_policy();
 	// notify_resource_manager must be false when called from ~CRender(): the destructor
@@ -420,7 +439,8 @@ private:
 	// Calls (this->*work)(i) for every i < count on the job workers and this thread, only here when task is off.
 	void run_parallel(u32 count, void (CRender::*work)(u32), mt_tasks::task task);
 	void prepare_sun_cascade(u32 cascade_ind, const Fmatrix& viewport, const Fmatrix& viewport_inverse);
-	void gather_sun_casters(CSector* cull_sector);
+	void start_sun_casters(CSector* cull_sector);
+	void finish_sun_casters();
 	void submit_sun_cascade_casters(u32 cascade_ind);
 	void add_leafs_Dynamic(dxRender_Visual* pVisual); // if detected node's full visibility
 	void add_leafs_Static(dxRender_Visual* pVisual); // if detected node's full visibility
@@ -445,7 +465,9 @@ public:
 
 	void render_sun_cascade(u32 cascade_ind, CSector* cull_sector);
 	void init_cacades();
+	void start_sun_cascades(); // after the main view
 	void render_sun_cascades();
+	void gather_sun_statics(); // a worker lane of start_sun_casters
 
 public:
 	ShaderElement* rimp_select_sh_static(dxRender_Visual* pVisual, float cdist_sq);

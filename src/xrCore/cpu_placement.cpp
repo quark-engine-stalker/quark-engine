@@ -6,30 +6,25 @@
 #include <intrin.h>
 #include <algorithm>
 
-// Policy (Windows 10/11, one processor group):
-// - On every CPU the main thread opts out of power throttling (High QoS).
-// - Several last-level caches (multi-CCD Ryzen, X3D): the process default CPU Set is
-//   the domain with the largest L3, so the main thread and the pool share one L3. On
-//   X3D this is the V-Cache CCD, the one the AMD 3D V-Cache driver keeps unparked for
-//   games, so the hint agrees with the driver and Game Mode instead of fighting them.
-// - The main thread is placed only when Windows exposes a core ranking: EfficiencyClass
-//   (Intel P/E cores) or SchedulingClass (AMD CPPC preferred cores, Intel Turbo Boost
-//   Max 3.0). Without one (e.g. CPPC disabled in BIOS) Windows keeps full control.
-// - The main thread gets the first logical processor of the best core as its ideal
-//   processor. Every other engine thread (pool, driver, audio) is kept off that whole
-//   core by the process default CPU Set, so the SMT sibling stays free.
-// - Windows picks the core at every wake-up and prefers the best ranked idle core over
-//   the ideal processor, so once a second, outside the frame, a monitor reserves the
-//   core the main thread actually runs on, once it stays there two windows in a row
-//   (each move costs it the warm L1/L2). A core with sustained foreign load (no other
-//   engine thread runs on the reserved core, so busy time minus the main thread is
-//   exact) is removed from the main thread's CPU Set for a while and Windows moves it
-//   elsewhere. Load on other cores is not compared: Windows packs the pool onto the
-//   preferred cores, so their busy time cannot be split into engine and foreign work.
+// QUARK-SCHEDULER (Windows 10/11, one processor group), the engine's own placement, applied at start:
+// - Cores of the game: the process affinity. On a CPU with L3 caches of different sizes (X3D with one V-Cache
+//   CCD) the domain with the largest L3, even though CPPC ranks the other CCD higher: every engine, driver and audio
+//   thread shares one L3 and never crosses to the other CCD. L3 caches of one size (one L3, a plain two-CCD Ryzen): no
+//   binding. The player does not choose the cores of the game. An affinity inherited from the launcher (a child gets
+//   its parent's affinity, not its CPU Sets) narrows the choice.
+// - Main thread: placed with a core ranking from Windows (SchedulingClass: AMD CPPC preferred cores, Intel Turbo
+//   Boost Max 3.0) and on Intel hybrids (EfficiencyClass: P/E cores, the main thread never runs on an E-core), never on
+//   an X3D bound above nor without a ranking (e.g. CPPC disabled in BIOS). It gets the first logical processor of the
+//   best core as its ideal processor. The process default CPU Set keeps the pool, driver and audio off the whole core.
+//   On a homogeneous CPU with one L3, the main thread's CPU Set keeps both SMT siblings of that core for L1/L2 locality.
+//   A monitor moves the reservation away from sustained foreign load. On topologies with a wider main-thread CPU Set
+//   it can also follow the core the main thread consistently uses. Other cores mix engine and foreign work.
+//   Windows never power throttles the main thread.
 namespace cpu_placement
 {
 namespace
 {
+constexpr u32 max_l3 = 16;
 using get_system_cpu_sets_fn = BOOL(WINAPI*)(PSYSTEM_CPU_SET_INFORMATION, ULONG, PULONG, HANDLE, ULONG);
 using get_process_cpu_sets_fn = BOOL(WINAPI*)(HANDLE, PULONG, ULONG, PULONG);
 using set_process_cpu_sets_fn = BOOL(WINAPI*)(HANDLE, const ULONG*, ULONG);
@@ -67,30 +62,43 @@ struct core_slot
 
 set_process_cpu_sets_fn set_process_cpu_sets = nullptr;
 set_thread_cpu_sets_fn set_thread_cpu_sets = nullptr;
+set_thread_information_fn set_thread_information = nullptr;
+HANDLE main_thread = nullptr;
+PROCESSOR_NUMBER original_ideal{};
 
+// Topology, read once by initialize(). Plain arrays: the monitor may still run while static destructors do at exit.
+bool topology = false;
 ULONG cpu_set_ids[max_lps]{};
-u64 domain = 0; // where the engine runs
-u64 main_allowed = 0; // where the main thread may run: P-cores of the domain on hybrid CPUs
-// Main thread candidates, best rank first. A plain array: the monitor may still run while
-// static destructors do at exit.
-core_slot cores[max_lps]{};
+u64 core_mask_of[max_lps]{};
+u8 rank_of[max_lps]{}, efficiency_of[max_lps]{};
+u64 usable = 0; // logical processors not reserved for another application
+u64 inherited = 0; // the process affinity at start
+bool external = false;
+u64 l3_mask[max_l3]{};
+u32 l3_kb[max_l3]{};
+u32 l3_count = 0, best_l3 = 0;
+bool asymmetric_l3 = false; // L3 domains of different known sizes (X3D) and the largest can hold the game
+bool l3_unknown = false;
+u64 p_cores = 0; // the top efficiency class of a hybrid, 0 otherwise
+bool ranked = false;
+u32 core_total = 0;
+u32 budget = 0;
+
+// The plan in force, under the lock.
+SRWLOCK lock = SRWLOCK_INIT;
+u64 bind = 0; // process affinity set by the scheduler, 0: the inherited one
+u64 game = 0; // cores of the game
+core_slot cores[max_lps]{}; // main thread candidates in game, best rank first
 u32 core_count = 0;
-u64 main_set = 0; // main_allowed minus avoided cores; the whole domain if all are avoided
+bool auto_main = false;
+int main_home = -1;
+u64 main_allowed = 0; // where the main thread may run in AUTO: the candidates
+u64 main_set = 0; // last CPU Set Windows accepted
 u32 main_core = 0; // reserved core
 u32 loaded_windows = 0;
 u32 follow_core = u32(-1); // core the main thread mostly ran on in the previous window
-set_thread_information_fn set_thread_information = nullptr;
-HANDLE main_thread = nullptr;
-bool main_placed = false; // false when only the cache domain is placed
-PROCESSOR_NUMBER original_ideal{};
-u32 budget = 0;
 bool monitoring = false;
 volatile LONG main_hits[max_lps]{};
-
-// Guards the hints below against orchestration_threads racing the monitor.
-SRWLOCK lock = SRWLOCK_INIT;
-bool planned = false;
-bool active = false;
 
 u32 lp_count(u64 mask) { return u32(__popcnt64(mask)); }
 
@@ -103,53 +111,138 @@ ULONG to_ids(u64 mask, ULONG* ids)
     return count;
 }
 
-void set_main_set(u64 mask)
+bool set_main_set(u64 mask)
 {
-    main_set = mask;
     ULONG ids[max_lps];
-    set_thread_cpu_sets(main_thread, ids, to_ids(mask, ids));
+    if (!set_thread_cpu_sets(main_thread, ids, to_ids(mask, ids)))
+        return false;
+    main_set = mask;
+    return true;
+}
+
+bool update_main_set(u32 core, u64 available)
+{
+    // If all candidates were avoided, let Windows choose from the original candidates.
+    const u64 allowed = available ? available : main_allowed;
+    const u64 local = available && l3_count == 1 && !p_cores ? cores[core].mask : allowed;
+    if (local == main_set || set_main_set(local))
+        return true;
+    return local != allowed && (allowed == main_set || set_main_set(allowed));
+}
+
+// The other engine threads keep off the main thread's core.
+void reserve(u64 core_mask)
+{
+    ULONG ids[max_lps];
+    set_process_cpu_sets(GetCurrentProcess(), ids, to_ids(game & ~core_mask, ids));
 }
 
 void place_main(u32 core)
 {
     main_core = core;
+    main_home = int(cores[core].home);
     loaded_windows = 0;
     follow_core = u32(-1);
-    ULONG ids[max_lps];
-    set_process_cpu_sets(GetCurrentProcess(), ids, to_ids(domain & ~cores[core].mask, ids));
+    reserve(cores[core].mask);
     PROCESSOR_NUMBER ideal{0, BYTE(cores[core].home), 0};
     SetThreadIdealProcessorEx(main_thread, &ideal, nullptr);
 }
 
 // High QoS for the main thread: Windows may lower an idle foreground game to Medium QoS
 // (lower clocks, E-cores on hybrid CPUs), e.g. in cutscenes or while reading the PDA.
-// Control without state = throttling off; no control = the system decides again.
-void set_main_high_qos(bool enable)
+// Control without state = throttling off.
+void set_main_high_qos()
 {
-    power_throttling_state state{1, enable ? power_throttling_execution_speed : 0, 0};
+    power_throttling_state state{1, power_throttling_execution_speed, 0};
     if (set_thread_information)
         set_thread_information(main_thread, thread_power_throttling, &state, sizeof(state));
 }
 
-void apply()
+// Cores of the game, always the engine's choice: the largest L3 of an X3D; 0: not bound.
+u64 game_cores() { return asymmetric_l3 ? l3_mask[best_l3] & inherited : 0; }
+
+// The main thread's candidates: the cores of the top efficiency class in game, best rank first.
+u32 collect_cores(bool& hybrid_game)
 {
-    if (main_placed)
+    u8 top = 0;
+    for (u32 lp = 0; lp < max_lps; ++lp)
+        if (game & (1ull << lp))
+            top = std::max(top, efficiency_of[lp]);
+    hybrid_game = false;
+    core_count = 0;
+    u32 all_cores = 0;
+    u64 seen = 0;
+    for (u32 lp = 0; lp < max_lps; ++lp)
     {
-        set_main_set(main_set);
-        place_main(main_core);
-        return;
+        if (!(game & (1ull << lp)) || (seen & (1ull << lp)))
+            continue;
+        const u64 mask = core_mask_of[lp] & game;
+        seen |= mask;
+        ++all_cores;
+        if (efficiency_of[lp] == top)
+            cores[core_count++] = {mask, lp, rank_of[lp], 0};
+        else
+            hybrid_game = true;
     }
-    ULONG ids[max_lps];
-    set_process_cpu_sets(GetCurrentProcess(), ids, to_ids(domain, ids));
+    std::stable_sort(cores, cores + core_count, [](const core_slot& a, const core_slot& b) { return a.rank > b.rank; });
+    return all_cores;
 }
 
-void clear()
+void apply_locked()
 {
-    set_process_cpu_sets(GetCurrentProcess(), nullptr, 0);
-    if (main_placed)
+    if (!topology)
+        return;
+
+    // Setting the process affinity resets the affinity of every thread, the main thread's lock included.
+    const u64 next_bind = game_cores();
+    if (next_bind != bind)
     {
-        set_thread_cpu_sets(main_thread, nullptr, 0);
-        SetThreadIdealProcessorEx(main_thread, &original_ideal, nullptr);
+        if (SetProcessAffinityMask(GetCurrentProcess(), DWORD_PTR(next_bind ? next_bind : inherited)))
+        {
+            bind = next_bind;
+            if (bind)
+                Msg("* CPU placement: game bound to LP mask %llX of %llX", bind, usable);
+            else
+                Msg("* CPU placement: game on every logical processor it may use (%llX)", inherited);
+        }
+        else
+            Msg("! CPU placement: affinity %llX refused, error %u", next_bind ? next_bind : inherited, GetLastError());
+    }
+    game = (bind ? bind : inherited) & usable;
+
+    bool hybrid_game;
+    const u32 game_cores_count = collect_cores(hybrid_game);
+    set_process_cpu_sets(GetCurrentProcess(), nullptr, 0);
+    if (set_thread_cpu_sets(main_thread, nullptr, 0))
+        main_set = 0;
+    SetThreadAffinityMask(main_thread, DWORD_PTR(game));
+    SetThreadIdealProcessorEx(main_thread, &original_ideal, nullptr);
+    const int previous_home = main_home;
+    const bool previous_auto = auto_main;
+    auto_main = false;
+    main_home = -1;
+    main_allowed = 0;
+    if (!core_count)
+        return;
+
+    // CPPC ranks unless the game is bound to an X3D's CCD, P/E cores on any hybrid; an external affinity or CPU Set
+    // already decided. With fewer than four cores a reserved one would starve everything else.
+    auto_main = !external && game_cores_count >= 4 &&
+        (hybrid_game || (!asymmetric_l3 && !l3_unknown && cores[0].rank != cores[core_count - 1].rank));
+    if (auto_main)
+    {
+        for (u32 k = 0; k < core_count; ++k)
+            main_allowed |= cores[k].mask;
+        if (!update_main_set(0, main_allowed))
+        {
+            auto_main = false;
+            Msg("! CPU placement: Windows rejected the main thread CPU Sets");
+            return;
+        }
+        place_main(0);
+        if (!previous_auto || previous_home != main_home)
+            Msg("* CPU placement: main thread on LP%u (%s), other engine threads off that core", cores[0].home,
+                hybrid_game ? "P-core" : "preferred core");
     }
 }
 
@@ -172,7 +265,7 @@ void take(snapshot& s)
         s.hits[lp] = main_hits[lp];
 }
 
-// One monitor window, under the lock while the hints are active.
+// One monitor window, under the lock while AUTO places the main thread.
 void evaluate(const snapshot& previous, const snapshot& current, u32 window)
 {
     LONG hits[max_lps], frames = 0;
@@ -216,7 +309,7 @@ void evaluate(const snapshot& previous, const snapshot& current, u32 window)
     // The main thread's time on the reserved core is estimated from where its frames started.
     const double main_load = double(current.main_cycles - previous.main_cycles) / ticks;
     const double foreign = std::max(busy - main_load * reserved_frames / frames, 0.0);
-    if (foreign < leave_load)
+    if (foreign < leave_load || (avoided & cores[main_core].mask))
         loaded_windows = 0;
     else if (++loaded_windows >= 2)
     {
@@ -224,12 +317,6 @@ void evaluate(const snapshot& previous, const snapshot& current, u32 window)
         avoided |= cores[main_core].mask;
         Msg("* CPU placement: LP%u core avoided, foreign load %.2f", cores[main_core].home, foreign);
     }
-
-    // With every candidate avoided Windows gets the whole domain, E-cores included on
-    // hybrid CPUs, as the last resort.
-    const u64 allowed = (main_allowed & ~avoided) ? main_allowed & ~avoided : domain;
-    if (allowed != main_set)
-        set_main_set(allowed);
 
     u32 target = main_core;
     if (avoided & cores[main_core].mask)
@@ -248,11 +335,11 @@ void evaluate(const snapshot& previous, const snapshot& current, u32 window)
             target = dominant;
         follow_core = follow ? dominant : u32(-1);
     }
-    if (target == main_core)
-        return;
-
-    Msg("* CPU placement: main thread core LP%u -> LP%u", cores[main_core].home, cores[target].home);
-    place_main(target);
+    if (update_main_set(target, main_allowed & ~avoided) && target != main_core)
+    {
+        Msg("* CPU placement: main thread core LP%u -> LP%u", cores[main_core].home, cores[target].home);
+        place_main(target);
+    }
 }
 
 void monitor(void*)
@@ -264,22 +351,17 @@ void monitor(void*)
         Sleep(monitor_period_ms);
         take(current);
         AcquireSRWLockExclusive(&lock);
-        if (active)
+        if (auto_main)
             evaluate(previous, current, window);
         ReleaseSRWLockExclusive(&lock);
         previous = current;
     }
 }
-} // namespace
 
-void initialize()
+// Reads the topology; false when Windows does not give it.
+bool read_topology()
 {
     const HMODULE kernel = GetModuleHandleW(L"kernel32.dll");
-    DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &main_thread, 0, FALSE, DUPLICATE_SAME_ACCESS);
-    set_thread_information = reinterpret_cast<set_thread_information_fn>(GetProcAddress(kernel, "SetThreadInformation"));
-    set_main_high_qos(true);
-    active = true;
-
     const auto get_system_cpu_sets = reinterpret_cast<get_system_cpu_sets_fn>(GetProcAddress(kernel, "GetSystemCpuSetInformation"));
     const auto get_process_cpu_sets = reinterpret_cast<get_process_cpu_sets_fn>(GetProcAddress(kernel, "GetProcessDefaultCpuSets"));
     set_process_cpu_sets = reinterpret_cast<set_process_cpu_sets_fn>(GetProcAddress(kernel, "SetProcessDefaultCpuSets"));
@@ -287,25 +369,27 @@ void initialize()
     if (!get_system_cpu_sets || !get_process_cpu_sets || !set_process_cpu_sets || !set_thread_cpu_sets)
     {
         Msg("* CPU placement: off, CPU Sets need Windows 10");
-        return;
+        return false;
     }
 
     // shortcut: one processor group (up to 64 logical processors); larger systems keep the Windows default.
     if (GetActiveProcessorGroupCount() != 1)
     {
         Msg("* CPU placement: off, more than one processor group");
-        return;
+        return false;
     }
 
-    // Task Manager, Process Lasso or "start /affinity" already decided for this process.
+    // Task Manager, Process Lasso, "start /affinity" or the launcher already decided for this process.
     DWORD_PTR process_mask = 0, system_mask = 0;
     ULONG preset = 0;
     get_process_cpu_sets(GetCurrentProcess(), nullptr, 0, &preset);
-    if (!GetProcessAffinityMask(GetCurrentProcess(), &process_mask, &system_mask) || process_mask != system_mask || preset)
+    if (!GetProcessAffinityMask(GetCurrentProcess(), &process_mask, &system_mask))
     {
-        Msg("* CPU placement: off, affinity or CPU Sets are set externally");
-        return;
+        Msg("* CPU placement: off, no process affinity");
+        return false;
     }
+    inherited = process_mask;
+    external = process_mask != system_mask || preset;
 
     ULONG length = 0;
     get_system_cpu_sets(nullptr, 0, &length, GetCurrentProcess(), 0);
@@ -314,11 +398,10 @@ void initialize()
         GetCurrentProcess(), 0))
     {
         Msg("* CPU placement: off, no CPU Set information");
-        return;
+        return false;
     }
 
-    u8 core_of[max_lps]{}, cache_of[max_lps]{}, efficiency_of[max_lps]{}, rank_of[max_lps]{};
-    u64 usable = 0;
+    u8 core_of[max_lps]{}, cache_of[max_lps]{};
     for (u8* it = sets.data(); it < sets.data() + length; it += reinterpret_cast<PSYSTEM_CPU_SET_INFORMATION>(it)->Size)
     {
         const SYSTEM_CPU_SET_INFORMATION& info = *reinterpret_cast<PSYSTEM_CPU_SET_INFORMATION>(it);
@@ -334,10 +417,10 @@ void initialize()
         efficiency_of[lp] = info.CpuSet.EfficiencyClass;
         rank_of[lp] = info.CpuSet.SchedulingClass;
     }
-    if (!usable)
+    if (!usable || !(usable & inherited))
     {
         Msg("* CPU placement: off, every CPU Set is reserved");
-        return;
+        return false;
     }
 
     // L3 size per logical processor tells an X3D V-Cache CCD from a plain one.
@@ -359,107 +442,95 @@ void initialize()
         }
     }
 
-    // One cache domain for the whole engine: the largest L3, then the best ranked core,
-    // then the larger domain.
-    u64 best_domain = 0;
-    u32 best_lp = 0;
-    u8 best_rank = 0;
+    // Cores (numbered like the THREADS tab), L3 domains in the order of their first logical processor, the ranking.
+    u8 top_efficiency = 0, low_efficiency = 255, max_rank = 0, min_rank = 255;
+    u32 numbers = 0;
     for (u32 lp = 0; lp < max_lps; ++lp)
     {
         if (!(usable & (1ull << lp)))
             continue;
-        u64 mask = 0;
-        u8 rank = 0;
+        top_efficiency = std::max(top_efficiency, efficiency_of[lp]);
+        low_efficiency = std::min(low_efficiency, efficiency_of[lp]);
+        max_rank = std::max(max_rank, rank_of[lp]);
+        min_rank = std::min(min_rank, rank_of[lp]);
+        u64 core = 0, domain = 0;
         for (u32 other = 0; other < max_lps; ++other)
-            if ((usable & (1ull << other)) && cache_of[other] == cache_of[lp])
+            if (usable & (1ull << other))
             {
-                mask |= 1ull << other;
-                rank = std::max(rank, rank_of[other]);
+                core |= core_of[other] == core_of[lp] ? 1ull << other : 0;
+                domain |= cache_of[other] == cache_of[lp] ? 1ull << other : 0;
             }
-        if (!best_domain || l3_of[lp] > l3_of[best_lp] ||
-            (l3_of[lp] == l3_of[best_lp] && (rank > best_rank || (rank == best_rank && lp_count(mask) > lp_count(best_domain)))))
+        core_mask_of[lp] = core;
+        numbers += core & ((1ull << lp) - 1) ? 0 : 1; // lp is the first processor of its core
+        u32 k = 0;
+        while (k < l3_count && l3_mask[k] != domain)
+            ++k;
+        if (k == l3_count && l3_count < max_l3)
         {
-            best_domain = mask;
-            best_lp = lp;
-            best_rank = rank;
+            l3_mask[l3_count] = domain;
+            l3_kb[l3_count++] = l3_of[lp] / 1024;
         }
     }
-    // A small domain (Zen 5c cluster split, LP E-cores) would starve the pool: keep all.
-    domain = lp_count(best_domain) * 2 >= lp_count(usable) ? best_domain : usable;
+    ranked = max_rank != min_rank;
+    core_total = numbers;
+    if (top_efficiency != low_efficiency)
+        for (u32 lp = 0; lp < max_lps; ++lp)
+            if ((usable & (1ull << lp)) && efficiency_of[lp] == top_efficiency)
+                p_cores |= 1ull << lp;
 
-    u8 top_efficiency = 0;
-    for (u32 lp = 0; lp < max_lps; ++lp)
-        if (domain & (1ull << lp))
-            top_efficiency = std::max(top_efficiency, efficiency_of[lp]);
-
-    bool hybrid = false;
-    u32 domain_cores = 0;
-    u64 seen = 0;
-    core_count = 0;
-    for (u32 lp = 0; lp < max_lps; ++lp)
+    // The game's L3 domain: the largest L3, then the best ranked core, then the larger domain.
+    auto rank = [](u64 mask) {
+        u8 best = 0;
+        for (u32 lp = 0; lp < max_lps; ++lp)
+            if (mask & (1ull << lp))
+                best = std::max(best, rank_of[lp]);
+        return best;
+    };
+    for (u32 k = 1; k < l3_count; ++k)
     {
-        if (!(domain & (1ull << lp)) || (seen & (1ull << lp)))
-            continue;
-        u64 mask = 0;
-        for (u32 other = lp; other < max_lps; ++other)
-            if ((domain & (1ull << other)) && core_of[other] == core_of[lp])
-                mask |= 1ull << other;
-        seen |= mask;
-        ++domain_cores;
-        if (efficiency_of[lp] == top_efficiency)
-            cores[core_count++] = {mask, lp, rank_of[lp], 0};
-        else
-            hybrid = true;
+        const u32 a = l3_kb[k], b = l3_kb[best_l3];
+        if (a > b || (a == b && (rank(l3_mask[k]) > rank(l3_mask[best_l3]) ||
+            (rank(l3_mask[k]) == rank(l3_mask[best_l3]) && lp_count(l3_mask[k]) > lp_count(l3_mask[best_l3])))))
+            best_l3 = k;
     }
-    std::stable_sort(cores, cores + core_count, [](const core_slot& a, const core_slot& b) { return a.rank > b.rank; });
-    const u8 max_rank = cores[0].rank, min_rank = cores[core_count - 1].rank;
-
-    // Without a ranking from the OS there is no better core to pick; with fewer than
-    // four cores a reserved one would starve everything else.
-    const bool place_main_thread = (hybrid || max_rank != min_rank) && domain_cores >= 4;
-    if (!place_main_thread && domain == usable)
-    {
-        Msg("* CPU placement: off, one L3 and no preferred-core ranking (CPPC / Turbo Boost Max off?)");
-        return;
-    }
-
-    if (domain != usable)
-        Msg("* CPU placement: engine on LP mask %llX of %llX (L3 %u KB)", domain, usable, l3_of[best_lp] / 1024);
-
-    // The pool keeps one worker per logical processor of the domain, as without placement:
-    // its workers just do not run on the main thread's core.
-    budget = lp_count(domain);
-    planned = true;
-    main_placed = place_main_thread;
-    if (place_main_thread)
-    {
-        GetThreadIdealProcessorEx(main_thread, &original_ideal);
-        for (u32 k = 0; k < core_count; ++k)
-            main_allowed |= cores[k].mask;
-        main_set = main_allowed;
-    }
-    apply();
-    if (!place_main_thread)
-        return;
-
-    monitoring = true;
-    thread_spawn(monitor, "CPU placement monitor", 0, nullptr);
-    Msg("* CPU placement: main thread on LP%u (%s), other engine threads off that core", cores[0].home,
-        hybrid ? "P-core" : "preferred core");
+    // Without sizes the V-Cache CCD cannot be told from the other one; a small domain (Zen 5c cluster split) would
+    // starve the pool: both stay as one L3.
+    l3_unknown = l3_count > 1 && !l3_kb[best_l3];
+    bool sizes_differ = false;
+    for (u32 k = 0; k < l3_count; ++k)
+        sizes_differ |= l3_kb[k] != l3_kb[best_l3];
+    asymmetric_l3 = sizes_differ && !l3_unknown && lp_count(l3_mask[best_l3]) * 2 >= lp_count(usable);
+    if (l3_unknown)
+        Msg("* CPU placement: several L3 caches of unknown size, the game is not bound");
+    return true;
 }
+} // namespace
 
-void set_enabled(bool enabled)
+void initialize()
 {
+    DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &main_thread, 0, FALSE, DUPLICATE_SAME_ACCESS);
+    set_thread_information = reinterpret_cast<set_thread_information_fn>(
+        GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetThreadInformation"));
+    GetThreadIdealProcessorEx(main_thread, &original_ideal);
+    set_main_high_qos();
+    topology = read_topology();
+    // The pool keeps one worker per logical processor of the AUTO cores of the game: when the main thread is placed
+    // its workers just do not run on the main thread's core.
+    if (topology)
+        budget = lp_count(game_cores());
+
     AcquireSRWLockExclusive(&lock);
-    if (enabled != active)
-    {
-        active = enabled;
-        set_main_high_qos(enabled);
-        if (planned)
-            enabled ? apply() : clear();
-        Msg("* CPU placement: %s", enabled ? "on" : "off, Windows schedules every engine thread");
-    }
+    apply_locked();
     ReleaseSRWLockExclusive(&lock);
+    if (topology && !auto_main && !bind && !main_allowed)
+        Msg(external ? "* CPU placement: AUTO leaves the threads to Windows, affinity or CPU Sets are set externally"
+                     : "* CPU placement: AUTO leaves the threads to Windows, one L3 and no preferred-core ranking");
+    // The monitor exists where AUTO may place the main thread.
+    if (topology && !external && core_total >= 4 && (p_cores || (ranked && !asymmetric_l3 && !l3_unknown)))
+    {
+        monitoring = true;
+        thread_spawn(monitor, "CPU placement monitor", 0, nullptr);
+    }
 }
 
 u32 thread_budget() { return budget; }

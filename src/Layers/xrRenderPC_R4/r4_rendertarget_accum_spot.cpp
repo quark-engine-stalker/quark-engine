@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "upscaler.h"
 #include "../xrRender/du_cone.h"
 
 //extern Fvector du_cone_vertices[DU_CONE_NUMVERTEX];
@@ -285,7 +286,14 @@ void CRenderTarget::accum_volumetric(light* L)
 
 	//if (L->flags.type != IRender_Light::SPOT) return;
 	if (!L->flags.bVolumetric) return;
-	
+
+	// accum_spot already set the full scene viewport. Switch only for a volume we draw.
+	const bool reduced_viewport = RImplementation.o.ssfx_volumetric;
+	const float width = reduced_viewport ? float(upscaler::width()) : 0.f;
+	const float height = reduced_viewport ? float(upscaler::height()) : 0.f;
+	if (reduced_viewport)
+		set_viewport_size(HW.pContext, width / 8.f, height / 8.f);
+
 	if (!RImplementation.o.ssfx_volumetric)
 	{
 		phase_vol_accumulator();
@@ -682,7 +690,7 @@ void CRenderTarget::accum_volumetric(light* L)
 	//CHK_DX		(HW.pDevice->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE));
 	RCache.set_Scissor(0);
 
-	/*if (RImplementation.o.ssfx_volumetric)
-		set_viewport_size(HW.pContext, w, h);*/
+	if (reduced_viewport)
+		set_viewport_size(HW.pContext, width, height);
 
 }

@@ -111,8 +111,9 @@ xr_token qlow_latency_token [ ] = {
 u32 ps_r__upscaler = 0;
 xr_token qupscaler_token [ ] = {
 	{"off", 0},
-	{"dlss", 1},
-	{"fsr", 2},
+	{"auto", 1},
+	{"dlss", 2},
+	{"fsr", 3},
 	{0, 0}
 };
 float ps_r__fsr_sharpness = 0.5f; // FSR 3.1 RCAS, 0 off
@@ -126,12 +127,11 @@ xr_token qupscaler_mode_token [ ] = {
 	{"ultra_performance", 4},
 	{0, 0}
 };
-u32 ps_r__dlss_model = 0;
+u32 ps_r__dlss_model = 1; // DLSS 4: fast on every RTX; AUTO is r__upscaler auto
 xr_token qdlss_model_token [ ] = {
-	{"auto", 0},
-	{"dlss45", 1},
-	{"dlss4", 2},
-	{"dlss3", 3},
+	{"dlss45", 0},
+	{"dlss4", 1},
+	{"dlss3", 2},
 	{0, 0}
 };
 
@@ -174,6 +174,15 @@ int ps_r__LightSleepFrames = 10;
 float ps_r__Detail_l_ambient = 0.9f;
 float ps_r__Detail_l_aniso = 0.25f;
 float ps_r__Detail_density = 0.3f;
+// Layers of grass a view ray keeps: denser grass along a low ray is hidden behind them and not drawn (0 = all drawn)
+float ps_r__detail_lod = 256.f;
+// Grass clumps smaller on the display than this radius in pixels are not drawn: their blades are thinner than a pixel there
+float ps_r__detail_min_size = 4.f;
+// Layers of grass a sun ray keeps in the shadow cascades: the rest only shade the same shadow map texels again (0 = all)
+float ps_r__detail_sun_lod = 512.f;
+// Grass draws into the sun shadow maps at this fraction of their resolution (1 = full): its own depth map, merged by the
+// nearest depth into the cascade's; the rest of the casters stay at full resolution
+float ps_r__detail_shadow_scale = 2.f;
 float ps_r__Detail_height = 1.0f;
 float ps_r__Detail_rainbow_hemi = 0.75f;
 
@@ -1654,6 +1663,10 @@ void xrRender_initconsole()
 
 #ifdef DETAIL_RADIUS
 	CMD4(CCC_detail_radius, "r__detail_radius", &ps_r__detail_radius, 0, 250);
+	CMD4(CCC_Float, "r__detail_lod", &ps_r__detail_lod, 0.f, 4096.f);
+	CMD4(CCC_Float, "r__detail_min_size", &ps_r__detail_min_size, 0.f, 16.f);
+	CMD4(CCC_Float, "r__detail_sun_lod", &ps_r__detail_sun_lod, 0.f, 4096.f);
+	CMD4(CCC_Float, "r__detail_shadow_scale", &ps_r__detail_shadow_scale, 1.f, 4.f);
 	CMD3(CCC_Mask, "r__clear_models_on_unload", &psDeviceFlags2, rsClearModels); //Alundaio
 	CMD3(CCC_Mask, "r__use_precompiled_shaders", &psDeviceFlags2, rsPrecompiledShaders); //Alundaio
 	CMD3(CCC_Mask, "r__enable_grass_shadow", &psDeviceFlags2, rsGrassShadow); //Alundaio

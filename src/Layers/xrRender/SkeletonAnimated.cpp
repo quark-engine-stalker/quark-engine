@@ -837,6 +837,7 @@ CBlend* CKinematicsAnimated::IBlend_Create()
 
 void CKinematicsAnimated::Load(const char* N, IReader* data, u32 dwFlags)
 {
+	PROF_EVENT();
 	inherited::Load(N, data, dwFlags);
 
 	// Globals

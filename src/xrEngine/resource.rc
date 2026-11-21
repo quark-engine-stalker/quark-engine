@@ -41,6 +41,9 @@ IDI_ICON1               ICON                    "quark_exe_icon.ico"
 
 IDR_SPLASH_PNG          RCDATA                  "splash_xrcs_en.png"
 IDR_PANEL_LOGO_PNG      RCDATA                  "quark_panel_logo.png"
+IDR_PANEL_TITLE_PNG     RCDATA                  "quark_panel_title.png"
+IDR_PANEL_FONT_TTF      RCDATA                  "quark_panel_play.ttf"
+IDR_PANEL_DISPLAY_TTF   RCDATA                  "quark_panel_daysone.ttf"
 
 /////////////////////////////////////////////////////////////////////////////
 //

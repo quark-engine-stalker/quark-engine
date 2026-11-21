@@ -58,7 +58,8 @@ public:
 	virtual void Begin() = 0;
 	virtual void Clear() = 0;
 	virtual void End() = 0;
-	virtual bool LatencyFrameBegin(int fps_limit) = 0;
+	enum class latency_frame_limit { late, before_input, driver };
+	virtual latency_frame_limit LatencyFrameBegin(int fps_limit) = 0;
 	virtual void LatencyRenderBegin() = 0;
 	// r__low_latency for QUARK-PANEL, per mode off, on, reflex, reflex_boost; 0 where a mode is not measured yet.
 	struct latency_report
@@ -67,6 +68,7 @@ public:
 		bool reflex_missing; // Reflex is chosen but the driver refused it: the mode works as off
 		bool cannot_measure;
 		float ms[4], fps[4];
+		float wait_ms; // the low latency wait before the input (the engine's or the Reflex sleep), a frame, the last second
 	};
 	// measure keeps the latency measured; only in a level, the menu's frame limit falsifies it
 	virtual void LatencyReport(latency_report& report, bool measure) = 0;
@@ -78,10 +80,11 @@ public:
 	};
 	struct upscaler_report
 	{
-		u32 method, mode, model; // the console values
+		u32 method; // the console value, upscaler::method
+		u32 used_method, mode, model; // in force: AUTO resolved to DLSS or FSR at quality
 		u32 state; // of the targets in use, upscaler_state
 		bool nvidia, dlss_supported, old_driver, motion_vectors, msaa;
-		bool new_gpu, gpu_known; // RTX 40 or newer (FP8): AUTO takes the transformer models
+		bool new_gpu, gpu_known; // RTX 40 or newer (FP8): AUTO takes DLSS 4.5, older RTX DLSS 4
 		u32 render_w, render_h, display_w, display_h;
 		char preset; // DLSS preset in use, 0 otherwise
 		float sharpness; // r__dlss_sharpness or r__fsr_sharpness, of the chosen method

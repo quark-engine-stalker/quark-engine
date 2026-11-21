@@ -113,6 +113,8 @@ public:
 	xr_vector<std::pair<shared_str, R_constant_setup*>> v_constant_setup;
 	lua_State* LSVM;
 	xr_atomic_bool bDeferredLoad;
+	// While this thread creates a shader, its pixel shaders are the depth-only variants (CRender::shader_compile)
+	DWORD m_depth_only_ps_thread = 0;
 private:
 	void LS_Load();
 	void LS_Unload();
@@ -156,13 +158,13 @@ public:
 	CConstant* _CreateConstant(LPCSTR Name);
 	void _DeleteConstant(const CConstant* C);
 
-	R_constant_table* _CreateConstantTable(R_constant_table& C);
+	ref_ctable _CreateConstantTable(R_constant_table& C);
 	void _DeleteConstantTable(const R_constant_table* C);
 
-	dx10ConstantBuffer*				_CreateConstantBuffer(ID3DShaderReflectionConstantBuffer* pTable);
+	ref_cbuffer						_CreateConstantBuffer(ID3DShaderReflectionConstantBuffer* pTable);
 	void							_DeleteConstantBuffer(const dx10ConstantBuffer* pBuffer);
 
-	SInputSignature*				_CreateInputSignature(ID3DBlob* pBlob);
+	ref_input_sign					_CreateInputSignature(ID3DBlob* pBlob);
 	void							_DeleteInputSignature(const SInputSignature* pSignature);
 
 	CRT*							_CreateRT			(LPCSTR Name, u32 w, u32 h,	D3DFORMAT f, u32 SampleCount = 1, bool useUAV=false );
@@ -170,50 +172,50 @@ public:
 
 	//	DX10 cut CRTC*							_CreateRTC			(LPCSTR Name, u32 size,	D3DFORMAT f);
 	//	DX10 cut void							_DeleteRTC			(const CRTC*	RT	);
-	SGS*							_CreateGS			(LPCSTR Name);
+	ref_gs							_CreateGS			(LPCSTR Name);
 	void							_DeleteGS			(const SGS*	GS	);
 
-	SHS*							_CreateHS			(LPCSTR Name);
+	ref_hs							_CreateHS			(LPCSTR Name);
 	void							_DeleteHS			(const SHS*	HS	);
 
-	SDS*							_CreateDS			(LPCSTR Name);
+	ref_ds							_CreateDS			(LPCSTR Name);
 	void							_DeleteDS			(const SDS*	DS	);
 
-    SCS*							_CreateCS			(LPCSTR Name);
+    ref_cs							_CreateCS			(LPCSTR Name);
 	void							_DeleteCS			(const SCS*	CS	);
 
-	SPS* _CreatePS(LPCSTR Name);
+	ref_ps _CreatePS(LPCSTR Name);
 	void _DeletePS(const SPS* PS);
 
-	SVS* _CreateVS(LPCSTR Name);
+	ref_vs _CreateVS(LPCSTR Name);
 	void _DeleteVS(const SVS* VS);
 
-	SPass* _CreatePass(const SPass& proto);
+	ref_pass _CreatePass(const SPass& proto);
 	void _DeletePass(const SPass* P);
 
 	// Shader compiling / optimizing
-	SState* _CreateState(SimulatorStates& Code);
+	ref_state _CreateState(SimulatorStates& Code);
 	void _DeleteState(const SState* SB);
 
-	SDeclaration* _CreateDecl(D3DVERTEXELEMENT9* dcl);
+	ref_declaration _CreateDecl(D3DVERTEXELEMENT9* dcl);
 	void _DeleteDecl(const SDeclaration* dcl);
 
-	STextureList* _CreateTextureList(STextureList& L);
+	ref_texture_list _CreateTextureList(STextureList& L);
 	void _DeleteTextureList(const STextureList* L);
 
-	SMatrixList* _CreateMatrixList(SMatrixList& L);
+	ref_matrix_list _CreateMatrixList(SMatrixList& L);
 	void _DeleteMatrixList(const SMatrixList* L);
 
-	SConstantList* _CreateConstantList(SConstantList& L);
+	ref_constant_list _CreateConstantList(SConstantList& L);
 	void _DeleteConstantList(const SConstantList* L);
 
-	ShaderElement* _CreateElement(ShaderElement& L);
+	ref_selement _CreateElement(ShaderElement& L);
 	void _DeleteElement(const ShaderElement* L);
 
-	Shader* _cpp_Create(LPCSTR s_shader, LPCSTR s_textures = 0, LPCSTR s_constants = 0, LPCSTR s_matrices = 0);
-	Shader* _cpp_Create(IBlender* B, LPCSTR s_shader = 0, LPCSTR s_textures = 0, LPCSTR s_constants = 0,
+	ref_shader _cpp_Create(LPCSTR s_shader, LPCSTR s_textures = 0, LPCSTR s_constants = 0, LPCSTR s_matrices = 0);
+	ref_shader _cpp_Create(IBlender* B, LPCSTR s_shader = 0, LPCSTR s_textures = 0, LPCSTR s_constants = 0,
 	                    LPCSTR s_matrices = 0);
-	Shader* _lua_Create(LPCSTR s_shader, LPCSTR s_textures);
+	ref_shader _lua_Create(LPCSTR s_shader, LPCSTR s_textures);
 	BOOL _lua_HasShader(LPCSTR s_shader);
 
 	CResourceManager() : bDeferredLoad(true)
@@ -230,8 +232,8 @@ public:
 	void reset_end();
 
 	// Creation/Destroying
-	Shader* Create(LPCSTR s_shader = 0, LPCSTR s_textures = 0, LPCSTR s_constants = 0, LPCSTR s_matrices = 0);
-	Shader* Create(IBlender* B, LPCSTR s_shader = 0, LPCSTR s_textures = 0, LPCSTR s_constants = 0,
+	ref_shader Create(LPCSTR s_shader = 0, LPCSTR s_textures = 0, LPCSTR s_constants = 0, LPCSTR s_matrices = 0);
+	ref_shader Create(IBlender* B, LPCSTR s_shader = 0, LPCSTR s_textures = 0, LPCSTR s_constants = 0,
 	               LPCSTR s_matrices = 0);
 	void Delete(const Shader* S);
 
@@ -241,8 +243,8 @@ public:
 		v_constant_setup.push_back(mk_pair(shared_str(name), s));
 	}
 
-	SGeometry* CreateGeom(D3DVERTEXELEMENT9* decl, ID3DVertexBuffer* vb, ID3DIndexBuffer* ib);
-	SGeometry* CreateGeom(u32 FVF, ID3DVertexBuffer* vb, ID3DIndexBuffer* ib);
+	ref_geom CreateGeom(D3DVERTEXELEMENT9* decl, ID3DVertexBuffer* vb, ID3DIndexBuffer* ib);
+	ref_geom CreateGeom(u32 FVF, ID3DVertexBuffer* vb, ID3DIndexBuffer* ib);
 	void DeleteGeom(const SGeometry* VS);
 	void DeferredLoad(BOOL E) { bDeferredLoad.store(E != FALSE, std::memory_order_release); }
 	void DeferredUpload();
@@ -264,7 +266,7 @@ private:
 	T& GetShaderMap();
 
 	template<typename T>
-	T* CreateShader(const char* name);
+	resptr_core<T, resptr_base<T>> CreateShader(const char* name);
 
 	template<typename T>
 	void DestroyShader(const T* sh);

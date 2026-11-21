@@ -39,7 +39,7 @@ void CRenderTarget::phase_smap_spot(light* L)
 // or from ps reading srv. Every device state it touches is restored, so the backend's
 // state caches stay valid.
 void CRenderTarget::smap_cache_triangle(ID3D11DepthStencilView* dsv, ID3D11PixelShader* ps_new,
-	ID3D11ShaderResourceView* srv_new)
+	ID3D11ShaderResourceView* srv_new, ID3D11DepthStencilState* depth_state)
 {
 	ID3D11DeviceContext* context = HW.pContext;
 	ID3D11InputLayout* layout = nullptr;
@@ -77,7 +77,7 @@ void CRenderTarget::smap_cache_triangle(ID3D11DepthStencilView* dsv, ID3D11Pixel
 	context->GSSetShader(nullptr, nullptr, 0);
 	context->HSSetShader(nullptr, nullptr, 0);
 	context->DSSetShader(nullptr, nullptr, 0);
-	context->OMSetDepthStencilState(smap_cache_clear_depth, 0);
+	context->OMSetDepthStencilState(depth_state ? depth_state : smap_cache_clear_depth, 0);
 	context->RSSetState(smap_cache_clear_raster);
 	context->PSSetShaderResources(0, 1, &srv_new);
 	context->PSSetConstantBuffers(0, 1, &smap_cache_copy_cb);

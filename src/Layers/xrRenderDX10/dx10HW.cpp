@@ -1008,6 +1008,7 @@ void CHW::OnAppActivate()
 
 void CHW::OnAppDeactivate()
 {
+    low_latency::reset_pacing();
     BOOL is_windowed = m_ChainDescFullscreen.Windowed;
 
 	if (m_pSwapChain && !is_windowed)

@@ -22,8 +22,8 @@ IC CHitMemoryManager::CHitMemoryManager(CCustomMonster* object, CAI_Stalker* sta
 
 IC const CHitMemoryManager::HITS& CHitMemoryManager::objects() const
 {
-	VERIFY(m_hits);
-	return (*m_hits);
+	static const HITS empty_hits;
+	return m_hits ? *m_hits : empty_hits;
 }
 
 #ifdef USE_SELECTED_HIT

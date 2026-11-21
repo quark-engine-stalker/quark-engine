@@ -719,12 +719,20 @@ const CScriptEntityAction* CScriptEntity::GetActionByIndex(u32 action_index) con
 	return (m_tpActionQueue[action_index]);
 }
 
+CScriptCallbackEx<void>& CScriptEntity::script_sound_callback()
+{
+	// CGameObject clears the callback in place. The map node lives with the object.
+	if (!m_script_sound_callback)
+		m_script_sound_callback = &object().callback(GameObject::eSound);
+	return *m_script_sound_callback;
+}
+
 void CScriptEntity::sound_callback(const CObject* object, int sound_type, const Fvector& position, float sound_power)
 {
 	if (!smart_cast<const CGameObject*>(object))
 		return;
 
-	if (!this->object().callback(GameObject::eSound))
+	if (!script_sound_callback())
 		return;
 
 	m_saved_sounds.push_back(
@@ -780,7 +788,7 @@ void CScriptEntity::process_sound_callbacks()
 	{
 		if (repeated_sound(*I))
 			continue;
-		object().callback(GameObject::eSound)(
+		script_sound_callback()(
 			object().lua_game_object(),
 			(*I).m_game_object_id,
 			(*I).m_sound_type,

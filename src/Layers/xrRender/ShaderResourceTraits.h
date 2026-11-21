@@ -73,7 +73,7 @@ template <>
 inline CResourceManager::map_CS& CResourceManager::GetShaderMap() { return m_cs; }
 
 template <typename T>
-inline T* CResourceManager::CreateShader(const char* name)
+inline resptr_core<T, resptr_base<T>> CResourceManager::CreateShader(const char* name)
 {
 	xrCriticalSectionGuard guard(shaderProgramGuard);
 	using MapType = typename ShaderTypeTraits<T>::MapType;
@@ -82,8 +82,11 @@ inline T* CResourceManager::CreateShader(const char* name)
 	typename MapType::iterator I = sh_map.find(N);
 
 	if (I != sh_map.end())
-		return I->second;
-	else
+	{
+		if (I->second->pin_alive()) return resptr_core<T, resptr_base<T>>(I->second, false);
+		// dying: its destructor waits for this lock and leaves the new entry in the map alone
+		sh_map.erase(I);
+	}
 	{
 		T* sh = xr_new<T>();
 
@@ -146,7 +149,8 @@ inline void CResourceManager::DestroyShader(const T* sh)
 
 	if (I != sh_map.end())
 	{
-		sh_map.erase(I);
+		if (I->second == sh) // else a creator replaced this dying entry
+			sh_map.erase(I);
 		return;
 	}
 	Msg("! ERROR: Failed to find compiled geometry shader '%s'", *sh->cName);

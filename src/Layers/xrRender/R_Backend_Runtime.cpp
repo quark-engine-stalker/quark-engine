@@ -141,6 +141,17 @@ void CBackend::Invalidate()
 #endif
 }
 
+void CBackend::forget_texture(CTexture* texture)
+{
+	T = NULL;
+	for (CTexture*& bound : textures_ps) if (bound == texture) bound = NULL;
+	for (CTexture*& bound : textures_vs) if (bound == texture) bound = NULL;
+	for (CTexture*& bound : textures_gs) if (bound == texture) bound = NULL;
+	for (CTexture*& bound : textures_hs) if (bound == texture) bound = NULL;
+	for (CTexture*& bound : textures_ds) if (bound == texture) bound = NULL;
+	for (CTexture*& bound : textures_cs) if (bound == texture) bound = NULL;
+}
+
 void CBackend::set_ClipPlanes(u32 _enable, Fplane* _planes /*=NULL */, u32 count/* =0*/)
 {
 	//	TODO: DX10: Implement in the corresponding vertex shaders

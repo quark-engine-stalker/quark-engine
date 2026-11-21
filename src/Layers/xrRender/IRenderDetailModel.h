@@ -30,6 +30,7 @@ public:
 	float m_fMaxScale;
 
 	ref_shader shader;
+	ref_shader shader_depth; // the same material for the shadow maps: its pixel shaders only run their alpha test
 	fvfVertexIn* vertices;
 	u32 number_vertices;
 	u16* indices;

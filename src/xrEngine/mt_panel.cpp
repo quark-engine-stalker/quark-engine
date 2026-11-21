@@ -7,10 +7,12 @@
 #include "xr_ioc_cmd.h"
 #include "igame_level.h"
 #include "../Include/xrRender/RenderDeviceRender.h"
+#include "frame_stats.h"
+#include "mods_info.h"
 
 // QUARK-PANEL (console quark_panel), the engine's settings for players: what the engine runs in parallel, what each task
 // and thread costs, the console switch of every task, the experimental switches of serial work on the main thread that
-// can run on the workers, and the low latency modes with their measured latency.
+// can run on the workers, the low latency modes with their measured latency and the upscalers.
 extern bool IsMainMenuActive();
 extern int ps_framelimiter;
 int ps_mt_panel_lang = PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_RUSSIAN ? 1 : 0;
@@ -20,6 +22,34 @@ namespace xr_imgui
 namespace quark_mt
 {
 ImFont* big_font() { return Device.imgui().GetFont("$big"); }
+ImFont* head_font() { return Device.imgui().GetFont("$panel_head"); }
+ImFont* text_font() { return Device.imgui().GetFont("$panel"); }
+
+void group_title(const char* text)
+{
+	ImGui::PushFont(head_font());
+	ImGui::PushStyleColor(ImGuiCol_Text, accent);
+	ImGui::TextUnformatted(text);
+	ImGui::PopStyleColor();
+	ImGui::PopFont();
+}
+
+void fixed_column(const char* name, float width)
+{
+	ImGui::PushFont(head_font());
+	const float need = ImGui::CalcTextSize(name).x + 4.f;
+	ImGui::PopFont();
+	ImGui::TableSetupColumn(name, ImGuiTableColumnFlags_WidthFixed, _max(width, need));
+}
+
+void column_name(int column)
+{
+	ImGui::TableSetColumnIndex(column);
+	ImGui::PushFont(head_font());
+	ImGui::TextDisabled("%s", ImGui::TableGetColumnName(column));
+	ImGui::PopFont();
+}
+float content_width = min_content_width;
 
 bool block_button(const char* label, bool selected, const ImVec2& size)
 {
@@ -37,14 +67,27 @@ bool block_button(const char* label, bool selected, const ImVec2& size)
 	return clicked;
 }
 
-void bar(float fraction, float width, float height)
+float glide(ImGuiID id, float target)
 {
+	float* value = ImGui::GetStateStorage()->GetFloatRef(id, -1.f);
+	if (*value < 0.f) // seen for the first time
+		*value = target;
+	else
+		*value += (target - *value) * _min(ImGui::GetIO().DeltaTime * 8.f, 1.f);
+	return *value;
+}
+
+void bar(float fraction, float width, float height, ImGuiID glide_id)
+{
+	fraction = _min(_max(fraction, 0.f), 1.f);
+	if (glide_id)
+		fraction = glide(glide_id, fraction);
 	const ImVec2 at = ImGui::GetCursorScreenPos();
 	const float top = at.y + (ImGui::GetTextLineHeight() - height) * 0.5f;
 	ImGui::Dummy(ImVec2(width, ImGui::GetTextLineHeight()));
 	ImDrawList* draw = ImGui::GetWindowDrawList();
 	draw->AddRect(ImVec2(at.x, top), ImVec2(at.x + width, top + height), ImGui::GetColorU32(stroke));
-	const float fill = (width - 2.f) * _min(_max(fraction, 0.f), 1.f);
+	const float fill = (width - 2.f) * fraction;
 	if (fill > 0.f)
 		draw->AddRectFilled(ImVec2(at.x + 1.f, top + 1.f), ImVec2(at.x + 1.f + fill, top + height - 1.f),
 			ImGui::GetColorU32(accent));
@@ -198,6 +241,14 @@ const row rows[] = {
 		u8"Статическая геометрия видимых секторов отсекается (вид, тесты окклюзии, LOD) на воркерах, пока главный поток "
 		u8"ищет видимые динамические объекты. Результаты кладутся в сцену в исходном порядке, картинка та же. Выкл: на "
 		u8"главном потоке до динамических объектов."},
+	{no_group, "mt_sun_static", mt_tasks::sun_static, false, false, own_worker, main_thread,
+		"Sun shadow statics", u8"Статика теней солнца",
+		"The static geometry the sun shadow cascades can see is collected on a separate worker while the main thread "
+		"draws the scene (geometry, grass, wallmarks); the sun finds it ready, in the original order, the picture is "
+		"the same. Off: on the main thread right before the sun shadows.",
+		u8"Статическая геометрия, которую видят каскады теней солнца, собирается на отдельном воркере, пока главный "
+		u8"поток рисует сцену (геометрия, трава, следы); солнце получает её готовой, в исходном порядке, картинка та "
+		u8"же. Выкл: на главном потоке прямо перед тенями солнца."},
 	{no_group, "mt_opaque_sort", mt_tasks::opaque_sort, false, false, workers, main_thread,
 		"Opaque sort", u8"Сортировка непрозрачного",
 		"Long lists of opaque geometry are sorted on the workers before they are drawn. Off: each list is sorted on the "
@@ -251,12 +302,10 @@ const latency_mode latency_modes[] = {
 		u8"Как в оригинальной игре: драйвер копит в очереди до 3 кадров. Когда упор в видеокарту, ввод ждёт их все: "
 		u8"47 мс в 1080p на тестовом ПК."},
 	{"on", "ON", u8"ВКЛ",
-		"The engine's own low latency: a queue of 1 frame and a short wait before the input is read, so the video card "
-		"keeps no frames in reserve. The latency of NVIDIA Reflex (17 ms against 47 on the test PC) at the same FPS, on "
-		"any video card. With VSync only the queue of 1 frame.",
-		u8"Своя низкая задержка движка: очередь в 1 кадр и короткое ожидание перед чтением ввода, чтобы видеокарта не "
-		u8"копила кадры впрок. Задержка как у NVIDIA Reflex (17 мс против 47 на тестовом ПК) при том же FPS, на любой "
-		u8"видеокарте. С вертикальной синхронизацией - только очередь в 1 кадр."},
+		"The engine limits the render queue to one frame. It waits for the GPU or the engine's FPS limit before "
+		"reading input. With VSync, the short queue and the early FPS limit still apply.",
+		u8"Движок ограничивает очередь рендера одним кадром. Он ждёт видеокарту или лимит FPS перед чтением "
+		u8"ввода. С VSync действуют короткая очередь и раннее ожидание лимита FPS."},
 	{"reflex", "NVIDIA REFLEX", "NVIDIA REFLEX",
 		"Low latency by the NVIDIA driver (Reflex Low Latency): 16.5 ms on the test PC, but the driver leaves the video "
 		"card idle about 1 ms a frame, up to -10 % FPS at a high frame rate. Needs a GeForce GTX 900 or newer and a recent "
@@ -273,6 +322,7 @@ const latency_mode latency_modes[] = {
 constexpr u32 latency_mode_count = sizeof(latency_modes) / sizeof(latency_modes[0]);
 
 // r__upscaler, r__dlss_model, r__upscaler_mode: one button per token, in the order of the token
+enum upscaler_method : u32 { method_off, method_auto, method_dlss, method_fsr }; // upscaler::method
 struct choice
 {
 	const char* token;
@@ -285,6 +335,13 @@ struct choice
 const choice upscaler_methods[] = {
 	{"off", "OFF", u8"ВЫКЛ", "The scene renders at the resolution of the screen, as in the original game.",
 		u8"Сцена рисуется в разрешении экрана, как в оригинальной игре."},
+	{"auto", "AUTO", u8"АВТО",
+		"The engine chooses the upscaler, its model and quality by the video card: GeForce RTX 20 and 30 DLSS 4 at quality, "
+		"RTX 40 and 50 DLSS 4.5 at quality, AMD Radeon and every other card AMD FSR 3.1 at quality. To set them by hand, "
+		"choose NVIDIA DLSS or AMD FSR 3.1.",
+		u8"Движок сам выбирает апскейлер, его модель и качество по видеокарте: GeForce RTX 20 и 30 - DLSS 4 на качестве, "
+		u8"RTX 40 и 50 - DLSS 4.5 на качестве, AMD Radeon и все остальные карты - AMD FSR 3.1 на качестве. Чтобы задать их "
+		u8"вручную, выберите NVIDIA DLSS или AMD FSR 3.1."},
 	{"dlss", "NVIDIA DLSS", "NVIDIA DLSS",
 		"The scene renders at a lower resolution and NVIDIA DLSS rebuilds the full resolution from it and the frames "
 		"before: more FPS when the video card is the limit, and its own anti-aliasing instead of SSS TAA and SMAA. Needs a "
@@ -304,11 +361,6 @@ const choice upscaler_methods[] = {
 };
 
 const choice dlss_models[] = {
-	{"auto", "AUTO", u8"АВТО",
-		"RTX 20 and 30: DLSS 3, the fastest. RTX 40 and 50: DLSS 4 for DLAA, quality and balance, DLSS 4.5 for "
-		"performance and max FPS, as NVIDIA recommends.",
-		u8"RTX 20 и 30: DLSS 3, самый быстрый. RTX 40 и 50: DLSS 4 для DLAA, качества и баланса, DLSS 4.5 для "
-		u8"производительности и макс. FPS, как советует NVIDIA."},
 	{"dlss45", "DLSS 4.5", "DLSS 4.5",
 		"The second transformer model (presets M and L): the sharpest and steadiest image, the least ghosting. Fast on "
 		"RTX 40 and 50. RTX 20 and 30 have no FP8, there it costs 2-3.5 ms a frame at 1080p and can be slower than no "
@@ -355,7 +407,7 @@ const choice fsr_modes[] = {
 		u8"Сцена в 33 % ширины и высоты экрана: больше всего FPS и самая мягкая картинка, для 4K."},
 };
 
-enum tab { tab_tasks, tab_threads, tab_latency, tab_upscaler };
+enum tab { tab_tasks, tab_threads, tab_latency, tab_upscaler, tab_mods, tab_count };
 tab current_tab = tab_tasks;
 
 const char* tab_help()
@@ -367,6 +419,15 @@ const char* tab_help()
 			"is the share of one processor. WAIT shows how fast the job pool starts work.",
 			u8"Нажмите на поток, чтобы увидеть, что он делает. Такты CPU каждого потока берутся у Windows раз в секунду, "
 			u8"НАГРУЗКА - доля одного процессора. ОЖИДАНИЕ показывает, как быстро пул задач начинает работу.");
+	case tab_mods:
+		return L("What the mods of MO2 cost, measured while this tab is open. The whole Lua time is measured exactly at "
+			"every call of the engine into the scripts, its split by mod comes from samples of the Lua stack: a sample "
+			"goes to the mod whose function is nearest the top, the vanilla scripts and the engine functions it calls "
+			"count as its own. Hover a column or a row to read what it means.",
+			u8"Сколько стоят моды из MO2, измеряется, пока открыта эта вкладка. Общее время Lua засекается точно на каждом "
+			u8"вызове скриптов движком, по модам оно делится по выборкам стека Lua: выборка достаётся моду, чья функция "
+			u8"ближе всего к вершине стека, ванильные скрипты и функции движка, которые он вызывает, считаются его. "
+			u8"Наведите на столбец или строку, чтобы прочитать, что они значат.");
 	case tab_latency:
 		return L("Latency: from the start of a frame, when the game reads the mouse and the keyboard, to the moment the "
 			"video card has finished it. The mouse and the monitor add their own part. Measured while this tab is open, "
@@ -390,7 +451,7 @@ const char* tab_help()
 	}
 }
 
-constexpr float name_width = 300.f, place_width = 150.f, number_width = 66.f, load_width = 104.f, threads_width = 64.f,
+constexpr float place_width = 150.f, number_width = 66.f, load_width = 104.f, threads_width = 64.f,
 	state_width = 62.f;
 
 // One second of frames
@@ -473,9 +534,9 @@ void push_style()
 	ImGui::PushStyleVar(ImGuiStyleVar_PopupBorderSize, 1.f);
 	ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16.f, 14.f));
-	ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.f, 2.f));
-	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.f, 6.f));
-	ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(6.f, 3.f));
+	ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.f, 7.f));
+	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.f, 8.f));
+	ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(6.f, 4.f));
 	ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarRounding, 3.f);
 	ImGui::PushStyleVar(ImGuiStyleVar_GrabRounding, 2.f);
 
@@ -484,13 +545,15 @@ void push_style()
 		ImGuiCol_HeaderHovered, ImGuiCol_HeaderActive, ImGuiCol_Separator, ImGuiCol_TableBorderLight, ImGuiCol_TableHeaderBg,
 		ImGuiCol_ModalWindowDimBg, ImGuiCol_FrameBg, ImGuiCol_FrameBgHovered, ImGuiCol_FrameBgActive, ImGuiCol_SliderGrab,
 		ImGuiCol_SliderGrabActive, ImGuiCol_ScrollbarBg, ImGuiCol_ScrollbarGrab, ImGuiCol_ScrollbarGrabHovered,
-		ImGuiCol_ScrollbarGrabActive};
+		ImGuiCol_ScrollbarGrabActive, ImGuiCol_ResizeGrip, ImGuiCol_ResizeGripHovered, ImGuiCol_ResizeGripActive,
+		ImGuiCol_SeparatorHovered, ImGuiCol_SeparatorActive}; // the last two: the edge being resized
 	const ImVec4 values[] = {rgb(0x161616, 0.96f), rgb(0, 0.f), paper, stroke, ink,
 		muted, paper, rgb(0xFFFFFF, 0.07f), rgb(0xFFFFFF, 0.12f), rgb(0xFFFFFF, 0.035f),
 		rgb(0xFFFFFF, 0.06f), rgb(0xFFFFFF, 0.09f), stroke, stroke, surface,
 		rgb(0, 0.6f), surface, rgb(0x2C2C2C), rgb(0x333333), accent,
 		accent_press, paper, stroke, muted,
-		accent};
+		accent, stroke, muted, accent,
+		muted, accent};
 	static_assert(sizeof(colours) / sizeof(colours[0]) == sizeof(values) / sizeof(values[0]), "a value per colour");
 	for (u32 index = 0; index < sizeof(colours) / sizeof(colours[0]); ++index)
 		ImGui::PushStyleColor(colours[index], values[index]);
@@ -498,7 +561,7 @@ void push_style()
 
 void pop_style()
 {
-	ImGui::PopStyleColor(25);
+	ImGui::PopStyleColor(30);
 	ImGui::PopStyleVar(14);
 }
 
@@ -585,10 +648,15 @@ bool corner_button(const char* id, const ImRect& box, float& hover)
 // Muted text that turns to ink under the mouse
 ImU32 ghost_ink(float hover) { return ImGui::GetColorU32(ImLerp(muted, ink, hover)); }
 
-// Languages, RESET and X in the top right corner of the window
+// The full screen button: where the window was and its size, to come back to
+bool maximized = false;
+bool restore_pending = false;
+ImVec2 restore_pos, restore_size;
+
+// Languages, RESET, full screen and X in the top right corner of the window
 void corner(ide& owner)
 {
-	static float hover[4] = {};
+	static float hover[5] = {};
 	ImDrawList* draw = ImGui::GetWindowDrawList();
 	const ImVec2 win = ImGui::GetWindowPos(), win_size = ImGui::GetWindowSize();
 	const float side = 38.f, top = win.y + 4.f, middle = top + side * 0.5f, text_h = ImGui::GetTextLineHeight();
@@ -610,6 +678,39 @@ void corner(ide& owner)
 	const ImU32 bright = ImGui::GetColorU32(ink);
 	draw->AddLine(ImVec2(x + side * 0.5f - 5.f, middle - 5.f), ImVec2(x + side * 0.5f + 5.f, middle + 5.f), bright);
 	draw->AddLine(ImVec2(x + side * 0.5f + 5.f, middle - 5.f), ImVec2(x + side * 0.5f - 5.f, middle + 5.f), bright);
+
+	// Full screen and back, the caption buttons of Windows: a square, two overlapping ones while full screen
+	x -= side;
+	const ImRect full(x, top, x + side, top + side);
+	if (corner_button("full", full, hover[4]))
+	{
+		if (maximized)
+			restore_pending = true;
+		else
+		{
+			restore_pos = win;
+			restore_size = win_size;
+		}
+		maximized = !maximized;
+	}
+	ImGui::SetItemTooltip("%s", maximized ? L("Back to the window", u8"Вернуть окно") : L("Full screen", u8"На весь экран"));
+	if (hover[4] > 0.f)
+	{
+		ImVec4 plate = ImGui::IsItemActive() ? stroke : surface;
+		plate.w = hover[4];
+		draw->AddRectFilled(full.Min, full.Max, ImGui::GetColorU32(plate), 4.f);
+	}
+	const float cx = floorf(x + side * 0.5f), cy = floorf(middle); // whole pixels: crisp 1 px lines
+	if (maximized)
+	{
+		draw->AddRect(ImVec2(cx - 5.f, cy - 3.f), ImVec2(cx + 4.f, cy + 6.f), bright);
+		draw->AddLine(ImVec2(cx - 3.f, cy - 3.f), ImVec2(cx - 3.f, cy - 5.f), bright);
+		draw->AddLine(ImVec2(cx - 3.f, cy - 5.f), ImVec2(cx + 5.f, cy - 5.f), bright);
+		draw->AddLine(ImVec2(cx + 5.f, cy - 5.f), ImVec2(cx + 5.f, cy + 3.f), bright);
+		draw->AddLine(ImVec2(cx + 5.f, cy + 3.f), ImVec2(cx + 3.f, cy + 3.f), bright);
+	}
+	else
+		draw->AddRect(ImVec2(cx - 5.f, cy - 5.f), ImVec2(cx + 6.f, cy + 6.f), bright);
 
 	// RESET: muted text, ink under the mouse
 	const char* const reset = L("RESET", u8"СБРОС");
@@ -646,21 +747,23 @@ void corner(ide& owner)
 	ImGui::PopClipRect();
 }
 
+// The QUARK PANEL lettering (the same in every language) at its own pixel size, centred in the height of the corner
+// buttons, and the version
 void title(ide& owner)
 {
-	ImFont* big = big_font();
-	ImDrawList* draw = ImGui::GetWindowDrawList();
+	const float row = 38.f; // the corner buttons
 	const ImVec2 at = ImGui::GetCursorScreenPos();
-	const char* const name = "QUARK-PANEL"; // the same in every language
-	const float size = big ? big->FontSize : ImGui::GetFontSize();
-	const ImVec2 text = big ? big->CalcTextSizeA(size, FLT_MAX, 0.f, name) : ImGui::CalcTextSize(name);
-	const ImVec2 block(text.x + 20.f, text.y + 8.f);
-	draw->AddRectFilled(at, ImVec2(at.x + block.x, at.y + block.y), ImGui::GetColorU32(accent), 3.f);
-	draw->AddText(big, size, ImVec2(at.x + 10.f, at.y + 4.f), ImGui::GetColorU32(on_accent), name);
-	ImGui::Dummy(block);
-	ImGui::SameLine(0.f, 10.f);
-	ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (block.y - ImGui::GetTextLineHeight()) * 0.5f);
-	ImGui::TextDisabled("v0.1");
+	u32 width, height;
+	if (void* texture = owner.PanelImage(ide::panel_title, width, height))
+	{
+		const ImVec2 image(floorf(at.x), floorf(at.y + (row - float(height)) * 0.5f));
+		ImGui::GetWindowDrawList()->AddImage(ImTextureID(uintptr_t(texture)), image,
+			ImVec2(image.x + float(width), image.y + float(height)));
+	}
+	ImGui::Dummy(ImVec2(float(width), row));
+	ImGui::SameLine(0.f, 14.f);
+	ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (row - ImGui::GetTextLineHeight()) * 0.5f);
+	ImGui::TextDisabled("v0.2");
 	corner(owner);
 }
 
@@ -668,11 +771,14 @@ void title(ide& owner)
 void metric(float y, const char* label, const char* value, const char* unit, const char* help, bool first)
 {
 	ImFont* big = big_font();
-	const float lift = big ? big->FontSize - ImGui::GetFontSize() - 3.f : 0.f;
+	ImFont* head = head_font(); // the label and the unit, like every title
+	const float lift = big && head ? big->FontSize - head->FontSize - 3.f : 0.f;
 	if (!first)
 		ImGui::SameLine(0.f, 34.f);
 	ImGui::SetCursorPosY(y + lift);
+	ImGui::PushFont(head);
 	ImGui::TextDisabled("%s", label);
+	ImGui::PopFont();
 	const bool hovered = ImGui::IsItemHovered();
 	ImGui::SameLine(0.f, 10.f);
 	ImGui::SetCursorPosY(y);
@@ -683,7 +789,9 @@ void metric(float y, const char* label, const char* value, const char* unit, con
 	{
 		ImGui::SameLine(0.f, 5.f);
 		ImGui::SetCursorPosY(y + lift);
+		ImGui::PushFont(head);
 		ImGui::TextDisabled("%s", unit);
+		ImGui::PopFont();
 	}
 	if (hovered || ImGui::IsItemHovered())
 		ImGui::SetTooltip("%s", help);
@@ -705,15 +813,17 @@ void metrics()
 
 void tabs()
 {
-	const char* const names[] = {L("TASKS", u8"ЗАДАЧИ"), L("THREADS", u8"ПОТОКИ"), L("LATENCY", u8"ЗАДЕРЖКА"),
-		L("UPSCALER", u8"АПСКЕЙЛЕР")};
-	for (int index = 0; index < 4; ++index)
+	const char* const names[tab_count] = {L("TASKS", u8"ЗАДАЧИ"), L("THREADS", u8"ПОТОКИ"), L("LATENCY", u8"ЗАДЕРЖКА"),
+		L("UPSCALER", u8"АПСКЕЙЛЕР"), "MODS-INFO"};
+	ImGui::PushFont(head_font());
+	for (int index = 0; index < tab_count; ++index)
 	{
 		if (index)
 			ImGui::SameLine(0.f, 0.f);
-		if (block_button(names[index], current_tab == index, ImVec2(130.f, 0.f)))
+		if (block_button(names[index], current_tab == index, ImVec2(content_width / tab_count, 0.f)))
 			current_tab = tab(index);
 	}
+	ImGui::PopFont();
 	const ImVec2 at = ImGui::GetCursorScreenPos();
 	ImGui::GetWindowDrawList()->AddLine(ImVec2(at.x, at.y - 3.f), ImVec2(at.x + content_width, at.y - 3.f),
 		ImGui::GetColorU32(stroke));
@@ -733,19 +843,23 @@ const char* tasks_tab(bool& open_warning)
 		u8"на одном потоке."));
 	ImGui::PopTextWrapPos();
 
+	// compact toggles: a table cell top-aligns its text, a tall button would leave the names above its middle
+	ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.f, 2.f));
 	if (!ImGui::BeginTable("tasks", 6, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerH))
+	{
+		ImGui::PopStyleVar();
 		return help;
-	ImGui::TableSetupColumn(L("TASK", u8"ЗАДАЧА"), ImGuiTableColumnFlags_WidthFixed, name_width);
-	ImGui::TableSetupColumn(L("RUNS ON", u8"ГДЕ РАБОТАЕТ"), ImGuiTableColumnFlags_WidthFixed, place_width);
-	ImGui::TableSetupColumn(L("MS/FRAME", u8"МС/КАДР"), ImGuiTableColumnFlags_WidthFixed, number_width);
-	ImGui::TableSetupColumn(L("LOAD", u8"НАГРУЗКА"), ImGuiTableColumnFlags_WidthFixed, load_width);
-	ImGui::TableSetupColumn(L("THREADS", u8"ПОТОКИ"), ImGuiTableColumnFlags_WidthFixed, threads_width);
-	ImGui::TableSetupColumn("MT", ImGuiTableColumnFlags_WidthFixed, state_width);
+	}
+	ImGui::TableSetupColumn(L("TASK", u8"ЗАДАЧА"), ImGuiTableColumnFlags_WidthStretch);
+	fixed_column(L("RUNS ON", u8"ГДЕ РАБОТАЕТ"), place_width);
+	fixed_column(L("MS/FRAME", u8"МС/КАДР"), number_width);
+	fixed_column(L("LOAD", u8"НАГРУЗКА"), load_width);
+	fixed_column(L("THREADS", u8"ПОТОКИ"), threads_width);
+	fixed_column("MT", state_width);
 	ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
 	for (int column = 0; column < 6; ++column)
 	{
-		ImGui::TableSetColumnIndex(column);
-		ImGui::TextDisabled("%s", ImGui::TableGetColumnName(column));
+		column_name(column);
 		if (ImGui::IsItemHovered())
 		{
 			const char* const tips[] = {
@@ -768,9 +882,7 @@ const char* tasks_tab(bool& open_warning)
 			ImGui::TableNextRow();
 			ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(surface));
 			ImGui::TableSetColumnIndex(0);
-			ImGui::PushStyleColor(ImGuiCol_Text, accent);
-			ImGui::TextUnformatted(group_name(r.starts));
-			ImGui::PopStyleColor();
+			group_title(group_name(r.starts));
 		}
 
 		ImGui::TableNextRow();
@@ -814,7 +926,7 @@ const char* tasks_tab(bool& open_warning)
 		if (ran)
 		{
 			const float share = shown.frame_ms > 0.f ? shown.ms[r.task] / shown.frame_ms : 0.f;
-			bar(share, 60.f, ImGui::GetTextLineHeight() - 6.f);
+			bar(share, 60.f, ImGui::GetTextLineHeight() - 6.f, ImGui::GetID("load"));
 			ImGui::SameLine();
 			ImGui::Text("%3.0f%%", share * 100.f);
 		}
@@ -840,6 +952,7 @@ const char* tasks_tab(bool& open_warning)
 		ImGui::PopID();
 	}
 	ImGui::EndTable();
+	ImGui::PopStyleVar();
 	if (!job_on && !help)
 		help = L("The game logic is off: its parts run on the main thread before the render.",
 			u8"Логика игры выключена: её части выполняются на главном потоке перед рендером.");
@@ -851,10 +964,64 @@ void section(const char* name)
 {
 	ImDrawList* draw = ImGui::GetWindowDrawList();
 	const ImVec2 at = ImGui::GetCursorScreenPos();
-	const float height = ImGui::GetTextLineHeight() + 6.f;
+	ImFont* font = head_font();
+	const float size = font ? font->FontSize : ImGui::GetFontSize();
+	const float height = ImGui::GetTextLineHeight() + 10.f;
 	draw->AddRectFilled(at, ImVec2(at.x + content_width, at.y + height), ImGui::GetColorU32(surface));
-	draw->AddText(ImVec2(at.x + 6.f, at.y + 3.f), ImGui::GetColorU32(accent), name);
+	draw->AddText(font, size, ImVec2(at.x + 8.f, at.y + (height - size) * 0.5f), ImGui::GetColorU32(accent), name);
 	ImGui::Dummy(ImVec2(content_width, height));
+}
+
+// Why the chosen mode measures no less latency than OFF, from what the game does in this scene now; nullptr when it
+// does lower it. A mode removes the frames the video card keeps queued; where none queue there is nothing to remove.
+const char* latency_hint(const IRenderDeviceRender::latency_report& report, u32 chosen)
+{
+	static string1024 text;
+	static bool shown = false;
+	const float ms = report.ms[chosen], off_ms = report.ms[0], fps = report.fps[chosen];
+	if (!chosen || report.reflex_missing || ms <= 0.f || off_ms <= 0.f || fps <= 0.f)
+		return shown = false, nullptr;
+	// on under 10 % less than OFF, off over 15 %: the numbers wander by several percent from second to second
+	shown = ms > off_ms * (shown ? 0.85f : 0.9f);
+	if (!shown)
+		return nullptr;
+	const float frame = 1000.f / fps;
+	const float present = frame_stage_ms(fsRenderPresent);
+	if (ps_framelimiter > 0 && fps >= 0.95f * float(ps_framelimiter))
+		xr_sprintf(text, L("FPS is at the frame limit (%d): the video card queues no frames even in OFF, there is nothing "
+			"for the mode to remove.",
+			u8"FPS упирается в ограничение (%d): видеокарта не копит кадры даже в ВЫКЛ, режиму нечего убирать."),
+			ps_framelimiter);
+	// the main thread hardly waits for the video card: in the Bar 11 % of the frame at the processor limit (Present
+	// itself costs time), 40 % and more in every mode at the video card limit
+	else if (present + report.wait_ms < 0.2f * frame)
+		xr_sprintf(text, L("The processor is the limit: the video card waits for every frame, no frames queue even in OFF, "
+			"there is nothing to remove. The latency here is the frame itself (%.1f ms with %.1f ms a frame): only a "
+			"higher FPS lowers it.",
+			u8"Упор в процессор: видеокарта ждёт каждый кадр, очереди кадров нет даже в ВЫКЛ, убирать нечего. Задержка "
+			u8"здесь - это сам кадр (%.1f мс при %.1f мс на кадр): снизить её может только больше FPS."), ms, frame);
+	else if (psDeviceFlags.test(rsVSync))
+		xr_strcpy(text, L("VSync: finished frames wait for the refresh of the monitor and this wait is part of the latency; "
+			"with VSync ON keeps only the queue of 1 frame. The least latency is without VSync, with NVIDIA REFLEX and a "
+			"frame limit a little below the refresh rate.",
+			u8"VSync: готовые кадры ждут обновления монитора, и это ожидание входит в задержку; с VSync режим ВКЛ "
+			u8"оставляет только очередь в 1 кадр. Меньше всего задержка без VSync, с NVIDIA REFLEX и ограничением FPS "
+			u8"чуть ниже частоты монитора."));
+	else if (ms < off_ms * 0.95f) // at the video card limit a smaller drop is the mode's own cost (Reflex leaves the card idle)
+		return nullptr;
+	else
+	{
+		xr_strcpy(text, L("The video card is the limit, so the mode should lower the latency. OFF may have been measured in "
+			"another place: switch to it here for a few seconds and back. Also check the frame limit and the low latency "
+			"mode in the video driver's settings.",
+			u8"Упор в видеокарту, режим должен снижать задержку. ВЫКЛ мог быть измерен в другом месте: включите его здесь "
+			u8"на пару секунд и вернитесь. Проверьте и ограничение FPS и режим низкой задержки в настройках драйвера."));
+		if (GetModuleHandleW(L"RTSSHooks64.dll"))
+			xr_strcat(text, L(" RivaTuner (RTSS) runs in the game: its frame limit and its own Reflex markers hold frames "
+				"themselves.",
+				u8" В игре работает RivaTuner (RTSS): его ограничение FPS и свои маркеры Reflex сами держат кадры."));
+	}
+	return text;
 }
 
 const char* latency_tab()
@@ -867,13 +1034,17 @@ const char* latency_tab()
 	ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + content_width);
 
 	section(L("LOW LATENCY", u8"НИЗКАЯ ЗАДЕРЖКА"));
+	const char* recommended = L("ON [RECOMMENDED]", u8"ВКЛ [РЕКОМЕНДУЕТСЯ]");
+	const float button_width = content_width / latency_mode_count;
+	const float extra_width = _max(0.f, ImGui::CalcTextSize(recommended).x + 2.f * ImGui::GetStyle().FramePadding.x - button_width);
+	const float widths[] = {button_width - extra_width, button_width + extra_width, button_width, button_width};
 	for (u32 mode = 0; mode < latency_mode_count; ++mode)
 	{
 		const latency_mode& m = latency_modes[mode];
 		if (mode)
 			ImGui::SameLine(0.f, 0.f);
-		if (block_button(L(m.name_en, m.name_ru), mode == chosen, ImVec2(content_width / latency_mode_count, 0.f)) &&
-			mode != chosen)
+		const char* label = mode == 1 ? recommended : L(m.name_en, m.name_ru);
+		if (block_button(label, mode == chosen, ImVec2(widths[mode], 0.f)) && mode != chosen)
 		{
 			string64 line;
 			xr_sprintf(line, "r__low_latency %s", m.token);
@@ -920,16 +1091,13 @@ const char* latency_tab()
 
 		if (ImGui::BeginTable("latency", 4, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerH))
 		{
-			ImGui::TableSetupColumn(L("MODE", u8"РЕЖИМ"), ImGuiTableColumnFlags_WidthFixed, 300.f);
-			ImGui::TableSetupColumn(L("LATENCY", u8"ЗАДЕРЖКА"), ImGuiTableColumnFlags_WidthFixed, 150.f);
-			ImGui::TableSetupColumn("FPS", ImGuiTableColumnFlags_WidthFixed, 100.f);
-			ImGui::TableSetupColumn(L("VS OFF", u8"РАЗНИЦА С ВЫКЛ"), ImGuiTableColumnFlags_WidthFixed, 250.f);
+			ImGui::TableSetupColumn(L("MODE", u8"РЕЖИМ"), ImGuiTableColumnFlags_WidthStretch);
+			fixed_column(L("LATENCY", u8"ЗАДЕРЖКА"), 150.f);
+			fixed_column("FPS", 100.f);
+			fixed_column(L("VS OFF", u8"РАЗНИЦА С ВЫКЛ"), 250.f);
 			ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
 			for (int column = 0; column < 4; ++column)
-			{
-				ImGui::TableSetColumnIndex(column);
-				ImGui::TextDisabled("%s", ImGui::TableGetColumnName(column));
-			}
+				column_name(column);
 			const float off_ms = report.ms[0];
 			for (u32 mode = 0; mode < latency_mode_count; ++mode)
 			{
@@ -958,6 +1126,12 @@ const char* latency_tab()
 			}
 			ImGui::EndTable();
 		}
+		// under the table: when it comes and goes nothing moves
+		if (const char* why = in_level ? latency_hint(report, chosen) : nullptr)
+		{
+			ImGui::Spacing();
+			ImGui::TextColored(accent, "%s %s", L("Why the latency does not drop:", u8"Почему задержка не падает:"), why);
+		}
 	}
 	ImGui::PopTextWrapPos();
 	return help;
@@ -978,7 +1152,7 @@ const char* choices(const char* command, const choice* list, u32 count, u32 chos
 			xr_sprintf(line, "%s %s", command, list[index].token);
 			Console->Execute(line);
 		}
-		if (ImGui::IsItemHovered())
+		if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
 			help = L(list[index].help_en, list[index].help_ru);
 	}
 	return help;
@@ -992,29 +1166,32 @@ const char* upscaler_tab()
 	ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + content_width);
 
 	section(L("UPSCALER", u8"АПСКЕЙЛЕР"));
-	if (const char* h = choices("r__upscaler", upscaler_methods, 3, report.method))
+	if (const char* h = choices("r__upscaler", upscaler_methods, 4, report.method))
 		help = h;
 	ImGui::Spacing();
 
-	if (report.method == 1)
+	// AUTO: the rows show its choice and take no clicks
+	const bool automatic = report.method == method_auto;
+	const char* h = nullptr;
+	ImGui::BeginDisabled(automatic);
+	if (report.used_method == method_dlss)
 	{
-		section(L("DLSS MODEL", u8"МОДЕЛЬ DLSS"));
-		if (const char* h = choices("r__dlss_model", dlss_models, 4, report.model))
-			help = h;
-		ImGui::Spacing();
-		section(L("QUALITY", u8"КАЧЕСТВО"));
-		if (const char* h = choices("r__upscaler_mode", upscaler_modes, 5, report.mode))
-			help = h;
+		section(automatic ? L("DLSS MODEL: CHOSEN BY AUTO", u8"МОДЕЛЬ DLSS: ВЫБРАНА АВТО") : L("DLSS MODEL", u8"МОДЕЛЬ DLSS"));
+		h = choices("r__dlss_model", dlss_models, 3, report.model);
 		ImGui::Spacing();
 	}
-	else if (report.method == 2)
+	if (report.used_method == method_dlss || report.used_method == method_fsr)
 	{
-		section(L("QUALITY", u8"КАЧЕСТВО"));
-		if (const char* h = choices("r__upscaler_mode", fsr_modes, 5, report.mode))
-			help = h;
+		section(automatic ? L("QUALITY: CHOSEN BY AUTO", u8"КАЧЕСТВО: ВЫБРАНО АВТО") : L("QUALITY", u8"КАЧЕСТВО"));
+		if (const char* q = choices("r__upscaler_mode", report.used_method == method_dlss ? upscaler_modes : fsr_modes, 5,
+				report.mode))
+			h = q;
 		ImGui::Spacing();
 	}
-	if (report.method)
+	ImGui::EndDisabled();
+	if (h)
+		help = automatic ? L(upscaler_methods[method_auto].help_en, upscaler_methods[method_auto].help_ru) : h;
+	if (report.used_method)
 	{
 		section(L("SHARPNESS", u8"РЕЗКОСТЬ"));
 		float sharpness = report.sharpness;
@@ -1024,11 +1201,11 @@ const char* upscaler_tab()
 		if (ImGui::IsItemEdited())
 		{
 			string64 line;
-			xr_sprintf(line, "%s %.2f", report.method == 1 ? "r__dlss_sharpness" : "r__fsr_sharpness", sharpness);
+			xr_sprintf(line, "%s %.2f", report.used_method == method_dlss ? "r__dlss_sharpness" : "r__fsr_sharpness", sharpness);
 			Console->Execute(line);
 		}
 		if (ImGui::IsItemHovered())
-			help = report.method == 1 ?
+			help = report.used_method == method_dlss ?
 				L("Sharpening after DLSS, 0 is off: AMD's RCAS, the same as FSR's (NVIDIA removed DLSS's own sharpening in "
 					"DLSS 2.5.1). DLSS 4 and 4.5 are sharp already, DLSS 3 is softer. Ctrl+click to type the number. Applied "
 					"at once, without rebuilding the targets.",
@@ -1043,26 +1220,35 @@ const char* upscaler_tab()
 	}
 
 	section(L("STATE", u8"СОСТОЯНИЕ"));
-	if (report.nvidia && report.method == 1)
-		ImGui::TextDisabled("%s", !report.gpu_known ? L("Video card: NVIDIA, generation unknown (AUTO takes DLSS 3).",
-			u8"Видеокарта: NVIDIA, поколение неизвестно (АВТО берёт DLSS 3).") : report.new_gpu ?
-			L("Video card: GeForce RTX 40 or newer, with FP8: every DLSS model is fast.",
-				u8"Видеокарта: GeForce RTX 40 или новее, с FP8: все модели DLSS быстрые.") :
-			L("Video card: GeForce RTX 20 or 30, without FP8: DLSS 3 gives the most FPS.",
-				u8"Видеокарта: GeForce RTX 20 или 30, без FP8: больше всего FPS даёт DLSS 3."));
+	if (report.used_method == method_fsr && automatic)
+		ImGui::TextDisabled("%s", report.nvidia ? L("Video card: a GeForce without DLSS: AUTO takes AMD FSR 3.1 at quality.",
+			u8"Видеокарта: GeForce без DLSS: АВТО берёт AMD FSR 3.1 на качестве.") :
+			L("Video card: not NVIDIA: AUTO takes AMD FSR 3.1 at quality.",
+				u8"Видеокарта: не NVIDIA: АВТО берёт AMD FSR 3.1 на качестве."));
+	else if (report.used_method == method_dlss && report.nvidia)
+		ImGui::TextDisabled("%s", !report.gpu_known ? L("Video card: NVIDIA, generation unknown: AUTO takes DLSS 4 at quality.",
+			u8"Видеокарта: NVIDIA, поколение неизвестно: АВТО берёт DLSS 4 на качестве.") : report.new_gpu ?
+			L("Video card: GeForce RTX 40 or newer, with FP8: every DLSS model is fast, AUTO takes DLSS 4.5 at quality.",
+				u8"Видеокарта: GeForce RTX 40 или новее, с FP8: все модели DLSS быстрые, АВТО берёт DLSS 4.5 на качестве.") :
+			L("Video card: GeForce RTX 20 or 30, without FP8: AUTO takes DLSS 4 at quality, DLSS 3 gives the most FPS.",
+				u8"Видеокарта: GeForce RTX 20 или 30, без FP8: АВТО берёт DLSS 4 на качестве, больше всего FPS даёт DLSS 3."));
 	switch (report.state)
 	{
 	case IRenderDeviceRender::upscaler_active:
+	{
+		const choice& m = (report.preset ? upscaler_modes : fsr_modes)[_min(report.mode, 4u)];
 		if (report.preset)
-			ImGui::Text(L("Works: the scene %ux%u, the screen %ux%u, %s (NVIDIA's preset %c).",
-				u8"Работает: сцена %ux%u, экран %ux%u, %s (пресет NVIDIA %c)."), report.render_w, report.render_h,
+			ImGui::Text(L("Works: the scene %ux%u, the screen %ux%u, %s (NVIDIA's preset %c), %s.",
+				u8"Работает: сцена %ux%u, экран %ux%u, %s (пресет NVIDIA %c), %s."), report.render_w, report.render_h,
 				report.display_w, report.display_h,
-				report.preset == 'E' ? "DLSS 3" : report.preset == 'K' ? "DLSS 4" : "DLSS 4.5", report.preset);
+				report.preset == 'E' ? "DLSS 3" : report.preset == 'K' ? "DLSS 4" : "DLSS 4.5", report.preset,
+				L(m.name_en, m.name_ru));
 		else
-			ImGui::Text(L("Works: the scene %ux%u, the screen %ux%u, AMD FSR 3.1.",
-				u8"Работает: сцена %ux%u, экран %ux%u, AMD FSR 3.1."), report.render_w, report.render_h,
-				report.display_w, report.display_h);
+			ImGui::Text(L("Works: the scene %ux%u, the screen %ux%u, AMD FSR 3.1, %s.",
+				u8"Работает: сцена %ux%u, экран %ux%u, AMD FSR 3.1, %s."), report.render_w, report.render_h,
+				report.display_w, report.display_h, L(m.name_en, m.name_ru));
 		break;
+	}
 	case IRenderDeviceRender::upscaler_no_nvidia:
 		ImGui::TextColored(accent, "%s", L("DLSS needs an NVIDIA GeForce RTX video card: the scene renders at full resolution.",
 			u8"DLSS нужна видеокарта NVIDIA GeForce RTX: сцена рисуется в полном разрешении."));
@@ -1153,7 +1339,7 @@ void fade_scroll_edges(int first_vertex)
 void logo(ide& owner)
 {
 	u32 width, height;
-	void* texture = owner.PanelLogo(width, height);
+	void* texture = owner.PanelImage(ide::panel_logo, width, height);
 	if (!texture)
 		return;
 	const ImVec2 at = ImGui::GetWindowPos(), size = ImGui::GetWindowSize();
@@ -1166,15 +1352,34 @@ void logo(ide& owner)
 void draw(ide& owner)
 {
 	push_style();
-	// One size for FHD, QHD and 4K, lower only on a smaller screen; the tab scrolls inside it.
-	// Top right: overlays such as RTSS take the top left corner.
+	ImGui::PushFont(text_font());
+	// One first size for FHD, QHD and 4K, lower only on a smaller screen; the tab scrolls inside it. The edges resize it
+	// (imgui.ini keeps the size), never narrower than the layout of the buttons. Top right: overlays such as RTSS take
+	// the top left corner.
 	const ImGuiStyle& style = ImGui::GetStyle();
 	const ImVec2 screen = ImGui::GetMainViewport()->WorkSize;
-	const ImVec2 size(content_width + style.ScrollbarSize + 2.f * style.WindowPadding.x, _min(660.f, screen.y - 80.f));
+	const float chrome = style.ScrollbarSize + 2.f * style.WindowPadding.x;
 	ImGui::SetNextWindowPos(ImVec2(screen.x - 40.f, 40.f), ImGuiCond_FirstUseEver, ImVec2(1.f, 0.f));
-	ImGui::SetNextWindowSize(size, ImGuiCond_Always);
-	ImGui::Begin("QUARK-PANEL", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
-		ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+	ImGui::SetNextWindowSize(ImVec2(min_content_width + chrome, _min(720.f, screen.y - 80.f)), ImGuiCond_FirstUseEver);
+	ImGui::SetNextWindowSizeConstraints(ImVec2(min_content_width + chrome, _min(420.f, screen.y)), screen);
+	// Full screen: the whole work area, neither moved nor resized nor saved (imgui.ini keeps the window's own size)
+	ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar |
+		ImGuiWindowFlags_NoScrollWithMouse;
+	if (maximized)
+	{
+		ImGui::SetNextWindowPos(ImGui::GetMainViewport()->WorkPos, ImGuiCond_Always);
+		ImGui::SetNextWindowSize(screen, ImGuiCond_Always);
+		flags |= ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings;
+	}
+	else if (restore_pending)
+	{
+		restore_pending = false;
+		ImGui::SetNextWindowPos(restore_pos, ImGuiCond_Always);
+		ImGui::SetNextWindowSize(restore_size, ImGuiCond_Always);
+	}
+	ImGui::Begin("QUARK-PANEL", nullptr, flags);
+	const ImVec2 size = ImGui::GetWindowSize();
+	content_width = size.x - chrome;
 	// kept on the screen: a position saved at another resolution or dragged past an edge would hide the title
 	const ImVec2 at = ImGui::GetWindowPos();
 	const ImVec2 kept(_max(_min(at.x, screen.x - size.x), 0.f), _max(_min(at.y, screen.y - size.y), 0.f));
@@ -1199,8 +1404,10 @@ void draw(ide& owner)
 	{
 	case tab_tasks: help = tasks_tab(open_warning); break;
 	case tab_threads: threads_tab(shown.fps, shown.frame_ms); break;
+	case tab_mods: help = mods_tab(shown.fps, shown.frame_ms); break;
 	case tab_latency: help = latency_tab(); break;
 	case tab_upscaler: help = upscaler_tab(); break;
+	default: break;
 	}
 	smooth_scroll();
 	fade_scroll_edges(first_vertex);
@@ -1215,6 +1422,7 @@ void draw(ide& owner)
 	ImGui::PopTextWrapPos();
 
 	ImGui::End();
+	ImGui::PopFont();
 	pop_style();
 }
 } // namespace
@@ -1240,6 +1448,7 @@ const char* task_name(mt_tasks::task task)
 void mt_panel_frame(ide& owner, bool open)
 {
 	quark_mt::threads_frame(open);
+	mods_info::frame(open && current_tab == tab_mods);
 	if (!open)
 	{
 		mt_tasks::counting = false;

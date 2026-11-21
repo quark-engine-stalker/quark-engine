@@ -954,7 +954,7 @@ dxRender_Visual* load_prepared_visual(CModelPool* owner, const CModelPool::Async
 	dxRender_Visual* base = owner->Instance_Load(state->key.c_str(), &reader, FALSE);
 	if (base)
 	{
-		g_pGamePersistent->RegisterModel(base);
+		g_pGamePersistent->RegisterModel(base, state->key.c_str());
 		owner->Instance_Register(state->key.c_str(), base);
 	}
 	return base;
@@ -1443,7 +1443,7 @@ dxRender_Visual* CModelPool::Instance_Load(const char* N, BOOL allow_register, b
 	V = Instance_Create(H.type);
 	V->Load(N, data, 0);
 	FS.r_close(data);
-	g_pGamePersistent->RegisterModel(V);
+	g_pGamePersistent->RegisterModel(V, N);
 
 	// Registration
 	if (allow_register) Instance_Register(N, V);
