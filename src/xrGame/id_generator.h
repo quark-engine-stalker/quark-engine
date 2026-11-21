@@ -94,13 +94,43 @@ public:
 
 	IC VALUE_ID tfGetID(VALUE_ID tValueID = tInvalidValueID)
 	{
+		return tfGetID(tValueID, [](VALUE_ID) { return false; });
+	}
+
+	template <typename IsInUse>
+	IC VALUE_ID tfGetID(VALUE_ID tValueID, IsInUse is_in_use)
+	{
 		if (tInvalidValueID != tValueID)
 			return (tfGetFromBlock(m_tppBlocks[tfGetBlockByValue(tValueID)], tValueID));
 
 		R_ASSERT2(m_available_count, "Not enough IDs");
-		SID_Block* I = std::min_element(m_tppBlocks, m_tppBlocks + m_tBlockCount);
-		VERIFY(I != m_tppBlocks + m_tBlockCount);
-		return (tfGetFromBlock(*I, tValueID));
+		SID_Block* oldest = std::min_element(m_tppBlocks, m_tppBlocks + m_tBlockCount);
+		const auto id_at = [this](const SID_Block& block, CHUNK_ID index)
+		{
+			return VALUE_ID(block.m_tpIDs[index] + (&block - m_tppBlocks) * tBlockSize + tMinValue);
+		};
+		if (!is_in_use(id_at(*oldest, oldest->m_tCount - 1)))
+			return tfGetFromBlock(*oldest, tInvalidValueID);
+
+		// Keep blocked IDs free in the pool so they can be claimed as soon as the client releases them.
+		SID_Block* selected = nullptr;
+		VALUE_ID selected_id = tInvalidValueID;
+		for (SID_Block& block : m_tppBlocks)
+		{
+			if (!block.m_tCount || (selected && block.m_tTimeID >= selected->m_tTimeID))
+				continue;
+			for (CHUNK_ID index = block.m_tCount; index > 0; --index)
+			{
+				const VALUE_ID id = id_at(block, index - 1);
+				if (is_in_use(id))
+					continue;
+				selected = &block;
+				selected_id = id;
+				break;
+			}
+		}
+		R_ASSERT2(selected, "No free server ID has been released by the local client");
+		return tfGetFromBlock(*selected, selected_id);
 	}
 
 	IC void vfFreeID(VALUE_ID tValueID, TIME_ID tTimeID)

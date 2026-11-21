@@ -868,6 +868,16 @@ CSE_Abstract* xrServer::entity_Create(LPCSTR name)
 	return F_entity_Create(name);
 }
 
+u16 xrServer::PerformIDgen(u16 ID)
+{
+	if (ID != 0xffff || !psNET_direct_connect || !g_pGameLevel || Level().Server != this)
+		return m_tID_Generator.tfGetID(ID);
+
+	// The server can free an ID before the local client has processed the object's destruction.
+	const CObjectList& objects = Level().Objects;
+	return m_tID_Generator.tfGetID(ID, [&objects](u16 candidate) { return objects.net_Find(candidate) != nullptr; });
+}
+
 void xrServer::entity_Destroy(CSE_Abstract*& P)
 {
 #ifdef DEBUG

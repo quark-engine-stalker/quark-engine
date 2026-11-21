@@ -174,10 +174,7 @@ public:
 		m_tID_Generator = id_generator_type();
 	}
 
-	IC u16 PerformIDgen(u16 ID)
-	{
-		return (m_tID_Generator.tfGetID(ID));
-	}
+	u16 PerformIDgen(u16 ID);
 
 	IC void FreeID(u16 ID, u32 time)
 	{
