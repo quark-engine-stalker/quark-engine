@@ -104,6 +104,12 @@ VER 1.0.2 [ИСПРАВЛЕНИЕ БАГОВ]
 ПРОЧЕЕ:
 
 - добавлена поддержка [JitProfiler](https://www.moddb.com/mods/stalker-anomaly/addons/jitprofiler) (требуется установка в MO2)
+- Добавлены профилировщики LuaJIT: `jit.profile` для анализа нагрузки на CPU (адаптация из LuaJIT 2.1 от damiansirbu) и `jit.allocprof` для анализа выделений памяти (разработка damiansirbu).
+  Перенесено и адаптировано из Xray-Monolith, PR #641:
+  https://github.com/themrdemonized/xray-monolith/pull/641
+- Перенесены улучшения надёжности и семплирования `jit.profile` / `jit.allocprof`, а также `jit.util.gcstat` для статистики сборщика мусора Lua (автор: damiansirbu).
+  Перенесено и адаптировано из Xray-Monolith, PR #670:
+  https://github.com/themrdemonized/xray-monolith/pull/670
 
 VER 1.0.1 [ИСПРАВЛЕНИЕ БАГОВ И ПРОИЗВОДИТЕЛЬНОСТЬ]
 
